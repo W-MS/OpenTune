@@ -248,7 +248,7 @@ Packaging commands:
 ./scripts/package-macos.sh --format both
 ```
 
-The PKG installs the app in `/Applications` and the VST3 in the system-wide `/Library/Audio/Plug-Ins/VST3/`; the DMG contains the Standalone, VST3, and bilingual install commands, which place the VST3 in the current user's plug-in directory. The PKG welcome page uses the anti-fraud and license notice from `Installer/NOTICE.md`.
+The PKG installs the app in `/Applications` and the VST3 and AU in the system-wide `/Library/Audio/Plug-Ins/VST3/` and `/Library/Audio/Plug-Ins/Components/` directories. The DMG contains the Standalone, VST3, AU, and bilingual install commands, which place both plug-ins in the current user's VST3 and Components directories. The PKG welcome page uses the anti-fraud and license notice from `Installer/NOTICE.md`.
 
 ## Build Artifacts
 
@@ -256,6 +256,7 @@ The PKG installs the app in `/Applications` and the VST3 in the system-wide `/Li
 |--------|---------|-------|
 | Standalone | `build-ara-overlay-vs18-clean/OpenTuneStandalone_artefacts/Release/Standalone/OpenTune.exe` | `build-macos-universal2-ninja/OpenTuneStandalone_artefacts/Release/Standalone/OpenTune.app` |
 | VST3 ARA2 | `build-ara-overlay-vs18-clean/OpenTune_artefacts/Release/VST3/OpenTune.vst3/` | `build-macos-universal2-ninja/OpenTune_artefacts/Release/VST3/OpenTune.vst3/` |
+| AUv2 | — | `build-macos-universal2-ninja/OpenTuneAU_artefacts/Release/AU/OpenTune.component/` |
 
 After build completion, runtime DLLs, model files, and D3D12 directory will be automatically copied to the artifact directory, requiring no manual operation.
 

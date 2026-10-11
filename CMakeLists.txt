@@ -1309,10 +1309,14 @@ if(APPLE AND TARGET OpenTuneAU_AU)
     add_custom_command(TARGET OpenTuneAU_AU POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
             "$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Frameworks"
+        COMMAND ${CMAKE_COMMAND}
+            "-DORT_FRAMEWORKS_DIR=$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Frameworks"
+            "-DORT_KEEP_FILENAME=libonnxruntime.${OPENTUNE_ONNXRUNTIME_VERSION}.dylib"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CleanStaleOrtDylibs.cmake"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ONNXRUNTIME_DYLIB}"
             "$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Frameworks/"
-        COMMENT "Copying ONNX Runtime dylib to AU component Frameworks..."
+        COMMENT "Copying ONNX Runtime dylib to AU component Frameworks (removing stale versions)..."
     )
 
     add_custom_command(TARGET OpenTuneAU_AU POST_BUILD
