@@ -9,6 +9,7 @@
 #include "Editor/PitchShiftDialogContent.h"
 #include "Plugin/Capture/CaptureSession.h"
 #include "Utils/AppLogger.h"
+#include "Utils/LocalizationManager.h"
 #include "Utils/EditorUiSync.h"
 #include "Utils/KeyShortcutConfig.h"
 #include "Utils/ParameterPanelSync.h"
@@ -44,12 +45,16 @@ constexpr int kPreferredHeight = 900;
 
 void showHostManagedMessage(juce::Component* parent, const juce::String& title, const juce::String& detail)
 {
-    AppLogger::log("VST3Editor: " + title + " requested, delegated to host DAW");
+    AppLogger::log(juce::String(kHostPluginFormatName) + "Editor: " + title + " requested, delegated to host DAW");
+#if JucePlugin_Build_AU
+    const auto prefix = "In " + juce::String(kHostPluginFormatName)
+        + " mode this action is managed by your DAW.\n\n";
+#else
+    const auto prefix = LOC(kHostManagedActionPrefix);
+#endif
     OpenTune::ConfirmDialogContent::showMessage(parent,
                                                 title,
-                                                "In " + juce::String(kHostPluginFormatName)
-                                                    + " mode this action is managed by your DAW.\n\n"
-                                                    + detail);
+                                                prefix + detail);
 }
 
 ContentTimelineProjection makeCaptureSegmentProjection(const Capture::SegmentInfo& segment)
@@ -548,10 +553,10 @@ void OpenTuneAudioProcessorEditor::timerCallback()
         if (currentState == OriginalF0State::Failed
             && (previous == lastObservedOriginalF0States_.end()
                 || previous->second != OriginalF0State::Failed)) {
-            const auto summary = juce::String::fromUTF8(u8"OriginalF0 未就绪。");
+            const auto summary = LOC(kOriginalF0NotReady);
             OpenTune::ConfirmDialogContent::showDiagnostic(
                 &contentRoot_,
-                "OriginalF0",
+                LOC(kOriginalF0),
                 summary,
                 AppLogger::makeDiagnosticText("OriginalF0/FCPE", summary));
         }
@@ -656,13 +661,13 @@ void OpenTuneAudioProcessorEditor::timerCallback()
             buildRenderingOverlayTitle(completedTasks, totalTasks, progress));
         shouldShowOverlay = true;
     } else if (chunkStats.hasActiveWork()) {
-        renderBadge_.setMessageText(juce::String::fromUTF8(u8"\u6e32\u67d3\u4e2d (")
+        renderBadge_.setMessageText(LOC_RAW("Rendering (")
             + juce::String(completedTasks) + "/" + juce::String(totalTasks) + ")");
         shouldShowBadge = true;
     }
 
     if (originalF0OverlayLatched_) {
-        autoRenderOverlay_.setMessageText(juce::String::fromUTF8(u8"\u6B63\u5728\u5904\u7406\u97F3\u9891"));
+        autoRenderOverlay_.setMessageText(LOC_RAW("Processing audio"));
         shouldShowOverlay = true;
     }
 
@@ -760,6 +765,7 @@ void OpenTuneAudioProcessorEditor::languageChanged(Language newLanguage)
     transportBar_.refreshLocalizedText();
     topBar_.refreshLocalizedText();
     parameterPanel_.refreshLocalizedText();
+    pianoRoll_.refreshLocalizedText();
 
     repaint();
     if (onboardingOverlay_ != nullptr)
@@ -955,43 +961,55 @@ void OpenTuneAudioProcessorEditor::toolSelected(int toolId)
 
 void OpenTuneAudioProcessorEditor::importAudioRequested()
 {
+#if JucePlugin_Build_AU
     OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
                                                 "Import Audio",
                                                 "Please import audio from your DAW in "
                                                     + juce::String(kHostPluginFormatName) + " mode.");
+#else
+    OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
+                                                 LOC(kImportAudioDialog),
+                                                 LOC(kVst3ImportAudio));
+#endif
 }
 
 void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::ExportType exportType)
 {
     juce::ignoreUnused(exportType);
+#if JucePlugin_Build_AU
     OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
                                                 "Export Audio",
                                                 "Please render/export from your DAW in "
                                                     + juce::String(kHostPluginFormatName) + " mode.");
+#else
+    OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
+                                                 LOC(kExportAudio),
+                                                 LOC(kVst3ExportAudio));
+#endif
 }
 
 void OpenTuneAudioProcessorEditor::openProjectRequested()
 {
-    showHostManagedMessage(&contentRoot_, "Open Project",
-                           "Project file management is handled in the Standalone version.");
+    showHostManagedMessage(&contentRoot_, LOC(kOpenProjectDialog),
+                           LOC(kProjectFileManagementStandalone));
 }
 
 void OpenTuneAudioProcessorEditor::saveProjectRequested()
 {
-    showHostManagedMessage(&contentRoot_, "Save Project",
-                           "Project file management is handled in the Standalone version.");
+    showHostManagedMessage(&contentRoot_, LOC(kSaveProject),
+                           LOC(kProjectFileManagementStandalone));
 }
 
 void OpenTuneAudioProcessorEditor::saveProjectAsRequested()
 {
-    showHostManagedMessage(&contentRoot_, "Save Project As...",
-                           "Project file management is handled in the Standalone version.");
+    showHostManagedMessage(&contentRoot_, LOC(kSaveProjectAs),
+                           LOC(kProjectFileManagementStandalone));
 }
 
 void OpenTuneAudioProcessorEditor::openRecentProjectRequested(const juce::File&)
 {
-    showHostManagedMessage(&contentRoot_, "Open Recent Project",
-                           "Project file management is handled in the Standalone version.");
+    showHostManagedMessage(&contentRoot_, LOC(kOpenRecentProject),
+                           LOC(kProjectFileManagementStandalone));
 }
 
 void OpenTuneAudioProcessorEditor::clearRecentProjectsRequested()
@@ -1045,7 +1063,7 @@ void OpenTuneAudioProcessorEditor::showPreferencesDialog()
 
     juce::DialogWindow::LaunchOptions options;
     options.content.setOwned(dialogContent);
-    options.dialogTitle = "Preferences";
+    options.dialogTitle = LOC(kPreferences);
     options.componentToCentreAround = &contentRoot_;
     options.dialogBackgroundColour = UIColors::backgroundDark;
     options.escapeKeyTriggersCloseButton = true;
@@ -1071,9 +1089,14 @@ void OpenTuneAudioProcessorEditor::showPreferencesDialog()
 
 void OpenTuneAudioProcessorEditor::helpRequested()
 {
+#if JucePlugin_Build_AU
     showHostManagedMessage(&contentRoot_, "Help",
                            "Open the host DAW plugin help/manual entry for "
                                + juce::String(kHostPluginFormatName) + " usage guidance.");
+#else
+    showHostManagedMessage(&contentRoot_, LOC(kHelpDialog),
+                           LOC(kVst3Help));
+#endif
 }
 
 void OpenTuneAudioProcessorEditor::showWaveformToggled(bool shouldShow)
@@ -1214,7 +1237,7 @@ void OpenTuneAudioProcessorEditor::surfaceRegularVst3HostControlledTransport(con
     const juce::String action(actionName);
     const juce::String message = "Regular VST3 " + action + " requested: host-controlled transport";
     AppLogger::log("VST3Editor: " + message);
-    transportBar_.setRenderStatusText("Host-controlled transport");
+    transportBar_.setRenderStatusText(LOC(kHostControlledTransport));
 }
 
 void OpenTuneAudioProcessorEditor::timelineDisplayModeChanged(TimelineDisplayMode mode)
@@ -1311,9 +1334,14 @@ void OpenTuneAudioProcessorEditor::recordRequested()
 
 #if !JucePlugin_Enable_ARA
     OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
+#if JucePlugin_Build_AU
                                                 "Read Audio",
                                                 "This " + juce::String(kHostPluginFormatName)
                                                     + " instance is not ready for audio capture or ARA reading.");
+#else
+                                                LOC(kTooltipRecord),
+                                                LOC(kVst3ReadAudioNotReady));
+#endif
     return;
 #else
     auto* dc = processorRef_.getDocumentController();
@@ -1328,8 +1356,8 @@ void OpenTuneAudioProcessorEditor::recordRequested()
         AppLogger::log("VST3 recordRequested mode=ara-bound focused region unavailable");
         transportBar_.setRecordButtonEnabled(false);
         OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
-                                                    "Read Audio",
-                                                    "The selected item is not ready. Please re-select and try again.");
+                                                    LOC(kTooltipRecord),
+                                                    LOC(kVst3ReadAudioSelectionNotReady));
         return;
     }
 
@@ -1339,8 +1367,8 @@ void OpenTuneAudioProcessorEditor::recordRequested()
         [this, dc, targetPlaybackRegion](int refreshed) {
             if (refreshed < 0) {
                 OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
-                                                            "Read Audio",
-                                                            "Audio regions could not be processed.");
+                                                            LOC(kTooltipRecord),
+                                                            LOC(kVst3ReadAudioRegionsFailed));
                 return;
             }
 
@@ -1419,8 +1447,8 @@ void OpenTuneAudioProcessorEditor::autoTuneRequested()
     if (!activeKey.isValid()) {
         OpenTune::ConfirmDialogContent::showMessage(
             &contentRoot_,
-            "AUTO",
-            "AUTO needs an active ARA audio modification.");
+            LOC(kAutoDialog),
+            LOC(kAutoNeedsActiveAra));
         return;
     }
 
@@ -1435,24 +1463,24 @@ void OpenTuneAudioProcessorEditor::autoTuneRequested()
     if (f0State == OriginalF0State::Extracting) {
         OpenTune::ConfirmDialogContent::showMessage(
             &contentRoot_,
-            "OriginalF0",
-            "OriginalF0 is being extracted. Please retry in a moment.");
+            LOC(kOriginalF0),
+            LOC(kOriginalF0Extracting));
         return;
     }
 
     if (f0State == OriginalF0State::Failed) {
         OpenTune::ConfirmDialogContent::showMessage(
             &contentRoot_,
-            "OriginalF0",
-            "OriginalF0 extraction failed for this clip. Re-import the audio to regenerate OriginalF0.");
+            LOC(kOriginalF0),
+            LOC(kOriginalF0ExtractionFailed));
         return;
     }
 
     if (f0State != OriginalF0State::Ready) {
         OpenTune::ConfirmDialogContent::showMessage(
             &contentRoot_,
-            "OriginalF0",
-            "OriginalF0 is not ready for this clip.");
+            LOC(kOriginalF0),
+            LOC(kOriginalF0NotReadyForClip));
         return;
     }
 
@@ -1464,7 +1492,7 @@ void OpenTuneAudioProcessorEditor::autoTuneRequested()
         if (result.status != PianoRollComponent::AutoTuneApplyStatus::NoChange) {
             OpenTune::ConfirmDialogContent::showMessage(
                 &contentRoot_,
-                "AUTO",
+                LOC(kAutoDialog),
                 result.message());
         }
         return;
@@ -1520,7 +1548,7 @@ void OpenTuneAudioProcessorEditor::pitchShiftRequested()
 
     auto options = juce::DialogWindow::LaunchOptions();
     options.content.setOwned(content);
-    options.dialogTitle = "Pitch Shift";
+    options.dialogTitle = LOC(kPitchShift);
     options.dialogBackgroundColour = UIColors::backgroundDark;
     options.escapeKeyTriggersCloseButton = true;
     options.useNativeTitleBar = false;
