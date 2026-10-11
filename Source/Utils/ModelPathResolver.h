@@ -28,6 +28,11 @@
 #include <string>
 #include <juce_core/juce_core.h>
 
+#if defined(__APPLE__) && JucePlugin_Build_AU \
+    && !JucePlugin_Build_VST3 && !JucePlugin_Build_Standalone
+#include <dlfcn.h>
+#endif
+
 namespace OpenTune {
 
 class ModelPathResolver {
@@ -85,6 +90,17 @@ public:
     }
 
     static std::string getModelsDirectory() {
+#if defined(__APPLE__) && JucePlugin_Build_AU \
+    && !JucePlugin_Build_VST3 && !JucePlugin_Build_Standalone
+        const juce::File moduleFile = getCurrentModuleFile();
+        if (moduleFile.getFullPathName().isEmpty()) {
+            return {};
+        }
+
+        return moduleFile.getParentDirectory().getParentDirectory()
+            .getChildFile("Resources").getChildFile("models")
+            .getFullPathName().toStdString();
+#else
         const juce::File moduleFile = getCurrentModuleFile();
 
         // 自带优先：模块目录（Standalone 与 VST3 bundle 随包分发）> bundle Resources；
@@ -139,6 +155,7 @@ public:
         }
 
         return "./models";
+#endif
     }
 
 private:
@@ -170,6 +187,14 @@ private:
                 return juce::File(path);
             }
         }
+#elif defined(__APPLE__) && JucePlugin_Build_AU \
+    && !JucePlugin_Build_VST3 && !JucePlugin_Build_Standalone
+        Dl_info moduleInfo {};
+        if (::dladdr(reinterpret_cast<const void*>(&ModelPathResolver::getModelsDirectory), &moduleInfo) != 0
+                && moduleInfo.dli_fname != nullptr) {
+            return juce::File(juce::String::fromUTF8(moduleInfo.dli_fname));
+        }
+        return {};
 #endif
         return juce::File::getSpecialLocation(juce::File::currentExecutableFile);
     }

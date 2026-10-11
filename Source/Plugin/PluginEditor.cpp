@@ -27,6 +27,12 @@ namespace OpenTune::PluginUI {
 
 namespace {
 
+#if JucePlugin_Build_AU
+constexpr const char* kHostPluginFormatName = "Audio Unit";
+#else
+constexpr const char* kHostPluginFormatName = "VST3";
+#endif
+
 // 100% 基线窗口尺寸（§4.4）：min 660×500，max 固定 3000×2000，preferred 1000×900。
 // VST3 外层窗口归宿主，不按 display.userArea 夹紧（§5.2）。
 constexpr int kBaseMinWidth = 660;
@@ -41,7 +47,8 @@ void showHostManagedMessage(juce::Component* parent, const juce::String& title, 
     AppLogger::log("VST3Editor: " + title + " requested, delegated to host DAW");
     OpenTune::ConfirmDialogContent::showMessage(parent,
                                                 title,
-                                                "In VST3 mode this action is managed by your DAW.\n\n"
+                                                "In " + juce::String(kHostPluginFormatName)
+                                                    + " mode this action is managed by your DAW.\n\n"
                                                     + detail);
 }
 
@@ -950,7 +957,8 @@ void OpenTuneAudioProcessorEditor::importAudioRequested()
 {
     OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
                                                 "Import Audio",
-                                                "Please import audio from your DAW in VST3 mode.");
+                                                "Please import audio from your DAW in "
+                                                    + juce::String(kHostPluginFormatName) + " mode.");
 }
 
 void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::ExportType exportType)
@@ -958,7 +966,8 @@ void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::Export
     juce::ignoreUnused(exportType);
     OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
                                                 "Export Audio",
-                                                "Please render/export from your DAW in VST3 mode.");
+                                                "Please render/export from your DAW in "
+                                                    + juce::String(kHostPluginFormatName) + " mode.");
 }
 
 void OpenTuneAudioProcessorEditor::openProjectRequested()
@@ -1063,7 +1072,8 @@ void OpenTuneAudioProcessorEditor::showPreferencesDialog()
 void OpenTuneAudioProcessorEditor::helpRequested()
 {
     showHostManagedMessage(&contentRoot_, "Help",
-                           "Open the host DAW plugin help/manual entry for VST3 usage guidance.");
+                           "Open the host DAW plugin help/manual entry for "
+                               + juce::String(kHostPluginFormatName) + " usage guidance.");
 }
 
 void OpenTuneAudioProcessorEditor::showWaveformToggled(bool shouldShow)
@@ -1302,7 +1312,8 @@ void OpenTuneAudioProcessorEditor::recordRequested()
 #if !JucePlugin_Enable_ARA
     OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
                                                 "Read Audio",
-                                                "This VST3 instance is not ready for audio capture or ARA reading.");
+                                                "This " + juce::String(kHostPluginFormatName)
+                                                    + " instance is not ready for audio capture or ARA reading.");
     return;
 #else
     auto* dc = processorRef_.getDocumentController();

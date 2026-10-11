@@ -4,14 +4,15 @@
  * OpenTune 核心音频处理器
  * 
  * OpenTuneAudioProcessor 是 JUCE runtime 外壳，每个最终 wrapper 各编译一份
- * （Standalone / VST3 单格式 SharedCode）：
- * - VST3 变体组合 VST3 ARA session 与 regular VST3 capture
+ * （Standalone / VST3 / AU 单格式 SharedCode）：
+ * - Plugin 变体组合 ARA session 与未绑定宿主的 Capture
+ * - AU diagnostic 变体复用 ARA processor/editor 与 Capture 路径
  * - Standalone 变体组合 SourceStore、content owner 与 StandaloneArrangement
  * - 公共部分：实时音频播放/混音、AI 推理调度、项目状态序列化
  * 
  * 线程安全说明：
  * - editable truth 由 content owner 管理（Standalone 由 StandaloneContentRepository，
- *   VST3 由 ARA Session / CaptureSession 管理）
+ *   Plugin 由 ARA Session / CaptureSession 管理）
  * - Standalone placement/mix truth 由 StandaloneArrangement 管理
  * - 音频线程只读取 immutable playback snapshot 与 clip core 读取源
  */
@@ -145,7 +146,7 @@ struct PluginPianoRollSessionState
 
 struct PluginProcessorTransportTestAccessor;  // forward decl for test access to transport fields
 
-#if JucePlugin_Build_VST3
+#if !JucePlugin_Build_Standalone
 namespace Capture {
     class CaptureSession;  // forward decl; full type in Source/Plugin/Capture/CaptureSession.h
 }
@@ -168,7 +169,7 @@ class OpenTuneAudioProcessor : public juce::AudioProcessor
 #endif
 {
 public:
-#if JucePlugin_Build_VST3
+#if !JucePlugin_Build_Standalone
     struct HostTransportSnapshot {
         double bpm{120.0};
         bool isRecording{false};
@@ -266,8 +267,8 @@ public:
     // Standalone arrangement reclaim sweep completes on the message thread.
     void handleAsyncUpdate() override;
 #endif
-#if JucePlugin_Build_VST3
-    // Regular VST3 capture session tick.
+#if !JucePlugin_Build_Standalone
+    // Host-plugin Capture session tick.
     void timerCallback() override;
 #endif
 
@@ -443,7 +444,7 @@ private:
     // services so scanner-only processor construction remains side-effect free.
     std::unique_ptr<AppPreferences> appPreferences_;
     // Processor-local render path: owned only by instances not bound to ARA
-    // (regular VST3 / Standalone). ARA-bound instances keep this null and render
+    // (host plugin / Standalone). ARA-bound instances keep this null and render
     // through the DC's CRS.
     std::shared_ptr<ContentRenderService> contentRenderService_;
 #if JucePlugin_Build_Standalone
@@ -456,10 +457,10 @@ private:
 #endif
     std::unique_ptr<ReferenceAnalysisService> referenceAnalysisService_;
 
-#if JucePlugin_Build_VST3
-    // Regular VST3 capture state. ARA-capable builds create this only for unbound
+#if !JucePlugin_Build_Standalone
+    // Host-plugin Capture state. ARA-capable builds create this only for unbound
     // insert instances; didBindToARA tears down any instance created before binding.
-    // nullptr in Standalone instances and in VST3 instances bound to ARA.
+    // nullptr in Standalone instances and plugin instances bound to ARA.
     std::unique_ptr<Capture::CaptureSession> captureSession_;
 #endif
 
@@ -470,7 +471,7 @@ private:
 
 #if JucePlugin_Build_Standalone
     // Standalone canonical BPM and time signature. These are the only owner-truth
-    // for Standalone transport metadata. VST3/ARA reads host snapshot via
+    // for Standalone transport metadata. Host plugins read the host snapshot via
     // getHostTransportSnapshot().
     double bpm_{120.0};
     int    timeSigNumerator_{4};
@@ -517,7 +518,7 @@ private:
     // Audio-thread runtime phase (Standalone only).
     RuntimePhase phase_{RuntimePhase::Stopped};
 
-#if JucePlugin_Build_VST3
+#if !JucePlugin_Build_Standalone
     // Independent host metadata snapshot (no loop fields; loop truth lives in
     // playHeadState_). BPM/recording/time-signature presentation only.
     // Write-once per processBlock by updateHostTransportSnapshot(); never touched
@@ -631,8 +632,8 @@ public:
     }
 #endif
 
-#if JucePlugin_Build_VST3
-    /** Returns the regular VST3 capture session, or nullptr outside regular VST3 mode. */
+#if !JucePlugin_Build_Standalone
+    /** Returns the unbound host-plugin Capture session, or nullptr in Standalone/ARA mode. */
     Capture::CaptureSession* getCaptureSession() noexcept;
     const Capture::CaptureSession* getCaptureSession() const noexcept;
 #endif
@@ -814,7 +815,7 @@ public:
     // Rendering & Buffering
 
     // Standalone transport control API — thin accessors over processor-owned
-    // PlayHeadState. VST3/ARA uses getPlayHeadState() const reference for UI.
+    // PlayHeadState. Host plugins/ARA use getPlayHeadState() const reference for UI.
     // Writes only via Standalone setter methods (play/pause/stop/setPosition/setLoopEnabled).
 #if JucePlugin_Build_Standalone
     void play();
@@ -831,7 +832,7 @@ public:
                             SpectrumArray& peaks) const noexcept;
     bool isLoopEnabled() const noexcept { return getPlayHeadState().isLooping.load(std::memory_order_relaxed); }
     double getPosition() const { return getPlayHeadState().getPresentedPositionSeconds(); }
-#if JucePlugin_Build_VST3
+#if !JucePlugin_Build_Standalone
     HostTransportSnapshot getHostTransportSnapshot() const;
 #endif
 
@@ -856,15 +857,15 @@ public:
 #endif
 
     // Each SharedCode target is single-format: the host-snapshot read path only
-    // exists in the VST3 variant; Standalone reads its own canonical state.
-#if JucePlugin_Build_VST3
-    double getBpm() const { return getHostTransportSnapshot().bpm; }
-    int getTimeSigNumerator() const { return getHostTransportSnapshot().timeSignatureNumerator; }
-    int getTimeSigDenominator() const { return getHostTransportSnapshot().timeSignatureDenominator; }
-#else
+    // exists in host-plugin variants; Standalone reads its own canonical state.
+#if JucePlugin_Build_Standalone
     double getBpm() const { return bpm_; }
     int getTimeSigNumerator() const { return timeSigNumerator_; }
     int getTimeSigDenominator() const { return timeSigDenominator_; }
+#else
+    double getBpm() const { return getHostTransportSnapshot().bpm; }
+    int getTimeSigNumerator() const { return getHostTransportSnapshot().timeSignatureNumerator; }
+    int getTimeSigDenominator() const { return getHostTransportSnapshot().timeSignatureDenominator; }
 #endif
 
     /** Discrete UI zoom percentage; invalid values are rejected (state unchanged). */
