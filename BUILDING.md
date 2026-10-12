@@ -252,7 +252,7 @@ cmake --build --preset macos-universal2-ara-release
 ./scripts/package-macos.sh --format both
 ```
 
-PKG 双击安装到 `/Applications`，并将 VST3 安装到系统级 `/Library/Audio/Plug-Ins/VST3/`；DMG 内含 Standalone、VST3 和中英文安装命令，命令脚本将 VST3 放入当前用户的插件目录。PKG 欢迎页展示 `Installer/NOTICE.md` 中的防诈与许可声明。
+PKG 双击安装到 `/Applications`，并将 VST3、AU 分别安装到系统级 `/Library/Audio/Plug-Ins/VST3/` 和 `/Library/Audio/Plug-Ins/Components/`；DMG 内含 Standalone、VST3、AU 和中英文安装命令，命令脚本将插件放入当前用户的 VST3 与 Components 目录。PKG 欢迎页展示 `Installer/NOTICE.md` 中的防诈与许可声明。
 
 ## 构建产物
 
@@ -260,6 +260,7 @@ PKG 双击安装到 `/Applications`，并将 VST3 安装到系统级 `/Library/A
 |------|---------|-------|
 | Standalone | `build-ara-overlay-vs18-clean/OpenTuneStandalone_artefacts/Release/Standalone/OpenTune.exe` | `build-macos-universal2-ninja/OpenTuneStandalone_artefacts/Release/Standalone/OpenTune.app` |
 | VST3 ARA2 | `build-ara-overlay-vs18-clean/OpenTune_artefacts/Release/VST3/OpenTune.vst3/` | `build-macos-universal2-ninja/OpenTune_artefacts/Release/VST3/OpenTune.vst3/` |
+| AUv2 | — | `build-macos-universal2-ninja/OpenTuneAU_artefacts/Release/AU/OpenTune.component/` |
 
 构建完成后，运行时 DLL、模型文件、D3D12 目录会自动复制到产物目录旁，无需手动操作。
 

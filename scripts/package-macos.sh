@@ -89,6 +89,7 @@ PKG_MIN_OS="12.0"
 
 STANDALONE_ARTIFACTS="${BUILD_DIR}/OpenTuneStandalone_artefacts/Release"
 VST3_ARTIFACTS="${BUILD_DIR}/OpenTune_artefacts/Release"
+AU_ARTIFACTS="${BUILD_DIR}/OpenTuneAU_artefacts/Release"
 DMG_NAME="${APP_NAME}-${VERSION}-macOS-${DMG_ARCH_LABEL}"
 PKG_NAME="${APP_NAME}-${VERSION}-macOS-${DMG_ARCH_LABEL}"
 
@@ -131,6 +132,7 @@ fi
 # ── 验证产物 ──────────────────────────────────────────────────────────────────
 APP_BUNDLE="${STANDALONE_ARTIFACTS}/Standalone/${APP_NAME}.app"
 VST3_BUNDLE="${VST3_ARTIFACTS}/VST3/${APP_NAME}.vst3"
+AU_BUNDLE="${AU_ARTIFACTS}/AU/${APP_NAME}.component"
 
 if [ ! -d "${APP_BUNDLE}" ]; then
     echo "❌ Standalone 产物不存在: ${APP_BUNDLE}"
@@ -140,10 +142,15 @@ if [ ! -d "${VST3_BUNDLE}" ]; then
     echo "❌ VST3 产物不存在: ${VST3_BUNDLE}"
     exit 1
 fi
+if [ ! -d "${AU_BUNDLE}" ]; then
+    echo "❌ AU 产物不存在: ${AU_BUNDLE}"
+    exit 1
+fi
 
 echo "▶ 产物验证"
 echo "  Standalone.app: $(du -sh "${APP_BUNDLE}" | cut -f1)"
 echo "  VST3.vst3:      $(du -sh "${VST3_BUNDLE}" | cut -f1)"
+echo "  AU.component:   $(du -sh "${AU_BUNDLE}" | cut -f1)"
 
 validate_macho_architectures() {
     local binary="$1"
@@ -246,6 +253,8 @@ validate_bundle_linkage() {
 
 validate_bundle_linkage "${APP_BUNDLE}" "@executable_path/../Frameworks" "Standalone"
 validate_bundle_linkage "${VST3_BUNDLE}" "@loader_path/../Frameworks" "VST3"
+validate_bundle_macho_architectures "${AU_BUNDLE}" "AU artifact"
+validate_bundle_linkage "${AU_BUNDLE}" "@loader_path/../Frameworks" "AU artifact"
 
 # ── PKG：从 Installer/NOTICE.md 提取首屏文案 ──────────────────────────────────
 NOTICE_SOURCE="${ROOT_DIR}/Installer/NOTICE.md"
@@ -336,12 +345,17 @@ build_pkg() {
     mkdir -p "${packages_dir}" "${resources_dir}" "${scripts_dir}"
     mkdir -p "${payload_dir}/Applications/${APP_NAME}"
     mkdir -p "${payload_dir}/Library/Audio/Plug-Ins/VST3"
+    mkdir -p "${payload_dir}/Library/Audio/Plug-Ins/Components"
 
     echo "  复制 Standalone.app（含模型）"
     cp -R "${STAGING}/${APP_NAME}.app" "${payload_dir}/Applications/${APP_NAME}.app"
 
     echo "  复制 VST3（无模型副本）"
     cp -R "${STAGING}/${APP_NAME}.vst3" "${payload_dir}/Library/Audio/Plug-Ins/VST3/${APP_NAME}.vst3"
+
+    echo "  复制 AU component（保留 bundle 自带模型）"
+    cp -R "${STAGING}/${APP_NAME}.component" "${payload_dir}/Library/Audio/Plug-Ins/Components/${APP_NAME}.component"
+    codesign --verify --deep --strict --verbose=2 "${payload_dir}/Library/Audio/Plug-Ins/Components/${APP_NAME}.component"
 
     # 模型只保留 app bundle 内一份：VST3 通过 ModelPathResolver 的
     # /Applications/OpenTune.app/Contents/Resources/models 回退路径直接读取。
@@ -357,8 +371,8 @@ build_pkg() {
     done
     cp "${NOTICE_SOURCE}" "${payload_dir}/Applications/${APP_NAME}/NOTICE.md" 2>/dev/null || true
 
-    # 安装前清理：移除旧 DMG 安装脚本写入当前用户目录的 VST3 副本，
-    # 避免与本次系统级 VST3 在 DAW 中出现重复条目。
+    # 安装前清理：移除旧 DMG 安装脚本写入当前用户目录的 VST3/AU 副本，
+    # 避免与本次系统级插件在 DAW 中出现重复条目。
     cat > "${scripts_dir}/preinstall" << 'PREINSTALL_EOF'
 #!/bin/bash
 set -u
@@ -367,6 +381,10 @@ if [ -n "${console_user}" ] && [ "${console_user}" != "root" ] && [ "${console_u
     user_vst3="/Users/${console_user}/Library/Audio/Plug-Ins/VST3/OpenTune.vst3"
     if [ -d "${user_vst3}" ]; then
         rm -rf "${user_vst3}"
+    fi
+    user_au="/Users/${console_user}/Library/Audio/Plug-Ins/Components/OpenTune.component"
+    if [ -d "${user_au}" ]; then
+        rm -rf "${user_au}"
     fi
 fi
 exit 0
@@ -443,6 +461,18 @@ DISTRIBUTION_EOF
         <key>BundleOverwriteAction</key>
         <string>upgrade</string>
     </dict>
+    <dict>
+        <key>RootRelativeBundlePath</key>
+        <string>Library/Audio/Plug-Ins/Components/${APP_NAME}.component</string>
+        <key>BundleIsRelocatable</key>
+        <false/>
+        <key>BundleIsVersionChecked</key>
+        <false/>
+        <key>BundleHasStrictIdentifier</key>
+        <true/>
+        <key>BundleOverwriteAction</key>
+        <string>upgrade</string>
+    </dict>
 </array>
 </plist>
 COMPONENT_PLIST_EOF
@@ -501,6 +531,9 @@ cp -R "${APP_BUNDLE}" "${STAGING}/${APP_NAME}.app"
 # 无需自带模型副本。
 cp -R "${VST3_BUNDLE}" "${STAGING}/${APP_NAME}.vst3"
 
+# ── 复制 AU component（保留 bundle 自带模型）───────────────────────────────────
+cp -R "${AU_BUNDLE}" "${STAGING}/${APP_NAME}.component"
+
 # 删除 VST3 bundle 中与 Standalone 重复的模型（节省 ~570MB）
 VST3_RESOURCES="${STAGING}/${APP_NAME}.vst3/Contents/Resources"
 if [ -d "${VST3_RESOURCES}/models" ]; then
@@ -542,6 +575,7 @@ prune_stale_ort_dylibs() {
 
 prune_stale_ort_dylibs "${STAGING}/${APP_NAME}.app" "Standalone"
 prune_stale_ort_dylibs "${STAGING}/${APP_NAME}.vst3" "VST3"
+prune_stale_ort_dylibs "${STAGING}/${APP_NAME}.component" "AU"
 
 # ── 生成安装脚本 ─────────────────────────────────────────────────────────────
 INSTALL_SCRIPT="${STAGING}/安装 OpenTune.command"
@@ -549,7 +583,7 @@ cat > "${INSTALL_SCRIPT}" << 'INSTALLER_EOF'
 #!/bin/bash
 # ==============================================================================
 # OpenTune macOS 安装器
-# 双击运行即可完成安装（Standalone + VST3 插件）
+# 双击运行即可完成安装（Standalone + VST3 + AU 插件）
 # ==============================================================================
 set -euo pipefail
 
@@ -557,8 +591,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="OpenTune"
 APP_SRC="${SCRIPT_DIR}/${APP_NAME}.app"
 VST3_SRC="${SCRIPT_DIR}/${APP_NAME}.vst3"
+AU_SRC="${SCRIPT_DIR}/${APP_NAME}.component"
 APP_DEST="/Applications/${APP_NAME}.app"
 VST3_DEST="${HOME}/Library/Audio/Plug-Ins/VST3/${APP_NAME}.vst3"
+AU_DEST="${HOME}/Library/Audio/Plug-Ins/Components/${APP_NAME}.component"
 
 echo "╔══════════════════════════════════════════╗"
 echo "║     OpenTune macOS Installer             ║"
@@ -589,17 +625,29 @@ fi
 cp -R "${VST3_SRC}" "${VST3_DEST}"
 echo "  ✓ ${VST3_DEST}"
 
+# ── 安装 AU 插件 ────────────────────────────────────────────────────────────
+echo "▶ 安装 AU 插件"
+mkdir -p "$(dirname "${AU_DEST}")"
+if [ -d "${AU_DEST}" ]; then
+    rm -rf "${AU_DEST}"
+fi
+cp -R "${AU_SRC}" "${AU_DEST}"
+echo "  ✓ ${AU_DEST}"
+
 # ── Ad-hoc 签名 ──────────────────────────────────────────────────────────────
 echo "▶ Ad-hoc 签名（绕过 Gatekeeper）"
 codesign --force --deep --sign - "${APP_DEST}" 2>/dev/null
 echo "  ✓ ${APP_NAME}.app 已签名"
 codesign --force --deep --sign - "${VST3_DEST}" 2>/dev/null
 echo "  ✓ ${APP_NAME}.vst3 已签名"
+codesign --verify --deep --strict --verbose=2 "${AU_DEST}"
+echo "  ✓ ${APP_NAME}.component 签名有效"
 
 # ── 解除隔离属性 ──────────────────────────────────────────────────────────────
 echo "▶ 解除 macOS 隔离验证"
 xattr -cr "${APP_DEST}" 2>/dev/null
 xattr -cr "${VST3_DEST}" 2>/dev/null
+xattr -cr "${AU_DEST}" 2>/dev/null
 echo "  ✓ 隔离属性已清除"
 
 # ── 完成 ──────────────────────────────────────────────────────────────────────
@@ -608,6 +656,7 @@ echo "✅ 安装完成！"
 echo ""
 echo "  Standalone:  ${APP_DEST}"
 echo "  VST3 插件:   ${VST3_DEST}"
+echo "  AU 插件:     ${AU_DEST}"
 echo ""
 echo "  如首次打开遇到「无法验证开发者」提示："
 echo "  系统设置 → 隐私与安全性 → 仍要打开"
@@ -624,7 +673,7 @@ cat > "${INSTALL_SCRIPT_EN}" << 'INSTALLER_EN_EOF'
 #!/bin/bash
 # ==============================================================================
 # OpenTune macOS Installer
-# Double-click to install (Standalone + VST3 plugin)
+# Double-click to install (Standalone + VST3 + AU plugins)
 # ==============================================================================
 set -euo pipefail
 
@@ -632,8 +681,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="OpenTune"
 APP_SRC="${SCRIPT_DIR}/${APP_NAME}.app"
 VST3_SRC="${SCRIPT_DIR}/${APP_NAME}.vst3"
+AU_SRC="${SCRIPT_DIR}/${APP_NAME}.component"
 APP_DEST="/Applications/${APP_NAME}.app"
 VST3_DEST="${HOME}/Library/Audio/Plug-Ins/VST3/${APP_NAME}.vst3"
+AU_DEST="${HOME}/Library/Audio/Plug-Ins/Components/${APP_NAME}.component"
 
 echo "╔══════════════════════════════════════════╗"
 echo "║     OpenTune macOS Installer             ║"
@@ -664,17 +715,29 @@ fi
 cp -R "${VST3_SRC}" "${VST3_DEST}"
 echo "  ✓ ${VST3_DEST}"
 
+# ── Install AU plugin ────────────────────────────────────────────────────────
+echo "▶ Installing AU plugin"
+mkdir -p "$(dirname "${AU_DEST}")"
+if [ -d "${AU_DEST}" ]; then
+    rm -rf "${AU_DEST}"
+fi
+cp -R "${AU_SRC}" "${AU_DEST}"
+echo "  ✓ ${AU_DEST}"
+
 # ── Ad-hoc code signing ──────────────────────────────────────────────────────
 echo "▶ Ad-hoc signing (bypass Gatekeeper)"
 codesign --force --deep --sign - "${APP_DEST}" 2>/dev/null
 echo "  ✓ ${APP_NAME}.app signed"
 codesign --force --deep --sign - "${VST3_DEST}" 2>/dev/null
 echo "  ✓ ${APP_NAME}.vst3 signed"
+codesign --verify --deep --strict --verbose=2 "${AU_DEST}"
+echo "  ✓ ${APP_NAME}.component signature valid"
 
 # ── Strip quarantine ─────────────────────────────────────────────────────────
 echo "▶ Removing macOS quarantine attributes"
 xattr -cr "${APP_DEST}" 2>/dev/null
 xattr -cr "${VST3_DEST}" 2>/dev/null
+xattr -cr "${AU_DEST}" 2>/dev/null
 echo "  ✓ Quarantine cleared"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
@@ -683,6 +746,7 @@ echo "✅ Installation complete!"
 echo ""
 echo "  Standalone:  ${APP_DEST}"
 echo "  VST3 Plugin: ${VST3_DEST}"
+echo "  AU Plugin:   ${AU_DEST}"
 echo ""
 echo "  If you see '无法验证开发者' on first launch:"
 echo "  System Settings → Privacy & Security → Open Anyway"
@@ -702,8 +766,17 @@ cp "${ROOT_DIR}/STATEMENTS.txt" "${STAGING}/" 2>/dev/null || true
 # ── 校验最终 staging 中的双架构 Mach-O 与动态库链接 ────────────────────────────
 validate_bundle_macho_architectures "${STAGING}/${APP_NAME}.app" "Staged Standalone"
 validate_bundle_macho_architectures "${STAGING}/${APP_NAME}.vst3" "Staged VST3"
+validate_bundle_macho_architectures "${STAGING}/${APP_NAME}.component" "Staged AU"
 validate_bundle_linkage "${STAGING}/${APP_NAME}.app" "@executable_path/../Frameworks" "Staged Standalone"
 validate_bundle_linkage "${STAGING}/${APP_NAME}.vst3" "@loader_path/../Frameworks" "Staged VST3"
+validate_bundle_linkage "${STAGING}/${APP_NAME}.component" "@loader_path/../Frameworks" "Staged AU"
+
+for model in hifigan.onnx fcpe.onnx; do
+    if [ ! -f "${STAGING}/${APP_NAME}.component/Contents/Resources/models/${model}" ]; then
+        echo "❌ AU bundle 缺少自带模型: ${model}"
+        exit 1
+    fi
+done
 
 # ── 在最终双架构产物合并、复制和校验后进行 ad-hoc 签名 ─────────────────────────
 echo "▶ Ad-hoc 签名所有 bundle"
@@ -711,6 +784,19 @@ codesign --force --deep --sign - "${STAGING}/${APP_NAME}.app" 2>/dev/null
 echo "  ✓ ${APP_NAME}.app"
 codesign --force --deep --sign - "${STAGING}/${APP_NAME}.vst3" 2>/dev/null
 echo "  ✓ ${APP_NAME}.vst3"
+sign_au_component() {
+    local bundle="$1"
+    local binary="${bundle}/Contents/MacOS/${APP_NAME}"
+    local dependency library
+    dependency="$(otool -L "${binary}" | awk '$1 ~ /^@rpath\/libonnxruntime\.[0-9].*\.dylib$/ { print $1; exit }')"
+    library="${bundle}/Contents/Frameworks/${dependency#@rpath/}"
+    codesign --force --sign - "${library}"
+    codesign --force --sign - "${bundle}"
+    codesign --verify --strict --verbose=2 "${library}"
+    codesign --verify --deep --strict --verbose=2 "${bundle}"
+}
+sign_au_component "${STAGING}/${APP_NAME}.component"
+echo "  ✓ ${APP_NAME}.component"
 codesign --verify --deep --strict --verbose=2 "${STAGING}/${APP_NAME}.app"
 codesign --verify --deep --strict --verbose=2 "${STAGING}/${APP_NAME}.vst3"
 
@@ -773,6 +859,6 @@ if [ "$FORMAT" != "pkg" ]; then
     echo "  架构: Universal2 (x86_64 + arm64)"
     echo ""
     echo "  安装方式：双击 DMG → 双击「安装 OpenTune.command」"
-    echo "  或手动复制 .app 到 /Applications、.vst3 到当前用户的 VST3 目录"
+    echo "  或手动复制 .app 到 /Applications、.vst3 到 VST3、.component 到 Components 目录"
     echo "══════════════════════════════════════════════"
 fi

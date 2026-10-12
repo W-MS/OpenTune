@@ -28,6 +28,12 @@ namespace OpenTune::PluginUI {
 
 namespace {
 
+#if JucePlugin_Build_AU
+constexpr const char* kHostPluginFormatName = "Audio Unit";
+#else
+constexpr const char* kHostPluginFormatName = "VST3";
+#endif
+
 // 100% 基线窗口尺寸（§4.4）：min 660×500，max 固定 3000×2000；默认值由 AppPreferences 提供。
 // VST3 外层窗口归宿主，不按 display.userArea 夹紧（§5.2）。
 constexpr int kBaseMinWidth = 660;
@@ -37,10 +43,16 @@ constexpr int kMaxWindowHeight = 2000;
 
 void showHostManagedMessage(juce::Component* parent, const juce::String& title, const juce::String& detail)
 {
-    AppLogger::log("VST3Editor: " + title + " requested, delegated to host DAW");
+    AppLogger::log(juce::String(kHostPluginFormatName) + "Editor: " + title + " requested, delegated to host DAW");
+#if JucePlugin_Build_AU
+    const auto prefix = "In " + juce::String(kHostPluginFormatName)
+        + " mode this action is managed by your DAW.\n\n";
+#else
+    const auto prefix = LOC(kHostManagedActionPrefix);
+#endif
     OpenTune::ConfirmDialogContent::showMessage(parent,
                                                 title,
-                                                LOC(kHostManagedActionPrefix) + detail);
+                                                prefix + detail);
 }
 
 ContentTimelineProjection makeCaptureSegmentProjection(const Capture::SegmentInfo& segment)
@@ -964,17 +976,31 @@ void OpenTuneAudioProcessorEditor::toolSelected(int toolId)
 
 void OpenTuneAudioProcessorEditor::importAudioRequested()
 {
+#if JucePlugin_Build_AU
     OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
-                                                LOC(kImportAudioDialog),
-                                                LOC(kVst3ImportAudio));
+                                                "Import Audio",
+                                                "Please import audio from your DAW in "
+                                                    + juce::String(kHostPluginFormatName) + " mode.");
+#else
+    OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
+                                                 LOC(kImportAudioDialog),
+                                                 LOC(kVst3ImportAudio));
+#endif
 }
 
 void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::ExportType exportType)
 {
     juce::ignoreUnused(exportType);
+#if JucePlugin_Build_AU
     OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
-                                                LOC(kExportAudio),
-                                                LOC(kVst3ExportAudio));
+                                                "Export Audio",
+                                                "Please render/export from your DAW in "
+                                                    + juce::String(kHostPluginFormatName) + " mode.");
+#else
+    OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
+                                                 LOC(kExportAudio),
+                                                 LOC(kVst3ExportAudio));
+#endif
 }
 
 void OpenTuneAudioProcessorEditor::openProjectRequested()
@@ -1078,8 +1104,14 @@ void OpenTuneAudioProcessorEditor::showPreferencesDialog()
 
 void OpenTuneAudioProcessorEditor::helpRequested()
 {
+#if JucePlugin_Build_AU
+    showHostManagedMessage(&contentRoot_, "Help",
+                           "Open the host DAW plugin help/manual entry for "
+                               + juce::String(kHostPluginFormatName) + " usage guidance.");
+#else
     showHostManagedMessage(&contentRoot_, LOC(kHelpDialog),
                            LOC(kVst3Help));
+#endif
 }
 
 void OpenTuneAudioProcessorEditor::showWaveformToggled(bool shouldShow)
@@ -1317,8 +1349,14 @@ void OpenTuneAudioProcessorEditor::recordRequested()
 
 #if !JucePlugin_Enable_ARA
     OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
+#if JucePlugin_Build_AU
+                                                "Read Audio",
+                                                "This " + juce::String(kHostPluginFormatName)
+                                                    + " instance is not ready for audio capture or ARA reading.");
+#else
                                                 LOC(kTooltipRecord),
                                                 LOC(kVst3ReadAudioNotReady));
+#endif
     return;
 #else
     auto* dc = processorRef_.getDocumentController();

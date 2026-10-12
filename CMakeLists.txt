@@ -79,15 +79,15 @@ add_subdirectory("${OPENTUNE_JUCE_DIR}/extras/Build" "${JUCE_BINARY_DIR}/extras/
 add_subdirectory("${OPENTUNE_JUCE_DIR}/modules" "${JUCE_BINARY_DIR}/modules")
 opentune_use_juce_vst3_client_ara_legacy_bind_overlay("${OPENTUNE_JUCE_DIR}")
 
-# ARA2 VST3 is the only plugin build. Hosts without ARA binding use the same
-# binary and naturally fall back to the Capture workflow at runtime.
+# ARA2 VST3 is the shipping plugin; hosts without ARA binding still use its
+# Capture fallback. Apple builds also expose a temporary ARA2 AU diagnostic.
 if(NOT EXISTS "${ARA_SDK_PATH}")
     message(FATAL_ERROR
         "ARA SDK ${OPENTUNE_ARA_SDK_VERSION} is required at ${ARA_SDK_PATH}. "
         "Clone it with: git clone --recursive --branch releases/${OPENTUNE_ARA_SDK_VERSION} https://github.com/Celemony/ARA_SDK")
 endif()
 juce_set_ara_sdk_path("${ARA_SDK_PATH}")
-message(STATUS "ARA SDK found at: ${ARA_SDK_PATH} (ARA2 VST3 enabled)")
+message(STATUS "ARA SDK found at: ${ARA_SDK_PATH} (ARA2 plugin support enabled)")
 
 # ==============================================================================
 # ONNX Runtime Configuration
@@ -417,9 +417,32 @@ juce_add_plugin(OpenTuneStandalone
     </plist>"
 )
 
-# Both single-format SharedCode targets compile the COMMON source list and share
+if(APPLE)
+    # Temporary diagnostic AU: independent SharedCode and VST3 ARA identity,
+    # without a module pin or installer integration.
+    juce_add_plugin(OpenTuneAU
+        ${OPENTUNE_PLUGIN_COMMON_ARGS}
+        FORMATS AU
+        IS_ARA_EFFECT TRUE
+        ARA_TRANSFORMATION_FLAGS kARAPlaybackTransformationNoChanges
+        PLIST_TO_MERGE
+        "<plist version=\"1.0\">
+        <dict>
+            <key>LSMinimumSystemVersion</key>
+            <string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string>
+            <key>NSHumanReadableCopyright</key>
+            <string>Copyright © 2024-2026 DAYA. All rights reserved.</string>
+        </dict>
+        </plist>"
+    )
+endif()
+
+# Each single-format SharedCode target compiles the COMMON source list and shares
 # the same include dirs / link libs / definitions / build options.
 set(OPENTUNE_SHARED_CODE_TARGETS OpenTune OpenTuneStandalone)
+if(APPLE)
+    list(APPEND OPENTUNE_SHARED_CODE_TARGETS OpenTuneAU)
+endif()
 
 if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
     set_target_properties(OpenTune_vst3_helper PROPERTIES
@@ -786,8 +809,8 @@ set(OPENTUNE_STANDALONE_SOURCES
         Source/Standalone/UI/RippleOverlayComponent.h
 )
 
-# VST3-only SharedCode sources (never referenced by the Standalone target).
-set(OPENTUNE_VST3_SOURCES
+# Non-Standalone state/capture sources (never referenced by the Standalone target).
+set(OPENTUNE_NON_STANDALONE_SOURCES
         Source/Plugin/Vst3ProcessorStateCodec.cpp
         Source/Plugin/Vst3ProcessorStateCodec.h
         Source/Content/CaptureSegmentContent.h
@@ -798,7 +821,10 @@ foreach(_opentune_target IN LISTS OPENTUNE_SHARED_CODE_TARGETS)
     target_sources(${_opentune_target} PRIVATE ${OPENTUNE_COMMON_SOURCES})
 endforeach()
 target_sources(OpenTuneStandalone PRIVATE ${OPENTUNE_STANDALONE_SOURCES})
-target_sources(OpenTune PRIVATE ${OPENTUNE_VST3_SOURCES})
+target_sources(OpenTune PRIVATE ${OPENTUNE_NON_STANDALONE_SOURCES})
+if(APPLE)
+    target_sources(OpenTuneAU PRIVATE ${OPENTUNE_NON_STANDALONE_SOURCES})
+endif()
 
 # ==============================================================================
 # Conditional Source Files per Format
@@ -828,13 +854,21 @@ set(OPENTUNE_VST3_APP_SOURCES
 
 target_sources(OpenTune_VST3 PRIVATE ${OPENTUNE_VST3_APP_SOURCES})
 
+if(APPLE)
+    target_sources(OpenTuneAU_AU PRIVATE
+        Source/Editor/EditorFactoryPlugin.cpp
+        Source/Plugin/PluginEditor.cpp
+        Source/Plugin/PluginEditor.h
+    )
+endif()
+
 if(MSVC)
     target_compile_options(OpenTuneStandalone_Standalone PRIVATE /utf-8 /bigobj)
     target_compile_options(OpenTune_VST3 PRIVATE /utf-8 /bigobj)
 endif()
 
-# ARA2 document integration is only compiled into the VST3 SharedCode target.
-target_sources(OpenTune PRIVATE
+# ARA2 document integration is compiled into each ARA-enabled SharedCode target.
+set(OPENTUNE_ARA_SOURCES
     Source/ARA/AudioSource.cpp
     Source/ARA/AudioSource.h
     Source/ARA/AudioModification.cpp
@@ -848,10 +882,14 @@ target_sources(OpenTune PRIVATE
     Source/ARA/OpenTunePlaybackRenderer.cpp
     Source/ARA/OpenTunePlaybackRenderer.h
 )
+target_sources(OpenTune PRIVATE ${OPENTUNE_ARA_SOURCES})
+if(APPLE)
+    target_sources(OpenTuneAU PRIVATE ${OPENTUNE_ARA_SOURCES})
+endif()
 
-# Runtime fallback for VST3 hosts that do not bind the ARA2 extension.
-# CaptureSession remains part of the same ARA2-capable VST3 binary.
-target_sources(OpenTune PRIVATE
+# Runtime fallback for AU/VST3 hosts that do not bind the ARA2 extension.
+# CaptureSession remains part of the same ARA2-capable plugin binary.
+set(OPENTUNE_CAPTURE_SOURCES
     Source/Plugin/Capture/CaptureRingBuffer.cpp
     Source/Plugin/Capture/CaptureRingBuffer.h
     Source/Plugin/Capture/CaptureSegment.cpp
@@ -863,6 +901,10 @@ target_sources(OpenTune PRIVATE
     Source/Plugin/Capture/CapturePersistence.cpp
     Source/Plugin/Capture/CapturePersistence.h
 )
+target_sources(OpenTune PRIVATE ${OPENTUNE_CAPTURE_SOURCES})
+if(APPLE)
+    target_sources(OpenTuneAU PRIVATE ${OPENTUNE_CAPTURE_SOURCES})
+endif()
 
 # SoundTouch Library v2.3.3 (WSOLA time-stretch for vocal Stage 2).
 # Replaced Rubber Band R3 (phase vocoder) — see archive change swap-time-stretch-to-soundtouch.
@@ -1032,6 +1074,12 @@ target_compile_definitions(OpenTune PRIVATE
     JUCE_USE_FLAC=0
     JUCE_USE_OGGVORBIS=0
 )
+if(APPLE)
+    target_compile_definitions(OpenTuneAU PRIVATE
+        JUCE_USE_FLAC=0
+        JUCE_USE_OGGVORBIS=0
+    )
+endif()
 
 if(WIN32)
     target_compile_definitions(OpenTuneStandalone PUBLIC JUCE_ASIO=1 JUCE_WASAPI=1)
@@ -1084,6 +1132,10 @@ elseif(APPLE)
         BUILD_WITH_INSTALL_RPATH TRUE
         INSTALL_RPATH "@loader_path/../Frameworks"
     )
+    set_target_properties(OpenTuneAU_AU PROPERTIES
+        BUILD_WITH_INSTALL_RPATH TRUE
+        INSTALL_RPATH "@loader_path/../Frameworks"
+    )
 
     set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/userguide/UserGuide.html" PROPERTIES
         HEADER_FILE_ONLY TRUE
@@ -1123,8 +1175,13 @@ if(EXISTS "${GAME_MODEL_DIR}")
             "${GAME_MODEL_DIR}"
             "$<TARGET_BUNDLE_DIR:OpenTune_VST3>/Contents/Resources/models/GAME"
     )
+    set(AU_APPLE_GAME_MODEL_COPY_COMMANDS
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${GAME_MODEL_DIR}"
+            "$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Resources/models/GAME"
+    )
 else()
-    message(STATUS "Optional GAME note generator model bundle not found at ${GAME_MODEL_DIR}; Standalone/VST3 packages will omit models/GAME and use Legacy fallback.")
+    message(STATUS "Optional GAME note generator model bundle not found at ${GAME_MODEL_DIR}; Standalone/VST3/AU packages will omit models/GAME and use Legacy fallback.")
 endif()
 
 # --- ONNX Runtime library copying ---
@@ -1242,6 +1299,37 @@ else()
             "${CMAKE_CURRENT_SOURCE_DIR}/userguide/UserGuide_es.html"
             "$<TARGET_FILE_DIR:OpenTuneStandalone_Standalone>/docs/UserGuide_es.html"
         COMMENT "Copying UserGuide translations to Standalone..."
+    )
+endif()
+
+# ==============================================================================
+# AU Bundle Resources
+# ==============================================================================
+if(APPLE AND TARGET OpenTuneAU_AU)
+    add_custom_command(TARGET OpenTuneAU_AU POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Frameworks"
+        COMMAND ${CMAKE_COMMAND}
+            "-DORT_FRAMEWORKS_DIR=$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Frameworks"
+            "-DORT_KEEP_FILENAME=libonnxruntime.${OPENTUNE_ONNXRUNTIME_VERSION}.dylib"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CleanStaleOrtDylibs.cmake"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ONNXRUNTIME_DYLIB}"
+            "$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Frameworks/"
+        COMMENT "Copying ONNX Runtime dylib to AU component Frameworks (removing stale versions)..."
+    )
+
+    add_custom_command(TARGET OpenTuneAU_AU POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Resources/models"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${HIFIGAN_MODEL_COMMUNITY}"
+            "$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Resources/models/hifigan.onnx"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${FCPE_MODEL}"
+            "$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Resources/models/fcpe.onnx"
+        ${AU_APPLE_GAME_MODEL_COPY_COMMANDS}
+        COMMENT "Copying AI models to AU component Resources..."
     )
 endif()
 
