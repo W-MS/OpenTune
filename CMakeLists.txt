@@ -370,7 +370,7 @@ set(OPENTUNE_PLUGIN_COMMON_ARGS
     BUNDLE_ID "com.daya.opentune"
     VERSION "${PROJECT_VERSION}"
     PLUGIN_NAME "OpenTune"
-    PLUGIN_DESCRIPTION "AI-powered Auto-Tune Plugin"
+    DESCRIPTION "AI-powered Auto-Tune Plugin"
     PLUGIN_CATEGORY "Fx|Pitch Shift"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
@@ -1330,6 +1330,18 @@ if(APPLE AND TARGET OpenTuneAU_AU)
             "$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Resources/models/fcpe.onnx"
         ${AU_APPLE_GAME_MODEL_COPY_COMMANDS}
         COMMENT "Copying AI models to AU component Resources..."
+    )
+
+    # ARA SDK 2.3.0's ARAAudioUnit.h AUv2 example lists both "Effect" and
+    # "ARA" in AudioComponents.tags. This is an ARA example requirement, not
+    # a general Apple Audio Unit requirement for tags. JUCE currently emits
+    # only "ARA", so patch the AU artifact after generation and before the
+    # packaging script signs the final bundle.
+    add_custom_command(TARGET OpenTuneAU_AU POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            "-DAU_INFO_PLIST=$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Info.plist"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SetAUV2ARATags.cmake"
+        COMMENT "Patching AUv2 ARA AudioComponents tags..."
     )
 endif()
 
