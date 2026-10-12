@@ -28,14 +28,12 @@ namespace OpenTune::PluginUI {
 
 namespace {
 
-// 100% 基线窗口尺寸（§4.4）：min 660×500，max 固定 3000×2000，preferred 1000×900。
+// 100% 基线窗口尺寸（§4.4）：min 660×500，max 固定 3000×2000；默认值由 AppPreferences 提供。
 // VST3 外层窗口归宿主，不按 display.userArea 夹紧（§5.2）。
 constexpr int kBaseMinWidth = 660;
 constexpr int kBaseMinHeight = 500;
 constexpr int kMaxWindowWidth = 3000;
 constexpr int kMaxWindowHeight = 2000;
-constexpr int kPreferredWidth = 1000;
-constexpr int kPreferredHeight = 900;
 
 void showHostManagedMessage(juce::Component* parent, const juce::String& title, const juce::String& detail)
 {
@@ -117,9 +115,9 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
                  })
     , overviewStrip_(pianoRoll_.getWaveformMipmapCache())
 {
-    // 构造顺序固定：limits → resizable → preferred size（§4.4）。
+    // 构造顺序固定：limits → resizable → global default size（§4.4）。
     // uiZoom 唯一真相在 Processor：构造读取一次，之后由心跳同步（§7.3）；
-    // preferred 尺寸不随 uiZoom 换算，min 按 uiZoom 取整、max 固定（§5.2）。
+    // 默认尺寸不随 uiZoom 换算，min 按 uiZoom 取整、max 固定（§5.2）。
     appliedUiZoomPercent_ = processorRef_.getUiZoomPercent();
     const float uiZoomScale = static_cast<float>(appliedUiZoomPercent_) / 100.0f;
     const int minimumWidth = static_cast<int>(std::ceil(kBaseMinWidth * uiZoomScale));
@@ -128,8 +126,10 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
                     minimumHeight,
                     kMaxWindowWidth, kMaxWindowHeight);
     setResizable(true, true);
-    setSize(juce::jmax(kPreferredWidth, minimumWidth),
-            juce::jmax(kPreferredHeight, minimumHeight));
+    const auto defaultEditorSize = appPreferences_.getDefaultPluginEditorSize();
+    setSize(juce::jlimit(minimumWidth, kMaxWindowWidth, defaultEditorSize.width),
+            juce::jlimit(minimumHeight, kMaxWindowHeight, defaultEditorSize.height));
+    lastSavedEditorSize_ = { getWidth(), getHeight() };
 
     UIColors::applyTheme(appPreferences_.getState().shared.theme);
 
@@ -308,6 +308,13 @@ void OpenTuneAudioProcessorEditor::paint(juce::Graphics& g)
 
 void OpenTuneAudioProcessorEditor::resized()
 {
+    const juce::Point<int> editorSize(getWidth(), getHeight());
+    if (editorSizePersistenceEnabled_
+        && (editorSize.x != lastSavedEditorSize_.x || editorSize.y != lastSavedEditorSize_.y)) {
+        appPreferences_.setDefaultPluginEditorSize({ editorSize.x, editorSize.y });
+        lastSavedEditorSize_ = editorSize;
+    }
+
     // 外层 editor 绝不 transform；content root 按外窗尺寸/uiZoom 得到逻辑尺寸并整体缩放（§7.3）。
     const float uiZoomScale = static_cast<float>(appliedUiZoomPercent_) / 100.0f;
     contentRoot_.setBounds(0, 0,
@@ -360,6 +367,14 @@ void OpenTuneAudioProcessorEditor::resized()
         onboardingOverlay_->updateLayout();
         if (onboardingOverlay_->isActive())
             onboardingOverlay_->toFront(false);
+    }
+}
+
+void OpenTuneAudioProcessorEditor::visibilityChanged()
+{
+    if (!editorSizePersistenceEnabled_ && isShowing()) {
+        lastSavedEditorSize_ = { getWidth(), getHeight() };
+        editorSizePersistenceEnabled_ = true;
     }
 }
 

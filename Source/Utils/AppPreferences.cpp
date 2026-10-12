@@ -40,6 +40,7 @@ constexpr const char* kSharedWholeNoteMoveSnapModeKey = "shared.pianoRoll.wholeN
 constexpr const char* kSharedPitchLaneVisualModeKey = "shared.pianoRoll.pitchLaneVisualMode";
 constexpr const char* kSharedEqSuppressRemoveConfirmationKey = "shared.eq.suppressRemoveConfirmation";
 constexpr const char* kSharedOnboardingShownKey = "shared.onboardingShown";
+constexpr const char* kPluginEditorSizeKey = "defaultSize";
 
 juce::File resolveSettingsDirectory(const AppPreferences::StorageOptions& storageOptions)
 {
@@ -289,6 +290,20 @@ KeyShortcutConfig::KeyShortcutSettings decodeShortcutSettings(const juce::Proper
     }
 
     return settings;
+}
+
+PluginEditorSize readDefaultPluginEditorSize(const juce::PropertiesFile& properties)
+{
+    const auto defaultSize = PluginEditorSize{};
+    const auto stored = properties.getValue(kPluginEditorSizeKey,
+                                            juce::String(defaultSize.width) + ","
+                                                + juce::String(defaultSize.height));
+    const int separator = stored.indexOfChar(',');
+    if (separator < 0)
+        return defaultSize;
+
+    return { stored.substring(0, separator).getIntValue(),
+             stored.substring(separator + 1).getIntValue() };
 }
 
 AppPreferencesState loadStateFromProperties(const juce::PropertiesFile& properties)
@@ -672,6 +687,11 @@ void AppPreferences::initialiseStorage()
 
     const auto options = makePropertiesOptions(storageOptions_, processLock_.get());
     properties_.setStorageParameters(options);
+
+    auto editorSizeStorageOptions = storageOptions_;
+    editorSizeStorageOptions.fileName = resolveSettingsFile(storageOptions_).getFileName() + ".editor-size";
+    pluginEditorSizeProperties_ = std::make_unique<juce::PropertiesFile>(
+        makePropertiesOptions(editorSizeStorageOptions, processLock_.get()));
 }
 
 void AppPreferences::saveLocked()
@@ -784,6 +804,28 @@ WholeNoteMoveSnapMode AppPreferences::getWholeNoteMoveSnapMode() const
 {
     const std::lock_guard<std::mutex> lock(mutex_);
     return state_.shared.wholeNoteMoveSnapMode;
+}
+
+PluginEditorSize AppPreferences::getDefaultPluginEditorSize()
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    jassert(pluginEditorSizeProperties_ != nullptr);
+    if (pluginEditorSizeProperties_ == nullptr)
+        return {};
+
+    pluginEditorSizeProperties_->reload();
+    return readDefaultPluginEditorSize(*pluginEditorSizeProperties_);
+}
+
+void AppPreferences::setDefaultPluginEditorSize(PluginEditorSize size)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    jassert(pluginEditorSizeProperties_ != nullptr);
+    if (pluginEditorSizeProperties_ == nullptr)
+        return;
+
+    pluginEditorSizeProperties_->setValue(kPluginEditorSizeKey,
+                           juce::String(size.width) + "," + juce::String(size.height));
 }
 
 } // namespace OpenTune

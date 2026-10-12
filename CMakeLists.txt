@@ -1496,6 +1496,21 @@ if(OPENTUNE_BUILD_TESTS)
     endif()
     add_test(NAME StandaloneProcessorStateCodecTests COMMAND OpenTuneStandaloneStateCodecTests)
 
+    # Shared VST3 editor size preference survives stale per-instance preference saves.
+    add_executable(OpenTuneAppPreferencesEditorSizeTests
+        Tests/AppPreferencesEditorSizeTests.cpp
+    )
+    target_include_directories(OpenTuneAppPreferencesEditorSizeTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneAppPreferencesEditorSizeTests PRIVATE
+        OpenTune
+        OpenTuneResources
+        juce::juce_core)
+    if(MSVC)
+        target_compile_options(OpenTuneAppPreferencesEditorSizeTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME AppPreferencesEditorSizeTests COMMAND OpenTuneAppPreferencesEditorSizeTests)
+
     # Regression: a structurally valid CAPz archive may contain zero segments.
     add_executable(OpenTuneCapturePersistenceTests
         Tests/CapturePersistenceTests.cpp
