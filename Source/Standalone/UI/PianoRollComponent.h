@@ -423,8 +423,8 @@ private:
 public:
     bool keyPressed(const juce::KeyPress& key) override;
 
-    /// Re-read notes from the content store and update the cache.
-    void refreshEditedContentNotes();
+    /// Re-read notes from the content store, update the cache, and return the snapshot used.
+    std::shared_ptr<const EditableContentSnapshot> refreshEditedContentNotes();
 
     /// Timeline viewport geometry in local coordinates.
     /// Shared with the Standalone PluginEditor for the overview strip layout.

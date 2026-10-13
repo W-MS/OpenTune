@@ -175,10 +175,17 @@ bool checkRevisionAndValidation()
 {
     const auto snapshot = makeSnapshot();
     const ContentKey key{ DomainKind::StandaloneClip, 77, 0 };
+    const auto settings = makeSettings();
+    uint64_t refreshedNotesRevision = 0;
+    const auto stale = planSelectedNoteEqEdit(key, snapshot, { 0 }, refreshedNotesRevision, settings);
+    refreshedNotesRevision = snapshot.notesRevision;
+    const auto refreshed = planSelectedNoteEqEdit(key, snapshot, { 0 }, refreshedNotesRevision, settings);
     auto invalid = makeSettings();
     invalid.filters[0].frequencyHz = -1.0f;
-    return planSelectedNoteEqEdit(key, snapshot, { 0 }, 13, std::nullopt).status
-               == SelectedNoteEqEditStatus::StaleRevision
+    return stale.status == SelectedNoteEqEditStatus::StaleRevision
+        && refreshed.status == SelectedNoteEqEditStatus::Ready
+        && refreshed.afterPatch.afterNotesInRange.size() == 1
+        && refreshed.afterPatch.afterNotesInRange[0].eq == settings
         && planSelectedNoteEqEdit(key, snapshot, { 0 }, 12, invalid).status
                == SelectedNoteEqEditStatus::InvalidSettings;
 }

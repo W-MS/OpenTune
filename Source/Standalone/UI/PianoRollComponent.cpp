@@ -710,16 +710,18 @@ void PianoRollComponent::setContentCommands(std::shared_ptr<ContentEditCommands>
 }
 
 
-void PianoRollComponent::refreshEditedContentNotes()
+std::shared_ptr<const EditableContentSnapshot> PianoRollComponent::refreshEditedContentNotes()
 {
     cachedNotes_.clear();
 
+    std::shared_ptr<const EditableContentSnapshot> snapshot;
     if (editedContentKey_.isValid()) {
-        if (auto snap = readEditedSnapshot()) {
-            cachedNotes_ = snap->notes;
-        }
+        snapshot = readEditedSnapshot();
+        if (snapshot)
+            cachedNotes_ = snapshot->notes;
     }
     interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+    return snapshot;
 }
 
 const std::vector<Note>& PianoRollComponent::getCommittedNotes() const
@@ -3327,7 +3329,14 @@ void PianoRollComponent::applyEditedContent(ContentKey contentKey,
     // 读侧也必须同步读：curveChanged 时需 refresh notes，否则 undo/redo 后不一致
     // 曲线回退后 notes 视觉残留的不对称（cachedNotes_ 滞后）。
     if (contentChanged || curveChanged) {
-        refreshEditedContentNotes();
+        const auto snapshot = refreshEditedContentNotes();
+        if (contentChanged) {
+            if (snapshot) {
+                lastKnownNotesRevision_ = snapshot->notesRevision;
+                lastKnownPitchRevision_ = snapshot->pitchRevision;
+                lastKnownTimeGridRevision_ = snapshot->timeGridRevision;
+            }
+        }
     }
 
     if (contentChanged || curveChanged) {
