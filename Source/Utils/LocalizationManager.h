@@ -250,8 +250,8 @@ constexpr const char* kEditing = "Editing";
 constexpr const char* kMouse = "Mouse";
 constexpr const char* kShortcuts = "Shortcuts";
 constexpr const char* kShortcutGeneral = "General";
-constexpr const char* kShortcutOpenTuneMode = "OpenTune Mode";
-constexpr const char* kShortcutOpenDyneMode = "OpenDyne Mode";
+constexpr const char* kShortcutOpenTuneMode = "OpenTune Mode Shortcuts";
+constexpr const char* kShortcutOpenDyneMode = "OpenDyne Mode Shortcuts";
 constexpr const char* kLanguage = "Language";
 constexpr const char* kLanguageLabel = "Interface Language";
 constexpr const char* kAudioEditingScheme = "Audio Editing Scheme";
@@ -308,6 +308,14 @@ constexpr const char* kDuplicateClip = "Duplicate Clip";
 constexpr const char* kNudgeLeft = "Nudge Left";
 constexpr const char* kNudgeRight = "Nudge Right";
 constexpr const char* kToggleSnap = "Toggle Snap";
+constexpr const char* kScrollHorizontalLeft = "Horizontal Scroll Left";
+constexpr const char* kScrollHorizontalRight = "Horizontal Scroll Right";
+constexpr const char* kZoomHorizontalIn = "Horizontal Zoom In";
+constexpr const char* kZoomHorizontalOut = "Horizontal Zoom Out";
+constexpr const char* kZoomVerticalIn = "Vertical Zoom In";
+constexpr const char* kZoomVerticalOut = "Vertical Zoom Out";
+constexpr const char* kFitSelectedNotes = "Fit Selected Notes";
+constexpr const char* kFitAllNotes = "Fit All Notes";
 
 constexpr const char* kToolDrawNote = "Tool: Draw Note";
 constexpr const char* kToolSelect = "Tool: Select";
@@ -586,8 +594,8 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kMouse, "Mouse", "鼠标", "マウス", "Мышь", "Ratón" },
         { Keys::kShortcuts, "Shortcuts", "快捷键", "ショートカット", "Сочетания клавиш", "Atajos de teclado" },
         { Keys::kShortcutGeneral, "General", "通用", "一般", "Общие", "General" },
-        { Keys::kShortcutOpenTuneMode, "OpenTune Mode", "OpenTune 模式", "OpenTune モード", "Режим OpenTune", "Modo OpenTune" },
-        { Keys::kShortcutOpenDyneMode, "OpenDyne Mode", "OpenDyne 模式", "OpenDyne モード", "Режим OpenDyne", "Modo OpenDyne" },
+        { Keys::kShortcutOpenTuneMode, "OpenTune Mode Shortcuts", "OpenTune 模式快捷键", "OpenTune モードのショートカット", "Сочетания OpenTune", "Atajos del modo OpenTune" },
+        { Keys::kShortcutOpenDyneMode, "OpenDyne Mode Shortcuts", "OpenDyne 模式快捷键", "OpenDyne モードのショートカット", "Сочетания OpenDyne", "Atajos del modo OpenDyne" },
         { Keys::kLanguage, "Language", "语言", "言語", "Язык", "Idioma" },
         { Keys::kLanguageLabel, "Interface Language", "界面语言", "インターフェース言語", "Язык", "Idioma" },
         { Keys::kAudioEditingScheme, "Audio Editing Scheme", "音频编辑方案", "音声編集方式", "Схема аудиоредактирования", "Esquema de edicion de audio" },
@@ -642,6 +650,14 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kNudgeLeft, "Nudge Left", "左移", "左に微調整", "Сдвинуть влево", "Desplazar izq." },
         { Keys::kNudgeRight, "Nudge Right", "右移", "右に微調整", "Сдвинуть вправо", "Desplazar der." },
         { Keys::kToggleSnap, "Toggle Snap", "切换吸附", "スナップ切替", "Перекл. привязку", "Activar ajuste" },
+        { Keys::kScrollHorizontalLeft, "Horizontal Scroll Left", "水平左滚", "水平左スクロール", "Горизонтальная прокрутка влево", "Desplazamiento horizontal izquierda" },
+        { Keys::kScrollHorizontalRight, "Horizontal Scroll Right", "水平右滚", "水平右スクロール", "Горизонтальная прокрутка вправо", "Desplazamiento horizontal derecha" },
+        { Keys::kZoomHorizontalIn, "Horizontal Zoom In", "水平放大", "水平ズームイン", "Увеличить по горизонтали", "Ampliar horizontalmente" },
+        { Keys::kZoomHorizontalOut, "Horizontal Zoom Out", "水平缩小", "水平ズームアウト", "Уменьшить по горизонтали", "Reducir horizontalmente" },
+        { Keys::kZoomVerticalIn, "Vertical Zoom In", "垂直放大", "垂直ズームイン", "Увеличить по вертикали", "Ampliar verticalmente" },
+        { Keys::kZoomVerticalOut, "Vertical Zoom Out", "垂直缩小", "垂直ズームアウト", "Уменьшить по вертикали", "Reducir verticalmente" },
+        { Keys::kFitSelectedNotes, "Fit Selected Notes", "适合所选音符", "選択したノートに合わせる", "По выбранным нотам", "Ajustar a notas seleccionadas" },
+        { Keys::kFitAllNotes, "Fit All Notes", "适合全部音符", "すべてのノートに合わせる", "По всем нотам", "Ajustar a todas las notas" },
         { Keys::kToolDrawNote, "Tool: Draw Note", "工具：绘制音符", "ツール：ノート描画", "Инструмент: рисование нот", "Herram: dibujar nota" },
         { Keys::kToolSelect, "Tool: Select", "工具：选择", "ツール：選択", "Инструмент: выбор", "Herram: seleccionar" },
         { Keys::kToolLineAnchor, "Tool: Line Anchor", "工具：锚点", "ツール：ラインアンカー", "Инструмент: якорь", "Herram: ancla línea" },

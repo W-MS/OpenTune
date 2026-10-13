@@ -1068,6 +1068,10 @@ bool OpenTuneAudioProcessorEditor::keyPressed(const juce::KeyPress& key)
     if (onboardingOverlay_ != nullptr && onboardingOverlay_->isActive())
         return true;
 
+    if (isWorkspaceView_ ? arrangementView_.handleViewportShortcut(key)
+                         : pianoRoll_.handleViewportShortcut(key))
+        return true;
+
     if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Undo, key))
     {
         if (!shouldAcceptUndoRedoShortcut()) {

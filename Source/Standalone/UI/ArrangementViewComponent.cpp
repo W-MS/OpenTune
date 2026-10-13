@@ -2822,62 +2822,23 @@ void ArrangementViewComponent::mouseWheelMove(const juce::MouseEvent& e, const j
     // Shift + Wheel = Vertical Zoom (Track Height) - 与TrackPanel同步
     if (e.mods.isShiftDown())
     {
-        if (wheel.deltaY != 0.0f)
-        {
-            int currentHeight = processor_.getTrackHeight();
-            int change = static_cast<int>(wheel.deltaY * settings.verticalZoomFactor * 150);
-            change = (change == 0) ? ((wheel.deltaY > 0) ? 10 : -10) : change;
-            
-            int newHeight = juce::jlimit(70, 300, currentHeight + change);
-            
-            if (newHeight != currentHeight)
-            {
-                processor_.setTrackHeight(newHeight);
-                listeners_.call([newHeight](Listener& l) { l.trackHeightChanged(newHeight); });
-                invalidateStableScene();
-            }
-        }
+        handleVerticalZoomWheel(wheel.deltaY);
         return;
     }
 
     // Ctrl + Wheel = Horizontal Zoom at Pointer
     if (e.mods.isCtrlDown())
     {
-        if (wheel.deltaY != 0.0f)
-        {
-            double zoomFactor = 1.0 + wheel.deltaY * settings.horizontalZoomFactor * 1.7;
-            zoomFactor = juce::jlimit(0.5, 1.5, zoomFactor);
-            const double oldPps = camera_.pixelsPerSecond;
-            const double newPps = oldPps * zoomFactor;
-
-            if (std::abs(newPps - oldPps) > 0.001)
-            {
-                const double mouseTime = viewportXToAbsoluteTime(e.x);
-                userHasManuallyZoomed_ = true;
-                const auto req = makeViewportRequest(
-                    TimelineViewportRequest::Kind::Zoom,
-                    mouseTime,
-                    static_cast<double>(e.x - kArrangementContentStartX),
-                    newPps);
-                commitViewportRequest(req);
-                }
-        }
+        handleHorizontalZoomWheel(wheel.deltaY,
+                                  viewportXToAbsoluteTime(e.x),
+                                  static_cast<double>(e.x - kArrangementContentStartX));
         return;
     }
 
     // Alt + Wheel = Horizontal Scroll (Time)
     if (e.mods.isAltDown())
     {
-        if (wheel.deltaY != 0.0f)
-        {
-            const double deltaTime = static_cast<double>(-wheel.deltaY * settings.scrollSpeed * 10.0f) / camera_.pixelsPerSecond;
-            const auto req = makeViewportRequest(
-                TimelineViewportRequest::Kind::Manual,
-                camera_.visibleStartSeconds + deltaTime,
-                0.0,
-                camera_.pixelsPerSecond);
-            commitViewportRequest(req);
-        }
+        handleHorizontalScrollWheel(wheel.deltaY);
         return;
     }
 
@@ -2903,8 +2864,126 @@ void ArrangementViewComponent::mouseWheelMove(const juce::MouseEvent& e, const j
     }
 }
 
+void ArrangementViewComponent::handleVerticalZoomWheel(float deltaY, bool keepViewportCentre)
+{
+    if (deltaY == 0.0f)
+        return;
+
+    int currentHeight = processor_.getTrackHeight();
+    const int viewportHeight = getContentViewportBounds().getHeight();
+    const double centreTrack = keepViewportCentre
+        ? (verticalScrollOffset_ + viewportHeight * 0.5) / currentHeight
+        : 0.0;
+    int change = static_cast<int>(deltaY * zoomSensitivity_.verticalZoomFactor * 150);
+    change = (change == 0) ? ((deltaY > 0) ? 10 : -10) : change;
+    const int newHeight = juce::jlimit(70, 300, currentHeight + change);
+
+    if (newHeight != currentHeight)
+    {
+        processor_.setTrackHeight(newHeight);
+        listeners_.call([newHeight](Listener& l) { l.trackHeightChanged(newHeight); });
+        if (keepViewportCentre) {
+            setVerticalScrollOffset(juce::roundToInt(centreTrack * newHeight - viewportHeight * 0.5));
+            listeners_.call([this](Listener& l) { l.verticalScrollChanged(verticalScrollOffset_); });
+        }
+        invalidateStableScene();
+    }
+}
+
+void ArrangementViewComponent::handleHorizontalZoomWheel(float deltaY,
+                                                           double anchorTime,
+                                                           double anchorViewportX)
+{
+    if (deltaY == 0.0f)
+        return;
+
+    const double zoomFactor = 1.0 + deltaY * zoomSensitivity_.horizontalZoomFactor * 1.7;
+    applyHorizontalZoom(zoomFactor, anchorTime, anchorViewportX);
+}
+
+void ArrangementViewComponent::applyHorizontalZoom(double zoomFactor,
+                                                     double anchorTime,
+                                                     double anchorViewportX)
+{
+    zoomFactor = juce::jlimit(0.5, 1.5, zoomFactor);
+    const double oldPps = camera_.pixelsPerSecond;
+    const double newPps = oldPps * zoomFactor;
+
+    if (std::abs(newPps - oldPps) > 0.001)
+    {
+        userHasManuallyZoomed_ = true;
+        commitViewportRequest(makeViewportRequest(
+            TimelineViewportRequest::Kind::Zoom,
+            anchorTime,
+            anchorViewportX,
+            newPps));
+    }
+}
+
+void ArrangementViewComponent::handleHorizontalScrollWheel(float deltaY)
+{
+    if (deltaY == 0.0f)
+        return;
+
+    const double deltaTime = static_cast<double>(-deltaY * zoomSensitivity_.scrollSpeed * 10.0f)
+        / camera_.pixelsPerSecond;
+    commitViewportRequest(makeViewportRequest(
+        TimelineViewportRequest::Kind::Manual,
+        camera_.visibleStartSeconds + deltaTime,
+        0.0,
+        camera_.pixelsPerSecond));
+}
+
+bool ArrangementViewComponent::handleViewportShortcut(const juce::KeyPress& key)
+{
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ScrollHorizontalLeft, key))
+    {
+        handleHorizontalScrollWheel(1.0f);
+        return true;
+    }
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ScrollHorizontalRight, key))
+    {
+        handleHorizontalScrollWheel(-1.0f);
+        return true;
+    }
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, key))
+    {
+        const double anchorX = getVisibleViewportWidth() * 0.5;
+        const double zoomFactor = juce::jlimit(0.5, 1.5,
+                                               1.0 + zoomSensitivity_.horizontalZoomFactor * 1.7);
+        applyHorizontalZoom(zoomFactor,
+                            camera_.visibleStartSeconds + anchorX / camera_.pixelsPerSecond,
+                            anchorX);
+        return true;
+    }
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomHorizontalOut, key))
+    {
+        const double anchorX = getVisibleViewportWidth() * 0.5;
+        const double zoomFactor = juce::jlimit(0.5, 1.5,
+                                               1.0 + zoomSensitivity_.horizontalZoomFactor * 1.7);
+        applyHorizontalZoom(1.0 / zoomFactor,
+                            camera_.visibleStartSeconds + anchorX / camera_.pixelsPerSecond,
+                            anchorX);
+        return true;
+    }
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomVerticalIn, key))
+    {
+        handleVerticalZoomWheel(1.0f, true);
+        return true;
+    }
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomVerticalOut, key))
+    {
+        handleVerticalZoomWheel(-1.0f, true);
+        return true;
+    }
+    return false;
+}
+
 bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
 {
+    if (handleViewportShortcut(key))
+        return true;
+
     if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::SelectAll, key))
     {
         selectAllPlacementsInTrack(selectedTrack_);

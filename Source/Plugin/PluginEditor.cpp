@@ -249,6 +249,7 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
     });
     // EQ popup「以后不再提示」偏好直接注入（无中转层）
     pianoRoll_.setAppPreferences(&appPreferences_);
+    pianoRoll_.setShortcutSettings(appPreferences_.getState().shared.shortcuts);
 
     applyThemeToEditor(appPreferences_.getState().shared.theme);
 
@@ -908,6 +909,9 @@ bool OpenTuneAudioProcessorEditor::keyPressed(const juce::KeyPress& key)
 
 bool OpenTuneAudioProcessorEditor::handleEditorShortcut(const juce::KeyPress& key)
 {
+    if (pianoRoll_.handleViewportShortcut(key))
+        return true;
+
     const auto& shortcutSettings = appPreferences_.getState().shared.shortcuts;
 
     if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::Undo, key)) {

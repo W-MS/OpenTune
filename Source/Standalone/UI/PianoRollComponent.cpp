@@ -4341,9 +4341,11 @@ void PianoRollComponent::mouseUp(const juce::MouseEvent& e) {
 }
 
 void PianoRollComponent::handleVerticalZoomWheel(const juce::MouseEvent& e, float deltaY) {
-    const auto& settings = zoomSensitivity_;
-    float zoomFactor = 1.0f + (deltaY * settings.verticalZoomFactor);
-    const float contentY = static_cast<float>(e.y - rulerHeight_);
+    handleVerticalZoomAt(1.0f + deltaY * zoomSensitivity_.verticalZoomFactor,
+                         static_cast<float>(e.y - rulerHeight_));
+}
+
+void PianoRollComponent::handleVerticalZoomAt(float zoomFactor, float contentY) {
     float mouseMidi = makeViewMapper().yToMidi(contentY);
 
     pixelsPerSemitone_ *= zoomFactor;
@@ -4764,18 +4766,20 @@ void PianoRollComponent::fitToSelectedNotes()
 }
 
 void PianoRollComponent::beginZoomPreview(const juce::MouseEvent& e, float deltaY) {
-    const auto& settings = zoomSensitivity_;
-    const double zoomFactor = 1.0 + static_cast<double>(deltaY) * settings.horizontalZoomFactor;
+    const double zoomFactor = 1.0 + static_cast<double>(deltaY) * zoomSensitivity_.horizontalZoomFactor;
+    beginZoomPreviewAt(e.x - getTimelineContentStartX(), zoomFactor);
+}
+
+void PianoRollComponent::beginZoomPreviewAt(int anchorViewportX, double zoomFactor) {
     const double oldPps = camera_.pixelsPerSecond;
     const double newPps = TimelineViewportPolicy::normalisePixelsPerSecond(
         oldPps * zoomFactor,
         TimelineViewportRequest::ViewKind::PianoRoll);
-    const int mouseX = e.x - getTimelineContentStartX();
-    const double mouseTime = camera_.visibleStartSeconds + mouseX / oldPps;
+    const double anchorTime = camera_.visibleStartSeconds + anchorViewportX / oldPps;
 
     zoomPreviewActive_ = true;
-    zoomAnchorTime_ = mouseTime;
-    zoomAnchorViewportX_ = mouseX;
+    zoomAnchorTime_ = anchorTime;
+    zoomAnchorViewportX_ = anchorViewportX;
     zoomDeadlineTicks_ = kZoomDeadlineTicks;
 
     userHasManuallyZoomed_ = true;
@@ -4943,7 +4947,51 @@ void PianoRollComponent::duplicateNotes()
     pasteNotes();
 }
 
+bool PianoRollComponent::handleViewportShortcut(const juce::KeyPress& key)
+{
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ScrollHorizontalLeft, key)) {
+        handleHorizontalScrollWheel(0.0f, 1.0f);
+        return true;
+    }
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ScrollHorizontalRight, key)) {
+        handleHorizontalScrollWheel(0.0f, -1.0f);
+        return true;
+    }
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, key)) {
+        beginZoomPreviewAt(getTimelineContentViewportWidth() / 2,
+                           1.0 + zoomSensitivity_.horizontalZoomFactor);
+        return true;
+    }
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomHorizontalOut, key)) {
+        beginZoomPreviewAt(getTimelineContentViewportWidth() / 2,
+                           1.0 / (1.0 + zoomSensitivity_.horizontalZoomFactor));
+        return true;
+    }
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomVerticalIn, key)) {
+        handleVerticalZoomAt(1.0f + zoomSensitivity_.verticalZoomFactor,
+                             static_cast<float>(getTimelineContentViewportHeight()) * 0.5f);
+        return true;
+    }
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomVerticalOut, key)) {
+        handleVerticalZoomAt(1.0f / (1.0f + zoomSensitivity_.verticalZoomFactor),
+                             static_cast<float>(getTimelineContentViewportHeight()) * 0.5f);
+        return true;
+    }
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::FitSelectedNotes, key)) {
+        fitToSelectedNotes();
+        return true;
+    }
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::FitAllNotes, key)) {
+        fitToAllNotes();
+        return true;
+    }
+    return false;
+}
+
 bool PianoRollComponent::keyPressed(const juce::KeyPress& key) {
+    if (handleViewportShortcut(key))
+        return true;
+
     if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Undo, key)) {
         listeners_.call([](Listener& l) { l.undoRequested(); });
         return true;
@@ -4967,57 +5015,6 @@ bool PianoRollComponent::keyPressed(const juce::KeyPress& key) {
     }
     if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::DuplicateClip, key)) {
         duplicateNotes();
-        return true;
-    }
-    // OpenDyne: Cmd+Alt+Arrow = precise keyboard zoom
-    if (isOpenDyne() && key.getModifiers().isCommandDown() && key.getModifiers().isAltDown()) {
-        float zoomFactor = 1.15f; // ~15% per keypress
-        const double visibleWidthSeconds = getTimelineContentViewportWidth() / camera_.pixelsPerSecond;
-        const int keyCode = key.getKeyCode();
-        if (keyCode == juce::KeyPress::leftKey) {
-            commitViewportRequest(makeViewportRequest(
-                TimelineViewportRequest::Kind::Manual,
-                camera_.visibleStartSeconds + visibleWidthSeconds * 0.5 * (1.0 - 1.0/zoomFactor),
-                0.0, camera_.pixelsPerSecond / zoomFactor));
-            return true;
-        }
-        if (keyCode == juce::KeyPress::rightKey) {
-            commitViewportRequest(makeViewportRequest(
-                TimelineViewportRequest::Kind::Manual,
-                camera_.visibleStartSeconds + visibleWidthSeconds * 0.5 * (1.0 - zoomFactor),
-                0.0, camera_.pixelsPerSecond * zoomFactor));
-            return true;
-        }
-        if (keyCode == juce::KeyPress::upKey) {
-            const float contentViewportHeight = static_cast<float>(getTimelineContentViewportHeight());
-            float centerMidi = maxMidi_ - (verticalScrollOffset_ + contentViewportHeight * 0.5f) / pixelsPerSemitone_;
-            pixelsPerSemitone_ = juce::jlimit(5.0f, 60.0f, pixelsPerSemitone_ * zoomFactor);
-            verticalScrollOffset_ = (maxMidi_ - centerMidi) * pixelsPerSemitone_ - contentViewportHeight * 0.5f;
-            const float maxScroll = juce::jmax(0.0f, getTotalHeight() - contentViewportHeight);
-            verticalScrollOffset_ = juce::jlimit(0.0f, maxScroll, verticalScrollOffset_);
-            staticDirty_ = true; contentDirty_ = true;
-            rasterizeDirtySurfaces(); updateScrollBars(); repaint(); overlay_->repaint();
-            return true;
-        }
-        if (keyCode == juce::KeyPress::downKey) {
-            const float contentViewportHeight = static_cast<float>(getTimelineContentViewportHeight());
-            float centerMidi = maxMidi_ - (verticalScrollOffset_ + contentViewportHeight * 0.5f) / pixelsPerSemitone_;
-            pixelsPerSemitone_ = juce::jlimit(5.0f, 60.0f, pixelsPerSemitone_ / zoomFactor);
-            verticalScrollOffset_ = (maxMidi_ - centerMidi) * pixelsPerSemitone_ - contentViewportHeight * 0.5f;
-            const float maxScroll = juce::jmax(0.0f, getTotalHeight() - contentViewportHeight);
-            verticalScrollOffset_ = juce::jlimit(0.0f, maxScroll, verticalScrollOffset_);
-            staticDirty_ = true; contentDirty_ = true;
-            rasterizeDirtySurfaces(); updateScrollBars(); repaint(); overlay_->repaint();
-            return true;
-        }
-    }
-    // Cmd+0: Zoom to selected notes (or all if none selected)
-    if (key.getKeyCode() == '0' && (key.getModifiers().isCommandDown() || key.getModifiers().isCtrlDown())) {
-        if (key.getModifiers().isShiftDown()) {
-            fitToAllNotes();
-        } else {
-            fitToSelectedNotes();
-        }
         return true;
     }
     return toolHandler_->keyPressed(key);

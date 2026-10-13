@@ -106,6 +106,7 @@ public:
     void mouseDoubleClick(const juce::MouseEvent& e) override;
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
     bool keyPressed(const juce::KeyPress& key) override;
+    bool handleViewportShortcut(const juce::KeyPress& key);
 
     void scrollBarMoved(juce::ScrollBar* scrollBar, double newRangeStart) override;
 
@@ -178,6 +179,10 @@ private:
     void rebuildContentMetrics();
     void cancelZoomPreview() noexcept;
     void timerCallback() override;
+    void handleVerticalZoomWheel(float deltaY, bool keepViewportCentre = false);
+    void handleHorizontalZoomWheel(float deltaY, double anchorTime, double anchorViewportX);
+    void applyHorizontalZoom(double zoomFactor, double anchorTime, double anchorViewportX);
+    void handleHorizontalScrollWheel(float deltaY);
     TimelineViewportRequest makeViewportRequest(
         TimelineViewportRequest::Kind kind,
         double targetTime,

@@ -320,6 +320,7 @@ public:
 
     void scrollBarMoved(juce::ScrollBar* scrollBar, double newRangeStart) override;
     void updateScrollBars();
+    bool handleViewportShortcut(const juce::KeyPress& key);
 
 private:
     friend struct PianoRollComponentTestProbe;
@@ -379,8 +380,10 @@ private:
 
     // ── 缩放事务 ──────────────────────────────────────────────
     void beginZoomPreview(const juce::MouseEvent& e, float deltaY);
+    void beginZoomPreviewAt(int anchorViewportX, double zoomFactor);
     void updateZoomPreview(float deltaY);
     void endZoomPreview();
+    void handleVerticalZoomAt(float zoomFactor, float contentY);
 
     // ── 内容构建（供 rasterize + overlay 共用） ────────────────
     std::vector<PianoRollRenderer::ContentRenderItem> buildContentRenderItems() const;

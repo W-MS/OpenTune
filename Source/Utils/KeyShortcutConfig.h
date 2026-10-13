@@ -42,6 +42,14 @@ enum class ShortcutId {
     ToolODVolumeEnvelope,
     ToolODScissors,
     Eq,
+    ScrollHorizontalLeft,
+    ScrollHorizontalRight,
+    ZoomHorizontalIn,
+    ZoomHorizontalOut,
+    ZoomVerticalIn,
+    ZoomVerticalOut,
+    FitSelectedNotes,
+    FitAllNotes,
     Count
 };
 
@@ -248,6 +256,22 @@ inline const ShortcutInfo kShortcutInfos[] = {
     { ShortcutId::ToolODScissors, "shared.shortcuts.toolODScissors", Loc::Keys::kToolODScissors, { KeyBinding(juce::KeyPress::F6Key, {}) } },
 #endif
     { ShortcutId::Eq, "shared.shortcuts.toolEq", Loc::Keys::kToolEq, { KeyBinding('E', {}) } },
+    { ShortcutId::ScrollHorizontalLeft, "shared.shortcuts.scrollHorizontalLeft", Loc::Keys::kScrollHorizontalLeft,
+      { KeyBinding(juce::KeyPress::leftKey, juce::ModifierKeys::altModifier) } },
+    { ShortcutId::ScrollHorizontalRight, "shared.shortcuts.scrollHorizontalRight", Loc::Keys::kScrollHorizontalRight,
+      { KeyBinding(juce::KeyPress::rightKey, juce::ModifierKeys::altModifier) } },
+    { ShortcutId::ZoomHorizontalIn, "shared.shortcuts.zoomHorizontalIn", Loc::Keys::kZoomHorizontalIn,
+      { KeyBinding(juce::KeyPress::rightKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier) } },
+    { ShortcutId::ZoomHorizontalOut, "shared.shortcuts.zoomHorizontalOut", Loc::Keys::kZoomHorizontalOut,
+      { KeyBinding(juce::KeyPress::leftKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier) } },
+    { ShortcutId::ZoomVerticalIn, "shared.shortcuts.zoomVerticalIn", Loc::Keys::kZoomVerticalIn,
+      { KeyBinding(juce::KeyPress::upKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier) } },
+    { ShortcutId::ZoomVerticalOut, "shared.shortcuts.zoomVerticalOut", Loc::Keys::kZoomVerticalOut,
+      { KeyBinding(juce::KeyPress::downKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier) } },
+    { ShortcutId::FitSelectedNotes, "shared.shortcuts.fitSelectedNotes", Loc::Keys::kFitSelectedNotes,
+      { KeyBinding('0', juce::ModifierKeys::commandModifier) } },
+    { ShortcutId::FitAllNotes, "shared.shortcuts.fitAllNotes", Loc::Keys::kFitAllNotes,
+      { KeyBinding('0', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier) } },
 };
 
 inline constexpr size_t kShortcutCount = sizeof(kShortcutInfos) / sizeof(kShortcutInfos[0]);

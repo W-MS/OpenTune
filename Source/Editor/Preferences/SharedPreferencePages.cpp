@@ -933,10 +933,14 @@ public:
         // 三段式布局：通用 → OpenTune 专属 → OpenDyne 参考
         // 通用: PlayPause, Stop, PlayFromStart, Undo, Redo, Cut, Copy, Paste, SelectAll,
         //        Delete, SplitClip, MergeClips, DuplicateClip, NudgeLeft, NudgeRight,
-        //        ToggleSnap, ToolAutoTune, ToolTimeTool, CancelSelection, Eq
+        //        Viewport navigation/zoom, ToggleSnap, ToolAutoTune, ToolTimeTool, CancelSelection, Eq
         if (isVst3Plugin) {
             generalIds_ = {
                 KeyShortcutConfig::ShortcutId::PlayPause, KeyShortcutConfig::ShortcutId::Stop,
+                KeyShortcutConfig::ShortcutId::ScrollHorizontalLeft, KeyShortcutConfig::ShortcutId::ScrollHorizontalRight,
+                KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, KeyShortcutConfig::ShortcutId::ZoomHorizontalOut,
+                KeyShortcutConfig::ShortcutId::ZoomVerticalIn, KeyShortcutConfig::ShortcutId::ZoomVerticalOut,
+                KeyShortcutConfig::ShortcutId::FitSelectedNotes, KeyShortcutConfig::ShortcutId::FitAllNotes,
                 KeyShortcutConfig::ShortcutId::Undo, KeyShortcutConfig::ShortcutId::Redo,
                 KeyShortcutConfig::ShortcutId::Cut, KeyShortcutConfig::ShortcutId::Copy,
                 KeyShortcutConfig::ShortcutId::Paste, KeyShortcutConfig::ShortcutId::SelectAll,
@@ -950,6 +954,10 @@ public:
             generalIds_ = {
                 KeyShortcutConfig::ShortcutId::PlayPause, KeyShortcutConfig::ShortcutId::Stop,
                 KeyShortcutConfig::ShortcutId::PlayFromStart,
+                KeyShortcutConfig::ShortcutId::ScrollHorizontalLeft, KeyShortcutConfig::ShortcutId::ScrollHorizontalRight,
+                KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, KeyShortcutConfig::ShortcutId::ZoomHorizontalOut,
+                KeyShortcutConfig::ShortcutId::ZoomVerticalIn, KeyShortcutConfig::ShortcutId::ZoomVerticalOut,
+                KeyShortcutConfig::ShortcutId::FitSelectedNotes, KeyShortcutConfig::ShortcutId::FitAllNotes,
                 KeyShortcutConfig::ShortcutId::Undo, KeyShortcutConfig::ShortcutId::Redo,
                 KeyShortcutConfig::ShortcutId::Cut, KeyShortcutConfig::ShortcutId::Copy,
                 KeyShortcutConfig::ShortcutId::Paste, KeyShortcutConfig::ShortcutId::SelectAll,
