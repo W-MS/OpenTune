@@ -4,6 +4,7 @@
 #include "StandaloneArrangement.h"
 #endif
 #include "Editor/EditorFactory.h"
+#include "Editor/ConfirmDialogContent.h"
 #include "Standalone/UI/UIColors.h"
 #include "DSP/ResamplingManager.h"
 #include "DSP/MelSpectrogram.h"
@@ -830,8 +831,12 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
                 return;
             }
 
-            if (job.renderCache == nullptr)
+            if (job.renderCache == nullptr) {
+                ProcessRenderRuntime::notifyApplicationRenderFailure(
+                    job.contentKey, job.contentRevision, job.targetRevision,
+                    "Render job has no RenderCache", {}, completionGate_);
                 return;
+            }
 
             auto contentSnap = job.contentSnapshot;
             if (!contentSnap) {
@@ -839,7 +844,8 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
                 {
                     const auto failureReason = juce::String("Render job has no content snapshot");
                     ProcessRenderRuntime::notifyApplicationRenderFailure(
-                        job.contentKey, job.targetRevision, failureReason);
+                        job.contentKey, job.contentRevision, job.targetRevision,
+                        failureReason, job.renderCache, completionGate_);
 #if !JucePlugin_Build_Standalone
                     auto gate = completionGate_;
                     const auto failedKey = job.contentKey;
@@ -862,9 +868,11 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
             }
             ProcessRenderRuntime::CompletionContext completion;
             completion.gate = completionGate_;
-            completion.applicationFailure = [](ContentKey key, uint64_t revision,
-                                               const juce::String& reason) {
-                ProcessRenderRuntime::notifyApplicationRenderFailure(key, revision, reason);
+            completion.applicationFailure = [gate = completionGate_](
+                ContentKey key, uint64_t contentRevision, uint64_t targetRevision,
+                const juce::String& reason, std::shared_ptr<RenderCache> renderCache) {
+                ProcessRenderRuntime::notifyApplicationRenderFailure(
+                    key, contentRevision, targetRevision, reason, std::move(renderCache), gate);
             };
             completion.chunkSettled = [this](ContentKey key,
                                              std::shared_ptr<const EditableContentSnapshot> snapshot,
@@ -892,6 +900,25 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
             ProcessRenderRuntime::getInstance().processChunkRenderJob(
                 contentRenderService_, job,
                 lightPitchEnabled, std::move(completion));
+        };
+        const auto renderFailureGate = completionGate_;
+        lease.renderFailureCallback = [this, renderFailureGate](
+            const RenderJob& job, const juce::String& reason) {
+            ProcessRenderRuntime::notifyApplicationRenderFailure(
+                job.contentKey, job.contentRevision, job.targetRevision,
+                reason, job.renderCache, renderFailureGate);
+#if !JucePlugin_Build_Standalone
+            const bool posted = juce::MessageManager::callAsync(
+                [this, renderFailureGate, key = job.contentKey, reason]() {
+                    ProcessRenderRuntime::CompletionCallbackLease callbackLease(*renderFailureGate);
+                    if (!callbackLease)
+                        return;
+                    if (auto* session = getCaptureSession())
+                        session->onRenderFailed(key, reason);
+                });
+            if (!posted)
+                AppLogger::error("RenderWorker callback failure could not be dispatched to CaptureSession");
+#endif
         };
         crs->attachExecutionLease(std::move(lease));
     }
@@ -1041,22 +1068,30 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
                 ContentKey segContentKey = segment->contentKey;
                 auto gate = completionGate_;
 
-                f0ExtractionService_->submit(
+                const auto submitResult = f0ExtractionService_->submit(
                     F0RequestKey{segContentKey},
                     [audio, sr, segContentKey](const std::shared_ptr<F0RunOwnerState>& runOwnerState) -> F0ExtractionService::Result {
                         F0ExtractionService::Result result;
                         result.contentKey = segContentKey;
-                        if (!audio || audio->getNumSamples() == 0) {
-                            result.errorMessage = "no_audio_data";
+                        if (!audio || audio->getNumSamples() == 0
+                            || audio->getNumChannels() <= 0) {
+                            result.errorMessage = !audio
+                                ? "Capture F0 extraction has no audio buffer"
+                                : "Capture F0 audio buffer has no usable samples or channels (samples="
+                                    + std::to_string(audio->getNumSamples()) + ", channels="
+                                    + std::to_string(audio->getNumChannels()) + ")";
                             return result;
                         }
                         // Lazy initialize F0 runtime and resolve service inside worker.
                         auto& f0Runtime = ProcessF0Runtime::getInstance();
+                        std::string initializationError;
                         if (!f0Runtime.isReady())
-                            f0Runtime.initialize(ModelPathResolver::getModelsDirectory());
+                            f0Runtime.initialize(ModelPathResolver::getModelsDirectory(), &initializationError);
                         auto f0Svc = f0Runtime.getF0Service();
                         if (!f0Svc) {
-                            result.errorMessage = "no_f0_service";
+                            result.errorMessage = initializationError.empty()
+                                ? "F0 runtime has no inference service after initialization"
+                                : initializationError;
                             return result;
                         }
                         const float* src = audio->getReadPointer(0);
@@ -1064,8 +1099,12 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
                         auto extraction = f0Svc->extractF0(
                             src, static_cast<size_t>(numSamples),
                             static_cast<int>(sr), runOwnerState);
-                        if (!extraction.ok() || extraction.value().empty()) {
-                            result.errorMessage = "f0_empty_or_unvoiced";
+                        if (!extraction.ok()) {
+                            result.errorMessage = extraction.error().fullMessage();
+                            return result;
+                        }
+                        if (extraction.value().empty()) {
+                            result.errorMessage = "F0 inference returned an empty result";
                             return result;
                         }
                         result.f0 = extraction.value();
@@ -1081,11 +1120,18 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
                         ProcessRenderRuntime::CompletionCallbackLease callbackLease(*gate);
                         if (!callbackLease)
                             return;
+                        if (result.requestKey != F0RequestKey{segContentKey})
+                            return;
                         if (auto* session = getCaptureSession()) {
                             if (!result.success) {
+                                const auto reason = result.errorMessage.empty()
+                                    ? std::string("Capture F0 extraction failed without an error detail")
+                                    : result.errorMessage;
                                 session->commitSegmentF0Result(
                                     segContentKey, nullptr,
-                                    OriginalF0State::Failed);
+                                    OriginalF0State::Failed,
+                                    reason);
+                                recordOriginalF0FailureEvent(segContentKey, juce::String(reason));
                                 return;
                             }
                             auto pitchCurve = std::make_shared<PitchCurve>();
@@ -1103,7 +1149,36 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
                             if (pendingTimeToolSeedKeys_.count(segContentKey) != 0)
                                 ensureTimeToolAnchorSeed(segContentKey);
                         }
+                    },
+                    [this, gate, segContentKey](F0ExtractionService::Result&& result) {
+                        ProcessRenderRuntime::CompletionCallbackLease callbackLease(*gate);
+                        if (!callbackLease
+                            || result.requestKey != F0RequestKey{segContentKey})
+                            return;
+                        if (auto* session = getCaptureSession())
+                        {
+                            const auto reason = result.errorMessage.empty()
+                                ? std::string("F0 completion dispatcher rejected the result without an error detail")
+                                : result.errorMessage;
+                            session->commitSegmentF0Result(
+                                segContentKey, nullptr, OriginalF0State::Failed,
+                                reason);
+                            recordOriginalF0FailureEvent(segContentKey, juce::String(reason));
+                        }
                     });
+                if (submitResult != F0ExtractionService::SubmitResult::Accepted
+                    && submitResult != F0ExtractionService::SubmitResult::AlreadyInProgress
+                    && submitResult != F0ExtractionService::SubmitResult::ShuttingDown) {
+                    const auto reason = submitResult == F0ExtractionService::SubmitResult::QueueFull
+                        ? std::string("F0 extraction queue is full")
+                        : std::string("F0 extraction submission was rejected: invalid task");
+                    if (auto* session = getCaptureSession())
+                    {
+                        session->commitSegmentF0Result(
+                            segContentKey, nullptr, OriginalF0State::Failed, reason);
+                        recordOriginalF0FailureEvent(segContentKey, juce::String(reason));
+                    }
+                }
             }
         };
 
@@ -1309,34 +1384,40 @@ void OpenTuneAudioProcessor::resetInferenceBackend(bool forceCpu, std::function<
     // 耗时 reset（Session 销毁、按当前配置重建、AccelerationDetector
     // resetAndDetect）由 ProcessRenderRuntime 的 control worker 串行执行。
     auto gate = completionGate_;
-    auto* processor = this;
     ProcessRenderRuntime::getInstance().resetInferenceBackend(forceCpu, contentRenderService_,
-        [processor, gate, beforeResume = std::move(beforeResume)](ProcessRenderRuntime::ControlResult result) mutable {
-            ProcessRenderRuntime::CompletionCallbackLease callbackLease(*gate);
-            if (!callbackLease)
-                return;
+        [beforeResume = std::move(beforeResume)](
+            ProcessRenderRuntime::ControlResult result, juce::String errorMessage) mutable {
             if (result == ProcessRenderRuntime::ControlResult::Failed)
             {
-                AppLogger::error("[Processor] inference backend control failed");
+                AppLogger::error("[Processor] inference backend control failed: " + errorMessage);
+                ConfirmDialogContent::showDiagnostic(
+                    nullptr,
+                    "Vocoder initialization failed",
+                    errorMessage,
+                    AppLogger::makeDiagnosticText("Inference backend reset", errorMessage));
                 return;
             }
             if (beforeResume)
                 beforeResume();
             AppLogger::info("[Processor] Inference backend reset complete");
-        });
+        }, gate);
 }
 
 void OpenTuneAudioProcessor::setVocoderModelWeight(const VocoderModelWeight& weight)
 {
     auto gate = completionGate_;
     auto* processor = this;
-    ProcessRenderRuntime::getInstance().setVocoderModelWeight(weight, contentRenderService_, [processor, gate](ProcessRenderRuntime::ControlResult result) {
-        ProcessRenderRuntime::CompletionCallbackLease callbackLease(*gate);
-        if (!callbackLease)
-            return;
+    ProcessRenderRuntime::getInstance().setVocoderModelWeight(weight, contentRenderService_,
+        [processor](ProcessRenderRuntime::ControlResult result,
+                          juce::String errorMessage) {
         if (result == ProcessRenderRuntime::ControlResult::Failed)
         {
-            AppLogger::error("[Processor] vocoder model control failed");
+            AppLogger::error("[Processor] vocoder model control failed: " + errorMessage);
+            ConfirmDialogContent::showDiagnostic(
+                nullptr,
+                "Vocoder model initialization failed",
+                errorMessage,
+                AppLogger::makeDiagnosticText("Vocoder initialization", errorMessage));
             return;
         }
         // 3. 模型切换完成后才清 RenderCache/TimeStretchCache 并恢复 render worker
@@ -1355,7 +1436,7 @@ void OpenTuneAudioProcessor::setVocoderModelWeight(const VocoderModelWeight& wei
         if (auto* dc = processor->getDocumentController())
             dc->invalidateAllModificationCaches();
 #endif
-    });
+    }, gate);
 }
 
 void OpenTuneAudioProcessor::invalidateAllContentCaches()
@@ -1377,19 +1458,33 @@ void OpenTuneAudioProcessor::invalidateAllContentCaches()
 #endif
 }
 
-bool OpenTuneAudioProcessor::setF0ModelType(F0ModelType type)
+bool OpenTuneAudioProcessor::setF0ModelType(F0ModelType type, juce::String* failureReason)
 {
     auto& f0Runtime = ProcessF0Runtime::getInstance();
+    std::string initializationError;
     if (!f0Runtime.isReady()
-        && !f0Runtime.initialize(ModelPathResolver::getModelsDirectory(), type))
+        && !f0Runtime.initialize(ModelPathResolver::getModelsDirectory(), type, &initializationError))
+    {
+        if (failureReason != nullptr)
+            *failureReason = initializationError.empty()
+                ? "F0 runtime initialization failed without an error detail"
+                : juce::String(initializationError);
         return false;
+    }
 
     auto f0Svc = ProcessF0Runtime::getInstance().getF0Service();
     if (!f0Svc) {
+        if (failureReason != nullptr)
+            *failureReason = "F0 runtime has no inference service after initialization";
         AppLogger::warn("[Processor] F0 service not ready, cannot switch model");
         return false;
     }
-    if (!f0Svc->setF0Model(type)) {
+    std::string modelError;
+    if (!f0Svc->setF0Model(type, &modelError)) {
+        if (failureReason != nullptr)
+            *failureReason = modelError.empty()
+                ? "Selected F0 model could not be activated"
+                : juce::String(modelError);
         AppLogger::error("[Processor] Failed to switch F0 model");
         return false;
     }
@@ -3318,6 +3413,7 @@ void OpenTuneAudioProcessor::requestRenderForLocalMutationRange(ContentKey key,
     job.startSample = startSample;
     job.endSampleExclusive = endSample;
     job.contentSnapshot = snap;
+    job.contentRevision = snap->contentRevision;
 
     crs->enqueueRender(std::move(job));
 }
@@ -3937,7 +4033,16 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
     }
 
     auto snap = getContentSnapshot(request.contentKey);
-    if (snap == nullptr || snap->audioBuffer == nullptr) {
+    if (snap == nullptr) {
+        setContentOriginalF0State(request.contentKey, OriginalF0State::Failed);
+        setContentOriginalF0FailureReason(request.contentKey,
+            "F0 extraction could not read the content snapshot");
+        return false;
+    }
+    if (snap->audioBuffer == nullptr) {
+        setContentOriginalF0State(request.contentKey, OriginalF0State::Failed);
+        setContentOriginalF0FailureReason(request.contentKey,
+            "F0 extraction content snapshot has no audio buffer");
         return false;
     }
 
@@ -3989,13 +4094,25 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
             break;
     }
 
+    snap = getContentSnapshot(request.contentKey);
+    if (snap == nullptr || snap->audioBuffer == nullptr) {
+        setContentOriginalF0State(request.contentKey, OriginalF0State::Failed);
+        setContentOriginalF0FailureReason(request.contentKey,
+            "F0 extraction could not read the current content snapshot after request admission");
+        return false;
+    }
+
     if (f0ExtractionService_->isActive(F0RequestKey{request.contentKey})) {
         f0ExtractionService_->cancel(F0RequestKey{request.contentKey});
+        f0RequestTokens_.erase(request.contentKey);
     }
 
     auto gate = completionGate_;
     OpenTuneAudioProcessor* const processor = this;
     const auto capturedRequest = request;
+    const uint64_t capturedContentRevision = snap->contentRevision;
+    const auto capturedAudioBuffer = snap->audioBuffer;
+    auto requestToken = std::make_shared<uint64_t>(0);
     // 提交时捕获不可变内容快照：worker 只执行纯数据 F0 计算，owner 销毁后
     // 绝不访问裸 processor（快照 shared_ptr 与进程级 F0 服务随 worker 存活）。
     const auto capturedSnap = snap;
@@ -4007,7 +4124,9 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
             result.contentKey = capturedRequest.contentKey;
 
             if (!capturedSnap || capturedSnap->audioBuffer == nullptr) {
-                result.errorMessage = "content_snapshot_failed";
+                result.errorMessage = !capturedSnap
+                    ? "F0 extraction could not read the content snapshot"
+                    : "F0 extraction content snapshot has no audio buffer";
                 return result;
             }
 
@@ -4015,11 +4134,14 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
 
             // 进程级 F0 服务（进程寿命，owner 销毁后仍安全）；惰性初始化保留原语义。
             auto& f0Runtime = ProcessF0Runtime::getInstance();
+            std::string initializationError;
             if (!f0Runtime.isReady())
-                f0Runtime.initialize(ModelPathResolver::getModelsDirectory());
+                f0Runtime.initialize(ModelPathResolver::getModelsDirectory(), &initializationError);
             auto f0Service = f0Runtime.getF0Service();
             if (!f0Service) {
-                result.errorMessage = "f0_service_unavailable";
+                result.errorMessage = initializationError.empty()
+                    ? "F0 runtime has no inference service after initialization"
+                    : initializationError;
                 return result;
             }
 
@@ -4032,7 +4154,9 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
             result.success = true;
             return result;
         },
-        [processor, gate, capturedRequest](F0ExtractionService::Result&& result) {
+        [processor, gate, capturedRequest, capturedContentRevision,
+         capturedAudioBuffer, requestToken]
+        (F0ExtractionService::Result&& result) {
             // Both the normal commit and the dispatcher-failure mailbox invoke
             // this callback on the message thread.  Do not add a second
             // dispatcher hop after the mailbox has already recovered the
@@ -4041,21 +4165,37 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
             if (!callbackLease)
                 return;
 
+            const auto tokenIt = processor->f0RequestTokens_.find(capturedRequest.contentKey);
+            if (result.requestKey != F0RequestKey{capturedRequest.contentKey}
+                || result.requestToken != *requestToken
+                || tokenIt == processor->f0RequestTokens_.end()
+                || tokenIt->second != result.requestToken)
+                return;
+
             auto currentSnap = processor->getContentSnapshot(capturedRequest.contentKey);
             if (!currentSnap
+                || currentSnap->contentRevision != capturedContentRevision
                 || currentSnap->audioBuffer == nullptr
-                || result.sourceAudioBuffer == nullptr
-                || currentSnap->audioBuffer != result.sourceAudioBuffer) {
+                || currentSnap->audioBuffer != capturedAudioBuffer
+                || (result.sourceAudioBuffer != nullptr
+                    && result.sourceAudioBuffer != capturedAudioBuffer)) {
+                processor->f0RequestTokens_.erase(tokenIt);
                 AppLogger::log("ContentRefresh: stale result dropped contentKey objectId="
                     + juce::String(static_cast<juce::int64>(capturedRequest.contentKey.objectId)));
                 return;
             }
 
             if (!result.success) {
+                processor->f0RequestTokens_.erase(capturedRequest.contentKey);
                 AppLogger::log("ContentRefresh: extraction failed contentKey objectId="
                     + juce::String(static_cast<juce::int64>(capturedRequest.contentKey.objectId))
                     + " reason=" + juce::String(result.errorMessage));
                 processor->setContentOriginalF0State(capturedRequest.contentKey, OriginalF0State::Failed);
+                processor->setContentOriginalF0FailureReason(
+                    capturedRequest.contentKey,
+                    result.errorMessage.empty()
+                        ? "F0 extraction failed without an error detail"
+                        : result.errorMessage);
                 return;
             }
 
@@ -4121,9 +4261,12 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
             }
 
             if (!processor->writeOriginalF0ToOwner(capturedRequest.contentKey, pitchCurve)) {
+                processor->f0RequestTokens_.erase(capturedRequest.contentKey);
                 AppLogger::log("ContentRefresh: OriginalF0 commit failed contentKey objectId="
                     + juce::String(static_cast<juce::int64>(capturedRequest.contentKey.objectId)));
                 processor->setContentOriginalF0State(capturedRequest.contentKey, OriginalF0State::Failed);
+                processor->setContentOriginalF0FailureReason(capturedRequest.contentKey,
+                    "F0 result could not be committed to the content owner");
                 return;
             }
             // OriginalF0 只更新分析数据，不触发音频渲染
@@ -4158,26 +4301,56 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
             }
 
             processor->setContentOriginalF0State(capturedRequest.contentKey, OriginalF0State::Ready);
+            processor->f0RequestTokens_.erase(capturedRequest.contentKey);
             if (processor->pendingTimeToolSeedKeys_.count(capturedRequest.contentKey) != 0)
                 processor->ensureTimeToolAnchorSeed(capturedRequest.contentKey);
 
             // F0 就绪后请求完整渲染：此前因无 F0 而 Blank 的 chunk 需重新渲染
             processor->requestFullContentRender(capturedRequest.contentKey);
         },
-        [processor, gate, capturedRequest](F0ExtractionService::Result&&) {
+        [processor, gate, capturedRequest, capturedContentRevision, requestToken]
+        (F0ExtractionService::Result&& result) {
             ProcessRenderRuntime::CompletionCallbackLease callbackLease(*gate);
             if (!callbackLease)
                 return;
+            const auto tokenIt = processor->f0RequestTokens_.find(capturedRequest.contentKey);
+            if (result.requestKey != F0RequestKey{capturedRequest.contentKey}
+                || result.requestToken != *requestToken
+                || tokenIt == processor->f0RequestTokens_.end()
+                || tokenIt->second != result.requestToken)
+                return;
+            const auto currentSnap = processor->getContentSnapshot(capturedRequest.contentKey);
+            if (!currentSnap || currentSnap->contentRevision != capturedContentRevision) {
+                processor->f0RequestTokens_.erase(tokenIt);
+                return;
+            }
+            processor->f0RequestTokens_.erase(tokenIt);
             processor->setContentOriginalF0State(
                 capturedRequest.contentKey, OriginalF0State::Failed);
-        });
+            processor->setContentOriginalF0FailureReason(
+                capturedRequest.contentKey,
+                result.errorMessage.empty()
+                    ? "F0 completion dispatcher rejected the result without an error detail"
+                    : result.errorMessage);
+        }, requestToken.get());
 
     if (submitResult != F0ExtractionService::SubmitResult::Accepted) {
         AppLogger::log("ContentRefresh: submit rejected contentKey objectId="
             + juce::String(static_cast<juce::int64>(request.contentKey.objectId)));
+        if (submitResult == F0ExtractionService::SubmitResult::AlreadyInProgress)
+            return true;
+        if (submitResult == F0ExtractionService::SubmitResult::ShuttingDown)
+            return false;
+        f0RequestTokens_.erase(request.contentKey);
         setContentOriginalF0State(request.contentKey, OriginalF0State::Failed);
+        setContentOriginalF0FailureReason(request.contentKey,
+            submitResult == F0ExtractionService::SubmitResult::QueueFull
+                ? "F0 extraction queue is full"
+                : "F0 extraction submission was rejected: invalid task");
         return false;
     }
+
+    f0RequestTokens_[request.contentKey] = *requestToken;
 
     return true;
 }
@@ -5205,8 +5378,6 @@ bool OpenTuneAudioProcessor::setContentOriginalF0State(ContentKey key, OriginalF
             auto* clip = standaloneContentRepository_->findClip(key);
             if (!clip) return false;
             clip->applyOriginalF0State(state);
-            if (state == OriginalF0State::Failed)
-                f0FailureGeneration_.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
 #endif
@@ -5230,6 +5401,59 @@ bool OpenTuneAudioProcessor::setContentOriginalF0State(ContentKey key, OriginalF
             break;
     }
     return false;
+}
+
+bool OpenTuneAudioProcessor::setContentOriginalF0FailureReason(ContentKey key, std::string reason)
+{
+#if JucePlugin_Build_Standalone
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
+#endif
+    switch (key.domainKind) {
+#if JucePlugin_Build_Standalone
+        case DomainKind::StandaloneClip: {
+            auto* clip = standaloneContentRepository_->findClip(key);
+            if (!clip) return false;
+            recordOriginalF0FailureEvent(key, juce::String(reason));
+            clip->applyOriginalF0FailureReason(std::move(reason));
+            return true;
+        }
+#endif
+#if JucePlugin_Enable_ARA
+        case DomainKind::ARAAudioModification: {
+            auto* dc = getDocumentController();
+            if (!dc) return false;
+            return dc->applyOriginalF0FailureReasonToModification(key, std::move(reason));
+        }
+#endif
+#if !JucePlugin_Build_Standalone
+        case DomainKind::RegularVST3Capture: {
+            auto* session = getCaptureSession();
+            auto* seg = session ? session->findSegmentByContentKey(key) : nullptr;
+            if (!seg || !seg->content) return false;
+            recordOriginalF0FailureEvent(key, juce::String(reason));
+            seg->content->applyOriginalF0FailureReason(std::move(reason));
+            return true;
+        }
+#endif
+        default:
+            break;
+    }
+    return false;
+}
+
+void OpenTuneAudioProcessor::recordOriginalF0FailureEvent(
+    ContentKey key, const juce::String& reason)
+{
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
+    pendingF0FailureEvents_.push_back({key, reason});
+}
+
+std::deque<OriginalF0FailureEvent> OpenTuneAudioProcessor::takeOriginalF0FailureEvents()
+{
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
+    std::deque<OriginalF0FailureEvent> events;
+    events.swap(pendingF0FailureEvents_);
+    return events;
 }
 
 bool OpenTuneAudioProcessor::applyContentPitchShiftState(ContentKey key,

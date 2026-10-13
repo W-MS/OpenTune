@@ -23,6 +23,7 @@ class ProcessRenderRuntime
 {
 public:
     enum class ControlResult : uint8_t { Changed, Unchanged, Failed };
+    using ControlCompletion = std::function<void(ControlResult, juce::String)>;
     enum class VocoderSubmitResult : uint8_t {
         Submitted,
         PayloadTooLarge,
@@ -102,9 +103,11 @@ public:
                            std::shared_ptr<const juce::AudioBuffer<float>>,
                            double)> chunkSettled;
         std::function<void(ContentKey, const juce::String&)> chunkFailed;
-        // Application-level failure notification. Intentionally independent
-        // from gate: it must remain deliverable during owner teardown.
-        std::function<void(ContentKey, uint64_t, const juce::String&)> applicationFailure;
+        // Application-level failure notification uses the same lifecycle gate.
+        uint64_t contentRevision{0};
+        std::function<void(ContentKey, uint64_t, uint64_t, const juce::String&,
+                           std::shared_ptr<RenderCache>)> applicationFailure;
+        std::shared_ptr<RenderCache> renderCache;
     };
 
     struct ControlTransaction
@@ -119,11 +122,15 @@ public:
     };
 
     static ProcessRenderRuntime& getInstance();
-    // Posts an application-level render failure notification without using an
-    // owner/editor completion gate. Safe to call from a render worker thread.
+    // Posts an application-level render failure notification. Safe to call from
+    // a render worker thread; the completion gate suppresses teardown cancellation.
     static void notifyApplicationRenderFailure(ContentKey key,
-                                                uint64_t revision,
-                                                const juce::String& reason);
+                                                uint64_t contentRevision,
+                                                uint64_t targetRevision,
+                                                const juce::String& reason,
+                                                std::shared_ptr<RenderCache> renderCache,
+                                                std::shared_ptr<CompletionGate> gate,
+                                                std::shared_ptr<std::atomic<bool>> reconfigurationNotificationClaim = {});
     void retainOwner();
     void releaseOwner() noexcept;
 
@@ -141,12 +148,14 @@ public:
      */
     void setVocoderModelWeight(const VocoderModelWeight& weight,
                                std::shared_ptr<ContentRenderService> crs,
-                               std::function<void(ControlResult)> completion);
+                               ControlCompletion completion,
+                               std::shared_ptr<CompletionGate> completionGate);
     void resetVocoder(std::shared_ptr<ContentRenderService> crs,
-                      std::function<void(ControlResult)> completion);
+                      ControlCompletion completion);
     void resetInferenceBackend(bool forceCpu,
                                std::shared_ptr<ContentRenderService> crs,
-                               std::function<void(ControlResult)> completion);
+                               ControlCompletion completion,
+                               std::shared_ptr<CompletionGate> completionGate);
     void detachDeferredJobs(void* owner,
                             const std::shared_ptr<CompletionGate>& gate);
 
@@ -162,7 +171,9 @@ public:
      * snapshot via acquireVocoderConfig(), so a job is never submitted to a
      * domain rebuilt since then with stale configuration.
      */
-    VocoderSubmitResult submitVocoderJob(VocoderDomain::Job job, uint64_t expectedGeneration);
+    VocoderSubmitResult submitVocoderJob(VocoderDomain::Job job,
+                                         uint64_t expectedGeneration,
+                                         juce::String& rejectionReason);
     bool isVocoderReady() const noexcept;
     bool isVocoderReconfiguring() const noexcept;
 
@@ -182,7 +193,8 @@ private:
 
     // 在锁外创建并初始化完整 domain。模型加载、Session 创建和失败清理均不得
     // 持有 vocoderMutex_，保证 UI 查询与实例 detach 永远只经历短临界区。
-    std::unique_ptr<VocoderDomain> createVocoderDomain(const VocoderModelWeight& weight);
+    std::unique_ptr<VocoderDomain> createVocoderDomain(const VocoderModelWeight& weight,
+                                                       juce::String& errorMessage);
 
     // 一次锁内“确保 domain 并返回 generation/conditioningBins/fMax”：配置与
     // domain 同代生成，杜绝跨域混用（旧 generation 配置配新 domain 等）。
@@ -213,12 +225,26 @@ private:
         VocoderModelWeight weight{kDefaultVocoderWeight};
         bool forceCpu{false};
         std::shared_ptr<ControlTransaction> transaction;
-        std::function<void(ControlResult)> completion;
+        ControlCompletion completion;
+        std::shared_ptr<CompletionGate> completionGate;
+    };
+
+    struct DeferredFailureNotification
+    {
+        ContentKey contentKey;
+        uint64_t contentRevision{0};
+        uint64_t targetRevision{0};
+        juce::String reason;
+        std::shared_ptr<RenderCache> renderCache;
+        std::shared_ptr<CompletionGate> gate;
     };
 
     // control worker 唯一重配入口：短锁内摘除旧 domain 并推进 generation，
     // 锁外销毁旧 Session，随后锁外创建新 Session，最后短锁发布。
-    ControlResult reconfigureVocoder(const ControlCommand& command);
+    ControlResult reconfigureVocoder(
+        const ControlCommand& command,
+        juce::String& errorMessage,
+        std::vector<DeferredFailureNotification>& deferredFailureNotifications);
 
     void controlWorkerLoop();
     bool postControlCommand(ControlCommand command);
@@ -271,7 +297,7 @@ private:
     void deferOrRequeue(std::shared_ptr<ContentRenderService> crs,
                         RenderJob job,
                         CompletionContext completion,
-                        juce::String reason = {});
+                        juce::String reason);
 
     ProcessRenderRuntime(const ProcessRenderRuntime&) = delete;
     ProcessRenderRuntime& operator=(const ProcessRenderRuntime&) = delete;

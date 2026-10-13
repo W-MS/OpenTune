@@ -114,8 +114,11 @@ void F0ExtractionService::SharedState::DispatcherFailureMailbox::handleAsyncUpda
 }
 
 F0ExtractionService::SubmitResult F0ExtractionService::submit(F0RequestKey requestKey, ExecuteFn execute, CommitFn commit,
-                                                              CommitFn dispatcherFailure)
+                                                              CommitFn dispatcherFailure,
+                                                              uint64_t* acceptedRequestToken)
 {
+    if (acceptedRequestToken != nullptr)
+        *acceptedRequestToken = 0;
     if (!requestKey.contentKey.isValid() || !execute || !commit) {
         return SubmitResult::InvalidTask;
     }
@@ -124,9 +127,8 @@ F0ExtractionService::SubmitResult F0ExtractionService::submit(F0RequestKey reque
     // 队列满直接 QueueFull，不创建 active 条目。与 shutdown 线性化。
     {
         std::lock_guard<std::mutex> lock(state_->entriesMutex_);
-        if (state_->shutdownStarted_) {
-            return SubmitResult::InvalidTask;
-        }
+        if (state_->shutdownStarted_)
+            return SubmitResult::ShuttingDown;
 
         if (state_->activeEntries_.find(requestKey) != state_->activeEntries_.end()) {
             return SubmitResult::AlreadyInProgress;
@@ -137,6 +139,8 @@ F0ExtractionService::SubmitResult F0ExtractionService::submit(F0RequestKey reque
         }
 
         const uint64_t token = state_->tokenCounter_++;
+        if (acceptedRequestToken != nullptr)
+            *acceptedRequestToken = token;
         auto entry = std::make_unique<ActiveEntry>();
         entry->token = token;
         state_->activeEntries_[requestKey] = std::move(entry);
@@ -188,15 +192,19 @@ void F0ExtractionService::workerLoop(std::shared_ptr<SharedState> state)
         Result result;
         try {
             result = task.execute(state->runOwnerState_);
-        } catch (...) {
-            AppLogger::error("[F0ExtractionService] Unknown exception during task execution");
+        } catch (const std::exception& e) {
+            AppLogger::error("[F0ExtractionService] Task execution threw std::exception: "
+                + juce::String(e.what()));
             result.success = false;
-            result.errorMessage = "execute_exception";
+            result.errorMessage = "F0 extraction task threw std::exception: " + std::string(e.what());
+        } catch (...) {
+            AppLogger::error("[F0ExtractionService] Task execution threw unknown exception");
+            result.success = false;
+            result.errorMessage = "F0 extraction task threw an unknown exception";
         }
 
-        if (!result.requestKey.contentKey.isValid()) {
-            result.requestKey = task.requestKey;
-        }
+        result.requestKey = task.requestKey;
+        result.requestToken = task.token;
 
         // commit 判定与投递授权在同一临界区内线性化：shutdown 后 worker 不再投递。
         CommitFn commit;

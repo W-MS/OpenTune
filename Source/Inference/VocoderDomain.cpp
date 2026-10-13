@@ -12,14 +12,17 @@ VocoderDomain::~VocoderDomain() {
     shutdown();
 }
 
-bool VocoderDomain::initialize(const std::string& modelPath) {
-    if (!inferenceService_->initialize(modelPath)) {
+bool VocoderDomain::initialize(const std::string& modelPath, std::string* errorMessage) {
+    if (!inferenceService_->initialize(modelPath, errorMessage)) {
         AppLogger::error("[VocoderDomain] Failed to initialize inference service");
         return false;
     }
 
     scheduler_ = std::make_unique<VocoderRenderScheduler>();
-    if (!scheduler_->initialize(inferenceService_.get())) {
+    std::string schedulerError;
+    if (!scheduler_->initialize(inferenceService_.get(), &schedulerError)) {
+        if (errorMessage != nullptr)
+            *errorMessage = schedulerError;
         AppLogger::error("[VocoderDomain] Failed to initialize scheduler");
         scheduler_.reset();
         inferenceService_->shutdown();
@@ -40,16 +43,19 @@ void VocoderDomain::shutdown() {
     }
 }
 
-bool VocoderDomain::submit(Job job) {
-    if (!scheduler_)
+bool VocoderDomain::submit(Job job, std::string* rejectionReason) {
+    if (!scheduler_) {
+        if (rejectionReason != nullptr)
+            *rejectionReason = "Vocoder domain has no scheduler";
         return false;
+    }
 
     VocoderRenderScheduler::Job schedulerJob;
     schedulerJob.f0 = std::move(job.f0);
     schedulerJob.uv = std::move(job.uv);
     schedulerJob.conditioning = std::move(job.conditioning);
     schedulerJob.onComplete = std::move(job.onComplete);
-    return scheduler_->submit(std::move(schedulerJob));
+    return scheduler_->submit(std::move(schedulerJob), rejectionReason);
 }
 
 int VocoderDomain::getVocoderHopSize() const {

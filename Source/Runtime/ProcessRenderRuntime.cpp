@@ -23,44 +23,47 @@
 
 #include <algorithm>
 #include <cmath>
-#include <unordered_map>
 
 namespace OpenTune {
 
-namespace {
-
-std::unordered_map<ContentKey, uint64_t>& notifiedRenderFailures()
-{
-    static std::unordered_map<ContentKey, uint64_t> failures;
-    return failures;
-}
-
-} // namespace
-
 void ProcessRenderRuntime::notifyApplicationRenderFailure(ContentKey key,
-                                                           uint64_t revision,
-                                                           const juce::String& reason)
+                                                           uint64_t contentRevision,
+                                                           uint64_t targetRevision,
+                                                           const juce::String& reason,
+                                                           std::shared_ptr<RenderCache> renderCache,
+                                                           std::shared_ptr<CompletionGate> gate,
+                                                           std::shared_ptr<std::atomic<bool>> reconfigurationNotificationClaim)
 {
     const auto failureReason = reason;
-    const bool posted = juce::MessageManager::callAsync([key, revision, failureReason]()
+    const bool posted = juce::MessageManager::callAsync(
+        [key, contentRevision, targetRevision, failureReason,
+         renderCache = std::move(renderCache), gate,
+         reconfigurationNotificationClaim = std::move(reconfigurationNotificationClaim)]()
     {
-        if (key.isValid())
-        {
-            auto& failures = notifiedRenderFailures();
-            const auto [it, inserted] = failures.emplace(key, revision);
-            if (!inserted && it->second == revision)
+        const auto displayFailure = [&]() {
+            juce::ignoreUnused(targetRevision);
+            if (renderCache != nullptr
+                && !renderCache->markFailureNotificationForContentRevision(contentRevision))
                 return;
-            it->second = revision;
-        }
+            if (reconfigurationNotificationClaim != nullptr
+                && reconfigurationNotificationClaim->exchange(true, std::memory_order_acq_rel))
+                return;
 
-        const auto displayedReason = failureReason.isNotEmpty()
-            ? failureReason
-            : LOC(kRenderFailed);
-        ConfirmDialogContent::showDiagnostic(
-            nullptr,
-            LOC(kRenderFailure),
-            Loc::format(LOC(kRenderFailureDetail), displayedReason),
-            AppLogger::makeDiagnosticText("Render", displayedReason));
+            const auto displayedReason = failureReason.isNotEmpty()
+                ? failureReason
+                : juce::String("Render failure reason is unavailable from the reporting stage");
+            const auto contentId = juce::String(static_cast<juce::int64>(key.objectId));
+            ConfirmDialogContent::showDiagnostic(
+                nullptr,
+                LOC(kRenderFailure),
+                Loc::format(LOC(kRenderFailureDetail), contentId,
+                            getDomainKindName(key.domainKind), displayedReason),
+                AppLogger::makeDiagnosticText("Render", displayedReason));
+        };
+
+        CompletionCallbackLease callbackLease(*gate);
+        if (callbackLease)
+            displayFailure();
     });
     if (!posted)
         AppLogger::error("[ProcessRenderRuntime] render failure notification dispatcher rejected");
@@ -202,15 +205,21 @@ void notifyChunkSettled(const ProcessRenderRuntime::CompletionContext& completio
 
 void notifyChunkFailed(const ProcessRenderRuntime::CompletionContext& completion,
                        ContentKey key,
-                       uint64_t revision,
-                       const juce::String& reason = {})
+                       uint64_t targetRevision,
+                       const juce::String& reason,
+                       bool notifyApplication = true)
 {
-    // This notification intentionally does not use the completion gate. The
-    // processor/editor callback may be rejected during teardown, but a
-    // failure that has already been committed to RenderCache still needs to
-    // reach the application UI while the message manager is alive.
-    if (completion.applicationFailure)
-        completion.applicationFailure(key, revision, reason);
+    if (completion.gate != nullptr)
+    {
+        std::lock_guard<std::mutex> lock(completion.gate->mutex);
+        if (completion.gate->closed)
+            return;
+    }
+    // Application notification and owner completion each acquire the gate on
+    // the message thread, so owner teardown suppresses both callbacks.
+    if (notifyApplication && completion.applicationFailure)
+        completion.applicationFailure(key, completion.contentRevision, targetRevision,
+                                      reason, completion.renderCache);
 
     if (!completion.chunkFailed)
         return;
@@ -233,9 +242,14 @@ void failChunk(const ProcessRenderRuntime::CompletionContext& completion,
                int64_t startSample,
                uint64_t revision,
                ContentKey key,
-               const juce::String& reason = {})
+               const juce::String& reason)
 {
-    if (cache != nullptr && cache->completeChunkRenderFailure(startSample, revision))
+    if (cache == nullptr)
+    {
+        notifyChunkFailed(completion, key, revision, reason);
+        return;
+    }
+    if (cache->completeChunkRenderFailure(startSample, revision))
         notifyChunkFailed(completion, key, revision, reason);
 }
 
@@ -568,29 +582,48 @@ std::string ProcessRenderRuntime::modelPathForWeight(const std::string& modelDir
     return modelDir + "/" + weight;
 }
 
-std::unique_ptr<VocoderDomain> ProcessRenderRuntime::createVocoderDomain(const VocoderModelWeight& weight)
+std::unique_ptr<VocoderDomain> ProcessRenderRuntime::createVocoderDomain(
+    const VocoderModelWeight& weight, juce::String& errorMessage)
 {
     // 该函数始终在 vocoderMutex_ 外执行。ORT Env 初始化、模型加载、Session
     // 创建和失败清理都可能耗时，绝不能阻塞 UI 的 detach/isVocoderReady。
     const auto modelsDir = ModelPathResolver::getModelsDirectory();
-    if (!ProcessF0Runtime::getInstance().initialize(modelsDir))
+    std::string f0Error;
+    if (!ProcessF0Runtime::getInstance().initialize(modelsDir, &f0Error))
+    {
+        errorMessage = f0Error.empty()
+            ? "F0 runtime initialization failed while creating the vocoder domain"
+            : juce::String(f0Error);
         return nullptr;
+    }
 
     auto env = ProcessF0Runtime::getInstance().getOrtEnv();
     if (env == nullptr)
+    {
+        errorMessage = "Vocoder domain could not acquire the ONNX Runtime environment";
         return nullptr;
+    }
 
     auto domain = std::make_unique<VocoderDomain>(env);
     const auto modelPath = modelPathForWeight(modelsDir, weight);
     AppLogger::info("VocoderDomain: loading weight=" + juce::String(weight)
         + " modelPath=" + modelPath);
-    if (!domain->initialize(modelPath))
+    std::string domainError;
+    if (!domain->initialize(modelPath, &domainError))
+    {
+        errorMessage = domainError.empty()
+            ? "Vocoder domain initialization failed without an error detail"
+            : juce::String(domainError);
         return nullptr;
+    }
 
     return domain;
 }
 
-ProcessRenderRuntime::ControlResult ProcessRenderRuntime::reconfigureVocoder(const ControlCommand& command)
+ProcessRenderRuntime::ControlResult ProcessRenderRuntime::reconfigureVocoder(
+    const ControlCommand& command,
+    juce::String& errorMessage,
+    std::vector<DeferredFailureNotification>& deferredFailureNotifications)
 {
     std::unique_ptr<VocoderDomain> retiredDomain;
     VocoderModelWeight targetWeight;
@@ -645,7 +678,7 @@ ProcessRenderRuntime::ControlResult ProcessRenderRuntime::reconfigureVocoder(con
     }
 
     // 严格先销毁旧 Session，再创建新 Session；新旧显存不并存。
-    auto newDomain = createVocoderDomain(targetWeight);
+    auto newDomain = createVocoderDomain(targetWeight, errorMessage);
 
     std::vector<DeferredRetry> readyRetries;
     {
@@ -684,20 +717,29 @@ ProcessRenderRuntime::ControlResult ProcessRenderRuntime::reconfigureVocoder(con
         std::unique_lock<std::mutex> stateLock(vocoderMutex_);
         const bool gateClosed = retry.completion.gate != nullptr
             && retry.completion.gate->closed;
+        auto crsShared = retry.crs.lock();
+        const bool ownerUnavailable = crsShared == nullptr;
         domainAvailable = !shuttingDown_.load(std::memory_order_acquire)
             && vocoderDomain_ != nullptr;
-        if (domainAvailable && !gateClosed)
+        if (domainAvailable && !gateClosed && !ownerUnavailable)
         {
-            bool requeued = false;
+            auto requeueResult = RenderWorker::RequeueResult::InvalidJob;
             if (gateLock.owns_lock())
                 gateLock.unlock();
-            if (auto crsShared = retry.crs.lock())
-                requeued = crsShared->requeueRenderChunk(retry.job);
-            if (requeued)
+            requeueResult = crsShared->requeueRenderChunk(retry.job);
+            if (requeueResult == RenderWorker::RequeueResult::Requeued)
             {
                 stateLock.unlock();
                 continue;
             }
+            retry.reason += "; requeue rejected because "
+                + (requeueResult == RenderWorker::RequeueResult::LeaseUnavailable
+                    ? juce::String("the RenderWorker execution lease is unavailable")
+                    : requeueResult == RenderWorker::RequeueResult::QueueFull
+                        ? juce::String("the RenderWorker queue is full")
+                        : requeueResult == RenderWorker::RequeueResult::CacheRejected
+                            ? juce::String("RenderCache rejected the Running-to-Pending transition")
+                            : juce::String("the render job is invalid"));
         }
         if (gateLock.owns_lock())
             gateLock.unlock();
@@ -705,22 +747,42 @@ ProcessRenderRuntime::ControlResult ProcessRenderRuntime::reconfigureVocoder(con
 
         if (retry.job.renderCache != nullptr
             && retry.job.renderCache->completeChunkRenderFailure(
-                retry.job.startSample, retry.job.targetRevision))
+                retry.job.startSample, retry.job.targetRevision)
+            && !gateClosed && !ownerUnavailable
+            && !shuttingDown_.load(std::memory_order_acquire))
+        {
+            const auto reason = !domainAvailable
+                ? (errorMessage.isNotEmpty()
+                    ? errorMessage + "; deferred task: " + retry.reason
+                    : retry.reason)
+                : retry.reason;
             notifyChunkFailed(retry.completion, retry.job.contentKey,
-                              retry.job.targetRevision, retry.reason);
+                              retry.job.targetRevision, reason, false);
+            deferredFailureNotifications.push_back({
+                retry.job.contentKey,
+                retry.completion.contentRevision,
+                retry.job.targetRevision,
+                reason,
+                retry.job.renderCache,
+                retry.completion.gate});
+        }
     }
+    if (!domainAvailable && errorMessage.isEmpty())
+        errorMessage = "Vocoder became unavailable during reconfiguration";
     return domainAvailable ? ControlResult::Changed : ControlResult::Failed;
 }
 
 bool ProcessRenderRuntime::postControlCommand(ControlCommand command)
 {
     bool rejected = false;
+    bool lifecycleRejected = false;
     {
         std::lock_guard<std::mutex> lock(controlMutex_);
         if (shuttingDown_.load(std::memory_order_acquire))
         {
             AppLogger::error("[ProcessRenderRuntime] rejected control command during shutdown; Failed");
             rejected = true;
+            lifecycleRejected = true;
         }
         else
         {
@@ -745,21 +807,38 @@ bool ProcessRenderRuntime::postControlCommand(ControlCommand command)
     {
         auto transaction = std::move(command.transaction);
         auto completion = std::move(command.completion);
+        auto completionGate = std::move(command.completionGate);
         auto finish = [transaction](const char* reason) mutable noexcept {
             finishControlTransaction(transaction, reason);
         };
         const bool posted = juce::MessageManager::callAsync(
-            [completion = std::move(completion), finish, transaction]() mutable {
+            [completion = std::move(completion), completionGate, finish, transaction,
+             lifecycleRejected]() mutable {
                 if (!claimControlTransaction(transaction))
                     return;
-                try
+                const auto invokeCompletion = [&]() {
+                    try
+                    {
+                        if (completion)
+                            completion(lifecycleRejected ? ControlResult::Unchanged : ControlResult::Failed,
+                                lifecycleRejected
+                                    ? juce::String{}
+                                    : juce::String("Vocoder control queue is full"));
+                    }
+                    catch (...)
+                    {
+                        AppLogger::error("[ProcessRenderRuntime] rejected control completion threw");
+                    }
+                };
+                if (completionGate != nullptr)
                 {
-                    if (completion)
-                        completion(ControlResult::Failed);
+                    CompletionCallbackLease callbackLease(*completionGate);
+                    if (callbackLease)
+                        invokeCompletion();
                 }
-                catch (...)
+                else
                 {
-                    AppLogger::error("[ProcessRenderRuntime] rejected control completion threw");
+                    invokeCompletion();
                 }
                 completeClaimedControlTransaction(transaction, "shutdown rejection");
             });
@@ -806,14 +885,7 @@ void ProcessRenderRuntime::controlWorkerLoop()
                     return domainSubmitInFlight_ == 0;
                 });
             }
-            for (auto& retry : deferred)
-            {
-                if (retry.job.renderCache != nullptr
-                    && retry.job.renderCache->completeChunkRenderFailure(
-                        retry.job.startSample, retry.job.targetRevision))
-                    notifyChunkFailed(retry.completion, retry.job.contentKey,
-                                      retry.job.targetRevision, retry.reason);
-            }
+            failDeferredRetries(std::move(deferred));
             domain.reset();
 
             // GAME inference is process-scoped and not cancellable.  Join its
@@ -833,6 +905,8 @@ void ProcessRenderRuntime::controlWorkerLoop()
         }
 
         ControlResult result = ControlResult::Failed;
+        juce::String errorMessage;
+        std::vector<DeferredFailureNotification> deferredFailureNotifications;
         try
         {
             if (command.transaction && command.transaction->crs)
@@ -840,7 +914,7 @@ void ProcessRenderRuntime::controlWorkerLoop()
                 command.transaction->crs->pauseRenderWorker();
                 command.transaction->paused.store(true, std::memory_order_release);
             }
-            result = reconfigureVocoder(command);
+            result = reconfigureVocoder(command, errorMessage, deferredFailureNotifications);
             if (command.transaction && command.transaction->crs)
                 command.transaction->crs->waitAsyncRenderJobs();
         }
@@ -848,11 +922,13 @@ void ProcessRenderRuntime::controlWorkerLoop()
         {
             AppLogger::error("[ProcessRenderRuntime] control command failed: "
                 + juce::String(e.what()));
+            errorMessage = "Vocoder control command threw std::exception: " + juce::String(e.what());
             result = ControlResult::Failed;
         }
         catch (...)
         {
             AppLogger::error("[ProcessRenderRuntime] control command failed: unknown exception");
+            errorMessage = "Vocoder control command threw an unknown exception";
             result = ControlResult::Failed;
         }
 
@@ -864,26 +940,63 @@ void ProcessRenderRuntime::controlWorkerLoop()
 
         auto transaction = std::move(command.transaction);
         auto completion = std::move(command.completion);
+        auto completionGate = std::move(command.completionGate);
+        const auto notifyDeferredFailures = [&]() {
+            if (shuttingDown_.load(std::memory_order_acquire)
+                || deferredFailureNotifications.empty())
+                return;
+            auto notificationClaim = std::make_shared<std::atomic<bool>>(false);
+            for (auto& failure : deferredFailureNotifications)
+                notifyApplicationRenderFailure(
+                    failure.contentKey, failure.contentRevision, failure.targetRevision,
+                    failure.reason, std::move(failure.renderCache), std::move(failure.gate),
+                    notificationClaim);
+        };
+        const bool rootCompletionCanNotify = result == ControlResult::Failed
+            && (command.type == ControlCommand::Type::SetVocoderWeight
+                || command.type == ControlCommand::Type::ResetInferenceBackend)
+            && static_cast<bool>(completion);
+        auto rootCompletionDisplayed = std::make_shared<std::atomic<bool>>(false);
         if (!transaction && !completion)
+        {
+            notifyDeferredFailures();
             continue;
+        }
         auto waitTransaction = transaction;
         const bool posted = juce::MessageManager::callAsync(
-            [completion = std::move(completion), result, transaction]() mutable {
+            [completion = std::move(completion), result, errorMessage, transaction,
+             completionGate, rootCompletionCanNotify, rootCompletionDisplayed]() mutable {
                 if (transaction && !claimControlTransaction(transaction))
                     return;
-                try
+                const auto invokeCompletion = [&]() {
+                    try
+                    {
+                        if (completion)
+                        {
+                            completion(result, errorMessage);
+                            if (rootCompletionCanNotify)
+                                rootCompletionDisplayed->store(true, std::memory_order_release);
+                        }
+                    }
+                    catch (const std::exception& e)
+                    {
+                        AppLogger::error("[ProcessRenderRuntime] control completion threw: "
+                            + juce::String(e.what()));
+                    }
+                    catch (...)
+                    {
+                        AppLogger::error("[ProcessRenderRuntime] control completion threw unknown exception");
+                    }
+                };
+                if (completionGate != nullptr)
                 {
-                    if (completion)
-                        completion(result);
+                    CompletionCallbackLease callbackLease(*completionGate);
+                    if (callbackLease)
+                        invokeCompletion();
                 }
-                catch (const std::exception& e)
+                else
                 {
-                    AppLogger::error("[ProcessRenderRuntime] control completion threw: "
-                        + juce::String(e.what()));
-                }
-                catch (...)
-                {
-                    AppLogger::error("[ProcessRenderRuntime] control completion threw unknown exception");
+                    invokeCompletion();
                 }
                 completeClaimedControlTransaction(transaction, "message completion");
             });
@@ -910,12 +1023,17 @@ void ProcessRenderRuntime::controlWorkerLoop()
             if (activeTransaction_ == waitTransaction)
                 activeTransaction_.reset();
         }
+        const bool rootCompletionDisplayedSuccessfully = posted
+            && rootCompletionDisplayed->load(std::memory_order_acquire);
+        if (!posted || (waitTransaction != nullptr && !rootCompletionDisplayedSuccessfully))
+            notifyDeferredFailures();
     }
 }
 
 void ProcessRenderRuntime::setVocoderModelWeight(const VocoderModelWeight& weight,
                                                  std::shared_ptr<ContentRenderService> crs,
-                                                 std::function<void(ControlResult)> completion)
+                                                 ControlCompletion completion,
+                                                 std::shared_ptr<CompletionGate> completionGate)
 {
     // UI 线程只投递命令并立即返回；Session 销毁与重建由 control worker 串行执行。
     ControlCommand command;
@@ -924,11 +1042,12 @@ void ProcessRenderRuntime::setVocoderModelWeight(const VocoderModelWeight& weigh
     command.transaction = std::make_shared<ControlTransaction>();
     command.transaction->crs = std::move(crs);
     command.completion = std::move(completion);
+    command.completionGate = std::move(completionGate);
     postControlCommand(std::move(command));
 }
 
 void ProcessRenderRuntime::resetVocoder(std::shared_ptr<ContentRenderService> crs,
-                                        std::function<void(ControlResult)> completion)
+                                        ControlCompletion completion)
 {
     ControlCommand command;
     command.type = ControlCommand::Type::ResetVocoder;
@@ -940,7 +1059,8 @@ void ProcessRenderRuntime::resetVocoder(std::shared_ptr<ContentRenderService> cr
 
 void ProcessRenderRuntime::resetInferenceBackend(bool forceCpu,
                                                  std::shared_ptr<ContentRenderService> crs,
-                                                 std::function<void(ControlResult)> completion)
+                                                 ControlCompletion completion,
+                                                 std::shared_ptr<CompletionGate> completionGate)
 {
     ControlCommand command;
     command.type = ControlCommand::Type::ResetInferenceBackend;
@@ -948,6 +1068,7 @@ void ProcessRenderRuntime::resetInferenceBackend(bool forceCpu,
     command.transaction = std::make_shared<ControlTransaction>();
     command.transaction->crs = std::move(crs);
     command.completion = std::move(completion);
+    command.completionGate = std::move(completionGate);
     postControlCommand(std::move(command));
 }
 
@@ -977,13 +1098,18 @@ void ProcessRenderRuntime::detachDeferredJobs(
 }
 
 ProcessRenderRuntime::VocoderSubmitResult ProcessRenderRuntime::submitVocoderJob(
-    VocoderDomain::Job job, uint64_t expectedGeneration)
+    VocoderDomain::Job job, uint64_t expectedGeneration, juce::String& rejectionReason)
 {
     VocoderDomain* domain = nullptr;
     {
         std::lock_guard<std::mutex> lock(vocoderMutex_);
-        if (vocoderDomain_ == nullptr || vocoderGeneration_ != expectedGeneration)
+        if (vocoderDomain_ == nullptr || vocoderGeneration_ != expectedGeneration) {
+            rejectionReason = "Vocoder submission rejected because the domain generation changed (expected="
+                + juce::String(static_cast<juce::int64>(expectedGeneration))
+                + ", actual=" + juce::String(static_cast<juce::int64>(vocoderGeneration_))
+                + ", domainAvailable=" + juce::String(vocoderDomain_ != nullptr ? "true" : "false") + ")";
             return VocoderSubmitResult::Retryable;
+        }
         ++domainSubmitInFlight_;
         domain = vocoderDomain_.get();
     }
@@ -1000,13 +1126,18 @@ ProcessRenderRuntime::VocoderSubmitResult ProcessRenderRuntime::submitVocoderJob
     }
 
     bool submitted = false;
+    std::string submitError;
     try
     {
-        submitted = domain->submit(std::move(job));
+        submitted = domain->submit(std::move(job), &submitError);
+    }
+    catch (const std::exception& e)
+    {
+        submitError = "Vocoder domain submission threw std::exception: " + std::string(e.what());
     }
     catch (...)
     {
-        submitted = false;
+        submitError = "Vocoder domain submission threw an unknown exception";
     }
 
     {
@@ -1014,6 +1145,10 @@ ProcessRenderRuntime::VocoderSubmitResult ProcessRenderRuntime::submitVocoderJob
         --domainSubmitInFlight_;
     }
     domainSubmitCv_.notify_all();
+    if (!submitted)
+        rejectionReason = submitError.empty()
+            ? "Vocoder domain rejected the job without an error detail"
+            : juce::String(submitError);
     return submitted ? VocoderSubmitResult::Submitted : VocoderSubmitResult::Retryable;
 }
 
@@ -1049,8 +1184,8 @@ void ProcessRenderRuntime::failDeferredRetries(std::vector<DeferredRetry> retrie
         if (retry.job.renderCache != nullptr
             && retry.job.renderCache->completeChunkRenderFailure(
                 retry.job.startSample, retry.job.targetRevision))
-            notifyChunkFailed(retry.completion, retry.job.contentKey,
-                              retry.job.targetRevision, retry.reason);
+            AppLogger::info("[ProcessRenderRuntime] deferred render cancelled with owner lifecycle: "
+                + retry.reason);
     }
 }
 
@@ -1146,16 +1281,14 @@ void ProcessRenderRuntime::deferOrRequeue(
         gateLock.unlock();
     if (gateClosed)
     {
-        if (job.renderCache != nullptr
-            && job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision))
-            notifyChunkFailed(completion, job.contentKey, job.targetRevision, reason);
+        if (job.renderCache != nullptr)
+            job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision);
         return;
     }
     if (shuttingDown)
     {
-        if (job.renderCache != nullptr
-            && job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision))
-            notifyChunkFailed(completion, job.contentKey, job.targetRevision, reason);
+        if (job.renderCache != nullptr)
+            job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision);
         return;
     }
     if (shouldDefer)
@@ -1184,21 +1317,41 @@ void ProcessRenderRuntime::deferOrRequeue(
             }
             if (failed.job.renderCache != nullptr
                 && failed.job.renderCache->completeChunkRenderFailure(
-                    failed.job.startSample, failed.job.targetRevision))
+                    failed.job.startSample, failed.job.targetRevision)
+                && !shuttingDown_.load(std::memory_order_acquire))
                 notifyChunkFailed(failed.completion, failed.job.contentKey,
-                                  failed.job.targetRevision, failed.reason);
+                                  failed.job.targetRevision,
+                                  "Vocoder initialization could not be queued: control queue is full; "
+                                      + failed.reason);
         }
     }
     else if (deferredCapacityRejected)
     {
         if (job.renderCache != nullptr
             && job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision))
-            notifyChunkFailed(completion, job.contentKey, job.targetRevision, reason);
+            notifyChunkFailed(completion, job.contentKey, job.targetRevision,
+                "Vocoder deferred-job capacity exceeded (capacity="
+                    + juce::String(ProcessRenderRuntime::kMaxDeferredRetryDepth)
+                    + "); " + reason);
     }
-    else if (!crs->requeueRenderChunk(job)
-        && job.renderCache != nullptr
-        && job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision))
-        notifyChunkFailed(completion, job.contentKey, job.targetRevision, reason);
+    else
+    {
+        const auto requeueResult = crs->requeueRenderChunk(job);
+        if (requeueResult != RenderWorker::RequeueResult::Requeued
+            && job.renderCache != nullptr
+            && job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision))
+        {
+            const auto rejectionReason = requeueResult == RenderWorker::RequeueResult::LeaseUnavailable
+                ? juce::String("RenderWorker execution lease is unavailable")
+                : requeueResult == RenderWorker::RequeueResult::QueueFull
+                    ? juce::String("RenderWorker queue is full")
+                    : requeueResult == RenderWorker::RequeueResult::CacheRejected
+                        ? juce::String("RenderCache rejected the Running-to-Pending transition")
+                        : juce::String("RenderWorker rejected an invalid render job");
+            notifyChunkFailed(completion, job.contentKey, job.targetRevision,
+                reason + "; requeue rejected: " + rejectionReason);
+        }
+    }
 }
 
 void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderService> crs,
@@ -1206,18 +1359,21 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
                                                   bool lightPitchEnabled,
                                                   CompletionContext completion)
 {
+    completion.contentRevision = job.contentRevision;
+    completion.renderCache = job.renderCache;
     const auto failureCache = job.renderCache;
     const auto failureStartSample = job.startSample;
     const auto failureRevision = job.targetRevision;
     const auto failureContentKey = job.contentKey;
-    const auto failFrozen = [&]() {
+    const auto failFrozen = [&](const juce::String& reason) {
         failChunk(completion, failureCache.get(), failureStartSample,
-                  failureRevision, failureContentKey);
+                  failureRevision, failureContentKey, reason);
     };
 
     if (shuttingDown_.load(std::memory_order_acquire))
     {
-        failFrozen();
+        if (failureCache != nullptr)
+            failureCache->completeChunkRenderFailure(failureStartSample, failureRevision);
         return;
     }
 
@@ -1227,7 +1383,11 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
     {
     if (crs == nullptr || job.renderCache == nullptr || !job.contentSnapshot || !job.audioBuffer)
     {
-        failFrozen();
+        failFrozen("Render precondition failed: "
+            + juce::String(crs == nullptr ? "ContentRenderService is unavailable; " : "")
+            + juce::String(job.renderCache == nullptr ? "RenderCache is unavailable; " : "")
+            + juce::String(!job.contentSnapshot ? "content snapshot is unavailable; " : "")
+            + juce::String(!job.audioBuffer ? "audio buffer is unavailable" : ""));
         return;
     }
 
@@ -1278,6 +1438,24 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
             }
         }
     }
+    if (!boundariesFrozen)
+    {
+        failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
+                  coreJob.targetRevision, coreJob.contentKey,
+                  "Render chunk boundaries could not be frozen (startSample="
+                    + juce::String(coreJob.startSample)
+                    + ", endSampleExclusive=" + juce::String(coreJob.endSampleExclusive)
+                    + ", audioSamples=" + juce::String(coreJob.audioBuffer->getNumSamples())
+                    + ", hopSize=" + juce::String(RenderChunkPlanner::kRenderHopSize) + ")");
+        return;
+    }
+    if (coreJob.audioBuffer->getNumChannels() <= 0)
+    {
+        failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
+                  coreJob.targetRevision, coreJob.contentKey,
+                  "Render audio buffer has no channels (channels=0)");
+        return;
+    }
 
     // 契约 §6：边界冻结后立即计算当前 chunk 是否与 active-EQ Note 相交。
     // 带 active EQ 的 Note 不得走 Blank：原 Blank/失败条件中若相交则发布原始
@@ -1290,41 +1468,57 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
         std::vector<float> rawAudio(
             monoAudio.begin(),
             monoAudio.begin() + static_cast<size_t>(boundaries.publishSampleCount));
+        const auto rawAudioSamples = rawAudio.size();
         const auto result = publishChunkWithPerNoteEq(
             *coreJob.renderCache, boundaries, std::move(rawAudio),
             coreJob.targetRevision, contentSnap->notes);
         if (result == RenderCache::ChunkRenderResult::InvalidInput
             || result == RenderCache::ChunkRenderResult::MemoryLimitExceeded) {
             failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
-                      coreJob.targetRevision, coreJob.contentKey);
+                      coreJob.targetRevision, coreJob.contentKey,
+                      result == RenderCache::ChunkRenderResult::InvalidInput
+                          ? "RenderCache rejected raw audio as invalid input (startSample="
+                              + juce::String(boundaries.trueStartSample) + ", endSampleExclusive="
+                              + juce::String(boundaries.trueEndSample) + ", expectedSamples="
+                              + juce::String(boundaries.publishSampleCount) + ", actualSamples="
+                              + juce::String(static_cast<juce::int64>(rawAudioSamples))
+                              + ", revision=" + juce::String(static_cast<juce::int64>(coreJob.targetRevision)) + ")"
+                          : "RenderCache could not publish raw audio because its memory limit was exceeded (samples="
+                              + juce::String(static_cast<juce::int64>(rawAudioSamples)) + ")");
         } else if (result == RenderCache::ChunkRenderResult::Published)
             notifyChunkSettled(completion, coreJob);
     };
     const auto settleBlankChunk = [&]() {
-        if (coreJob.renderCache->markChunkAsBlank(coreJob.startSample, coreJob.targetRevision))
+        const auto result = coreJob.renderCache->markChunkAsBlank(
+            coreJob.startSample, coreJob.targetRevision);
+        if (result == RenderCache::ChunkRenderResult::Published)
             notifyChunkSettled(completion, coreJob);
-        else
+        else if (result == RenderCache::ChunkRenderResult::MemoryLimitExceeded)
             failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
-                      coreJob.targetRevision, coreJob.contentKey);
+                      coreJob.targetRevision, coreJob.contentKey,
+                      "RenderCache could not publish the blank-settled state because its memory limit was exceeded");
     };
 
-    if (!clipFound || monoAudio.empty() || numFrames <= 0 || !boundariesFrozen)
+    if (!clipFound || monoAudio.empty() || numFrames <= 0)
     {
         // 无原始音频可发布：保持既有失败语义
         failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
-                  coreJob.targetRevision, coreJob.contentKey);
+                  coreJob.targetRevision, coreJob.contentKey,
+                  "Render audio chunk could not be prepared for publication (clipFound="
+                    + juce::String(clipFound ? "true" : "false")
+                    + ", monoSamples=" + juce::String(static_cast<juce::int64>(monoAudio.size()))
+                    + ", frames=" + juce::String(numFrames) + ")");
         return;
     }
 
-    if (!pitchCurve)
+    if (pitchCurve == nullptr)
     {
-        if (!intersectsActiveEqNote)
-        {
+        if (intersectsActiveEqNote)
+            publishRawWithEq();
+        else
             failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
-                      coreJob.targetRevision, coreJob.contentKey);
-            return;
-        }
-        publishRawWithEq();
+                      coreJob.targetRevision, coreJob.contentKey,
+                      "Render input has no pitch curve and the chunk contains no active-EQ Note");
         return;
     }
 
@@ -1347,10 +1541,12 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
 
     const int f0HopSize = pitchCurve->getHopSize();
     const double f0SampleRate = pitchCurve->getSampleRate();
-    if (f0HopSize <= 0 || f0SampleRate <= 0.0)
+    if (f0HopSize <= 0 || !std::isfinite(f0SampleRate) || f0SampleRate <= 0.0)
     {
         failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
-                  coreJob.targetRevision, coreJob.contentKey);
+                  coreJob.targetRevision, coreJob.contentKey,
+                  "OriginalF0 coordinates are invalid (hopSize=" + juce::String(f0HopSize)
+                    + ", sampleRate=" + juce::String(f0SampleRate, 6) + ")");
         return;
     }
 
@@ -1497,6 +1693,7 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
                     detectorFrames.data(),
                     detectorNumSamples,
                     snapMode);
+                const auto shiftedAudioSamples = shiftedAudio.size();
 
                 const uint64_t objectId = coreJob.contentKey.objectId;
                 const auto result = publishChunkWithPerNoteEq(
@@ -1507,7 +1704,16 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
                     || result == RenderCache::ChunkRenderResult::MemoryLimitExceeded)
                 {
                     failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
-                              coreJob.targetRevision, coreJob.contentKey);
+                              coreJob.targetRevision, coreJob.contentKey,
+                              result == RenderCache::ChunkRenderResult::InvalidInput
+                                  ? "RenderCache rejected AutoTune audio as invalid input (startSample="
+                                      + juce::String(boundaries.trueStartSample) + ", endSampleExclusive="
+                                      + juce::String(boundaries.trueEndSample) + ", expectedSamples="
+                                      + juce::String(boundaries.publishSampleCount) + ", actualSamples="
+                                      + juce::String(static_cast<juce::int64>(shiftedAudioSamples))
+                                      + ", revision=" + juce::String(static_cast<juce::int64>(coreJob.targetRevision)) + ")"
+                                  : "RenderCache could not publish AutoTune audio because its memory limit was exceeded (samples="
+                                      + juce::String(static_cast<juce::int64>(shiftedAudioSamples)) + ")");
                 }
                 else if (result == RenderCache::ChunkRenderResult::Published)
                 {
@@ -1533,13 +1739,15 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
         requeueJob.contentKey = coreJob.contentKey;
         requeueJob.renderCache = coreJob.renderCache;
         requeueJob.contentSnapshot = contentSnap;
+        requeueJob.contentRevision = coreJob.contentRevision;
         requeueJob.audioBuffer = coreJob.audioBuffer;
         requeueJob.audioSampleRate = coreJob.audioSampleRate;
         requeueJob.startSample = coreJob.startSample;
         requeueJob.endSampleExclusive = coreJob.endSampleExclusive;
         requeueJob.queuedChunkStartSample = coreJob.startSample;
         requeueJob.targetRevision = coreJob.targetRevision;
-        deferOrRequeue(crs, std::move(requeueJob), completion);
+        deferOrRequeue(crs, std::move(requeueJob), completion,
+            "Vocoder configuration is unavailable because the domain is initializing or being reconfigured");
         return;
     }
 
@@ -1548,7 +1756,9 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
     if (conditioningBins <= 0)
     {
         failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
-                  coreJob.targetRevision, coreJob.contentKey);
+                  coreJob.targetRevision, coreJob.contentKey,
+                  "Vocoder conditioning bin count is invalid (bins="
+                    + juce::String(conditioningBins) + ")");
         return;
     }
 
@@ -1572,7 +1782,10 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
     if (!conditioningResult.ok() || conditioningResult.value().empty())
     {
         failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
-                  coreJob.targetRevision, coreJob.contentKey);
+                  coreJob.targetRevision, coreJob.contentKey,
+                  !conditioningResult.ok()
+                      ? juce::String(conditioningResult.error().fullMessage())
+                      : juce::String("Mel conditioning calculation returned an empty result"));
         return;
     }
 
@@ -1654,7 +1867,7 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
     asyncCounter = crs->beginAsyncRenderJob();
     if (asyncCounter == nullptr)
     {
-        failFrozen();
+        failFrozen("AsyncRenderJob registration failed: RenderWorker rejected the job because its async execution is closed");
         return;
     }
     vocoderJob.onComplete = [this, weakCrs = std::weak_ptr<ContentRenderService>(crs),
@@ -1677,11 +1890,8 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
 
         if (RenderWorker::isAsyncJobClosed(asyncCounter))
         {
-            failChunk(completion, renderCache.get(), jobStartSample,
-                      targetRevision, captureContentKey,
-                      result == VocoderRenderScheduler::JobResult::Succeeded
-                          ? juce::String("Render cancelled because its owner detached")
-                          : error);
+            if (renderCache != nullptr)
+                renderCache->completeChunkRenderFailure(jobStartSample, targetRevision);
             return;
         }
 
@@ -1693,7 +1903,10 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
                 AppLogger::error("ChunkRender: synthesis length mismatch for RenderCache publish objId="
                     + juce::String(static_cast<juce::int64>(chunkObjId)));
                 failChunk(completion, renderCache.get(), jobStartSample,
-                          targetRevision, captureContentKey);
+                          targetRevision, captureContentKey,
+                          "Vocoder synthesis output length mismatch (expected="
+                            + juce::String(boundaries.synthSampleCount)
+                            + ", actual=" + juce::String(static_cast<juce::int64>(audio.size())) + ")");
                 return;
             }
 
@@ -1705,7 +1918,16 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
                 || publishResult == RenderCache::ChunkRenderResult::MemoryLimitExceeded)
             {
                 failChunk(completion, renderCache.get(), jobStartSample,
-                          targetRevision, captureContentKey);
+                          targetRevision, captureContentKey,
+                          publishResult == RenderCache::ChunkRenderResult::InvalidInput
+                              ? "RenderCache rejected synthesized audio as invalid input (startSample="
+                                  + juce::String(boundaries.trueStartSample) + ", endSampleExclusive="
+                                  + juce::String(boundaries.trueEndSample) + ", expectedSamples="
+                                  + juce::String(boundaries.publishSampleCount) + ", actualSamples="
+                                  + juce::String(static_cast<juce::int64>(boundaries.publishSampleCount))
+                                  + ", revision=" + juce::String(static_cast<juce::int64>(targetRevision)) + ")"
+                              : "RenderCache could not publish synthesized audio because its memory limit was exceeded (samples="
+                                  + juce::String(boundaries.publishSampleCount) + ")");
                 return;
             }
 
@@ -1730,6 +1952,7 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
             requeueJob.contentKey = captureContentKey;
             requeueJob.renderCache = renderCache;
             requeueJob.contentSnapshot = contentSnap;
+            requeueJob.contentRevision = completion.contentRevision;
             requeueJob.audioBuffer = requeueAudioBuffer;
             requeueJob.audioSampleRate = requeueAudioSampleRate;
             requeueJob.startSample = jobStartSample;
@@ -1738,43 +1961,64 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
             requeueJob.targetRevision = targetRevision;
             if (RenderWorker::isAsyncJobClosed(asyncCounter))
             {
-                failChunk(completion, renderCache.get(), jobStartSample,
-                          targetRevision, captureContentKey, error);
+                if (renderCache != nullptr)
+                    renderCache->completeChunkRenderFailure(jobStartSample, targetRevision);
             }
             else if (auto crs = weakCrs.lock())
-                deferOrRequeue(std::move(crs), std::move(requeueJob), completion, error);
-            else
-                failChunk(completion, renderCache.get(), jobStartSample,
-                          targetRevision, captureContentKey, error);
+                deferOrRequeue(std::move(crs), std::move(requeueJob), completion,
+                    "Vocoder inference cancellation could not be requeued: "
+                        + (error.isNotEmpty() ? error : juce::String("scheduler supplied no cancellation reason")));
+            else if (renderCache != nullptr)
+                renderCache->completeChunkRenderFailure(jobStartSample, targetRevision);
         }
         else
         {
             // Failed: real inference error
+            const auto inferenceError = error.isNotEmpty()
+                ? error
+                : juce::String("Vocoder inference failed without an error detail");
             AppLogger::error("ChunkRender: vocoder failed objId="
                 + juce::String(static_cast<juce::int64>(chunkObjId))
-                + " error=" + error);
+                + " error=" + inferenceError);
             failChunk(completion, renderCache.get(), jobStartSample,
-                      targetRevision, captureContentKey, error);
+                      targetRevision, captureContentKey, inferenceError);
         }
     };
 
-    const auto submitResult = submitVocoderJob(std::move(vocoderJob), vocoderCfg.generation);
+    const auto f0Capacity = vocoderJob.f0.capacity();
+    const auto uvCapacity = vocoderJob.uv.capacity();
+    const auto conditioningCapacity = vocoderJob.conditioning.capacity();
+    juce::String submissionError;
+    const auto submitResult = submitVocoderJob(
+        std::move(vocoderJob), vocoderCfg.generation, submissionError);
     if (submitResult != VocoderSubmitResult::Submitted)
     {
         if (submitResult == VocoderSubmitResult::PayloadTooLarge)
-            failFrozen();
+            failFrozen("Vocoder submission payload exceeded the scheduler memory limit (F0="
+                + juce::String(static_cast<juce::int64>(f0Capacity)) + ", UV="
+                + juce::String(static_cast<juce::int64>(uvCapacity)) + ", conditioning="
+                + juce::String(static_cast<juce::int64>(conditioningCapacity)) + " floats)");
         else
-            deferOrRequeue(crs, std::move(coreJob), completion);
+            deferOrRequeue(crs, std::move(coreJob), completion,
+                submissionError.isNotEmpty()
+                    ? submissionError
+                    : juce::String("Vocoder job submission was rejected without an error detail"));
         RenderWorker::completeAsyncJob(asyncCounter);
         return;
     }
     asyncSubmitted = true;
     }
+    catch (const std::exception& e)
+    {
+        if (asyncCounter != nullptr && !asyncSubmitted)
+            RenderWorker::completeAsyncJob(asyncCounter);
+        failFrozen("Render processing threw std::exception: " + juce::String(e.what()));
+    }
     catch (...)
     {
         if (asyncCounter != nullptr && !asyncSubmitted)
             RenderWorker::completeAsyncJob(asyncCounter);
-        failFrozen();
+        failFrozen("Render processing threw an unknown exception");
     }
 }
 

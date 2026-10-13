@@ -85,6 +85,11 @@ void CaptureSegmentContent::applyOriginalF0State(OriginalF0State state)
         return;
 }
 
+void CaptureSegmentContent::applyOriginalF0FailureReason(std::string reason)
+{
+    content_.analysis.originalF0FailureReason = std::move(reason);
+}
+
 void CaptureSegmentContent::applyDetectedKey(const DetectedKey& key)
 {
     if (content_.analysis.detectedKey.root == key.root

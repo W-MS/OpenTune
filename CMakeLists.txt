@@ -31,7 +31,7 @@ endif()
 # ==============================================================================
 # Project Definition
 # ==============================================================================
-project(OpenTune VERSION 1.8.1 LANGUAGES CXX C)
+project(OpenTune VERSION 1.8.2 LANGUAGES CXX C)
 
 # 为 clangd/LSP 导出编译数据库（compile_commands.json）
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

@@ -192,6 +192,7 @@ VocoderCreationResult VocoderFactory::create(
     const std::string& modelPath,
     Ort::Env& env)
 {
+    std::string backendFallbackError;
 #ifdef _WIN32
     const auto backendSelection = AccelerationDetector::getInstance().getSelection();
 
@@ -225,6 +226,7 @@ VocoderCreationResult VocoderFactory::create(
             return VocoderCreationResult::success(std::move(vocoder), VocoderBackend::DML);
 
         } catch (const std::exception& e) {
+            backendFallbackError = "DirectML initialization failed: " + std::string(e.what());
             AppLogger::error("[VocoderFactory] DML vocoder creation FAILED: "
                 + juce::String(e.what()));
             AppLogger::warn("[VocoderFactory] GPU DML initialization failed, switching to CPU vocoder");
@@ -252,6 +254,8 @@ VocoderCreationResult VocoderFactory::create(
                 AppLogger::info("[VocoderFactory] Vocoder session: CoreML EP added ("
                     + juce::String(coreMlProviderDescription()) + ", computeUnits=ALL)");
             } catch (const std::exception& e) {
+                backendFallbackError = "CoreML execution provider initialization failed: "
+                    + std::string(e.what());
                 AppLogger::warn(juce::String("[VocoderFactory] Failed to add CoreML EP for vocoder: ") + e.what());
                 AppLogger::info("[VocoderFactory] Vocoder session: falling back to CPU");
                 AccelerationDetector::getInstance().overrideBackend(AccelerationDetector::AccelBackend::CPU);
@@ -282,6 +286,7 @@ VocoderCreationResult VocoderFactory::create(
             if (selectedBackend != VocoderBackend::CoreML)
                 throw;
 
+            backendFallbackError = "CoreML session creation failed: " + std::string(e.what());
             AppLogger::warn(juce::String("[VocoderFactory] CoreML session creation failed: ") + e.what());
             AppLogger::info("[VocoderFactory] Retrying vocoder with CPU");
             AccelerationDetector::getInstance().overrideBackend(AccelerationDetector::AccelBackend::CPU);
@@ -315,8 +320,11 @@ VocoderCreationResult VocoderFactory::create(
         return VocoderCreationResult::success(std::move(vocoder), selectedBackend);
         
     } catch (const std::exception& e) {
-        return VocoderCreationResult::failure(VocoderBackend::CPU, 
-            "Vocoder creation failed: " + std::string(e.what()));
+        const auto prefix = backendFallbackError.empty()
+            ? std::string{}
+            : backendFallbackError + "; ";
+        return VocoderCreationResult::failure(VocoderBackend::CPU,
+            prefix + "Vocoder creation failed: " + std::string(e.what()));
     }
 }
 

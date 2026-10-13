@@ -12,6 +12,17 @@ enum class DomainKind : uint8_t
     RegularVST3Capture
 };
 
+inline const char* getDomainKindName(DomainKind domainKind) noexcept
+{
+    switch (domainKind)
+    {
+        case DomainKind::ARAAudioModification: return "ARAAudioModification";
+        case DomainKind::StandaloneClip: return "StandaloneClip";
+        case DomainKind::RegularVST3Capture: return "RegularVST3Capture";
+    }
+    return "Unknown";
+}
+
 // Identifies one domain content root. It does not carry store pointers,
 // render-cache pointers, or cross-domain materialization identity.
 struct ContentKey

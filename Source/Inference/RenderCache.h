@@ -79,6 +79,7 @@ public:
                                                     uint64_t revision);
 
     bool completeChunkRenderFailure(int64_t startSample, uint64_t revision);
+    bool markFailureNotificationForContentRevision(uint64_t contentRevision);
 
     /**
      * stale-generation 回退：仅当 chunk 仍正处 Running 且 runningRevision 匹配时，
@@ -87,7 +88,7 @@ public:
      */
     bool requeueRunningChunk(int64_t startSample, uint64_t runningRevision);
 
-    bool markChunkAsBlank(int64_t startSample, uint64_t revision);
+    ChunkRenderResult markChunkAsBlank(int64_t startSample, uint64_t revision);
 
     struct ChunkStats {
         int idle{0};
@@ -182,6 +183,8 @@ private:
     mutable juce::SpinLock lock_;
     std::map<int64_t, Chunk> chunks_;
     std::set<int64_t> pendingChunks_;
+    uint64_t notifiedFailureContentRevision_{0};
+    bool hasNotifiedFailureContentRevision_{false};
 
     std::shared_ptr<const PublishedRenderSnapshot> publishedSnapshot_;
     std::shared_ptr<const PublishedPreparedSnapshot> preparedSnapshot_;

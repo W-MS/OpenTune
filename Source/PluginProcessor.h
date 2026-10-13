@@ -23,8 +23,10 @@
 #include <cstdint>
 #include <vector>
 #include <map>
+#include <deque>
 #include <mutex>
 #include <optional>
+#include <unordered_map>
 #include <utility>
 #if JucePlugin_Build_Standalone
 #include "SourceStore.h"
@@ -56,6 +58,7 @@
 #include "Utils/LocalizationManager.h"
 #include "Utils/PlaybackAudioReader.h"
 #include "Content/ContentKey.h"
+#include "Content/OriginalF0FailureEvent.h"
 #include "Content/ContentEditCommands.h"
 #include "Render/ContentRenderService.h"
 #include "Runtime/ProcessRenderRuntime.h"
@@ -373,7 +376,6 @@ private:
 #if JucePlugin_Build_Standalone
     std::atomic<juce::int64> lastControlTimestamp_{0};
     std::atomic<int> lastControlType_{static_cast<int>(DiagnosticControlCall::None)};
-    std::atomic<uint64_t> f0FailureGeneration_{0};
 #endif
 
 public:
@@ -535,6 +537,8 @@ private:
 
     ExperimentalReferenceAlignMode experimentalReferenceAlignMode_ = ExperimentalReferenceAlignMode::StandardAuto;
     std::unordered_set<ContentKey> pendingTimeToolSeedKeys_; // message-thread only
+    std::unordered_map<ContentKey, uint64_t> f0RequestTokens_; // message-thread only
+    std::deque<OriginalF0FailureEvent> pendingF0FailureEvents_; // message-thread only
 
     // 运行时惰性解析进程级 F0 服务，消除冷启动空快照
     // 仅在 initializeRuntimeState() 中构造，避免 scanner 在构造期间启动线程
@@ -613,7 +617,7 @@ public:
      */
     void setVocoderModelWeight(const VocoderModelWeight& weight);
 
-    bool setF0ModelType(F0ModelType type);
+    bool setF0ModelType(F0ModelType type, juce::String* failureReason = nullptr);
 
     /** 清除缓存并重新渲染所有 clip（UI 线程调用）。 */
     void invalidateAllContentCaches();
@@ -626,13 +630,6 @@ public:
     ContentRenderService* getContentRenderService() noexcept { return contentRenderService_.get(); }
     const ContentRenderService* getContentRenderService() const noexcept { return contentRenderService_.get(); }
     RenderCache::ChunkStats getReadableContentChunkStats(ContentKey key) const noexcept;
-#if JucePlugin_Build_Standalone
-    uint64_t getF0FailureGeneration() const noexcept
-    {
-        return f0FailureGeneration_.load(std::memory_order_relaxed);
-    }
-#endif
-
 #if !JucePlugin_Build_Standalone
     /** Returns the unbound host-plugin Capture session, or nullptr in Standalone/ARA mode. */
     Capture::CaptureSession* getCaptureSession() noexcept;
@@ -743,6 +740,9 @@ public:
                             std::shared_ptr<const TimeGridSnapshot> grid);
     bool setContentDetectedKey(ContentKey key, const DetectedKey& detectedKey);
     bool setContentOriginalF0State(ContentKey key, OriginalF0State state);
+    bool setContentOriginalF0FailureReason(ContentKey key, std::string reason);
+    void recordOriginalF0FailureEvent(ContentKey key, const juce::String& reason);
+    std::deque<OriginalF0FailureEvent> takeOriginalF0FailureEvents();
     bool applyContentPitchShiftState(ContentKey key, const PitchShiftEditState& state);
     std::unique_ptr<PitchShiftEditAction> commitPitchShiftEdit(
         ContentKey key,

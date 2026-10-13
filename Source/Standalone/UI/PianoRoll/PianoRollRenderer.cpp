@@ -1251,7 +1251,8 @@ void PianoRollRenderer::drawSelectedNoteHighlights(juce::Graphics& g,
                                                     const RenderContext& ctx,
                                                     const std::vector<Note>& notes,
                                                     const std::vector<int>& selectedNoteIndices,
-                                                    const ContentRenderItem& item)
+                                                    const ContentRenderItem& item,
+                                                    bool playheadHighlight)
 {
     if (notes.empty() || selectedNoteIndices.empty())
         return;
@@ -1319,12 +1320,19 @@ void PianoRollRenderer::drawSelectedNoteHighlights(juce::Graphics& g,
                                    clipRefMag, volumeEnvelope, centerY, halfH, x1, x2, blob))
                 continue;
 
-            // 选中态：透明选区填充 + 高亮描边；中心高光由内容层绘制，F0 保持前景。
-            g.setColour(item.displayColour.brighter(0.55f).withAlpha(0.45f));
+            // 播放头高亮采用主题强调色，与真实选中态的轨道色描边区分。
+            const auto highlightColour = playheadHighlight
+                ? UIColors::accent
+                : item.displayColour;
+            g.setColour(playheadHighlight
+                ? highlightColour.withAlpha(0.16f)
+                : highlightColour.brighter(0.55f).withAlpha(0.45f));
             g.fillPath(blob);
 
-            g.setColour(item.displayColour.brighter(0.75f).withAlpha(0.90f));
-            g.strokePath(blob, juce::PathStrokeType(1.8f,
+            g.setColour(playheadHighlight
+                ? highlightColour.withAlpha(0.95f)
+                : highlightColour.brighter(0.75f).withAlpha(0.90f));
+            g.strokePath(blob, juce::PathStrokeType(playheadHighlight ? 1.4f : 1.8f,
                                                     juce::PathStrokeType::curved,
                                                     juce::PathStrokeType::rounded));
         }
@@ -1357,12 +1365,19 @@ void PianoRollRenderer::drawSelectedNoteHighlights(juce::Graphics& g,
         float w = std::max(1.0f, static_cast<float>(x2 - x1));
         auto noteBounds = juce::Rectangle<float>(static_cast<float>(x1), y, w, h);
 
-        // Selection highlight: semi-transparent tint + brighter border (track theme colour)
-        g.setColour(item.displayColour.brighter(0.55f).withAlpha(isAurora ? 0.30f : 0.25f));
+        // 播放头高亮用主题强调色，真实选中态继续使用轨道色。
+        const auto highlightColour = playheadHighlight
+            ? UIColors::accent
+            : item.displayColour;
+        g.setColour(playheadHighlight
+            ? highlightColour.withAlpha(0.16f)
+            : highlightColour.brighter(0.55f).withAlpha(isAurora ? 0.30f : 0.25f));
         g.fillRect(noteBounds);
 
-        g.setColour(item.displayColour.brighter(0.75f).withAlpha(isAurora ? 0.90f : 0.85f));
-        g.drawRect(noteBounds, isAurora ? 1.5f : 1.2f);
+        g.setColour(playheadHighlight
+            ? highlightColour.withAlpha(0.95f)
+            : highlightColour.brighter(0.75f).withAlpha(isAurora ? 0.90f : 0.85f));
+        g.drawRect(noteBounds, playheadHighlight ? 1.4f : (isAurora ? 1.5f : 1.2f));
     }
 }
 

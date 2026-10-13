@@ -62,7 +62,8 @@ public:
      * @return true if model file exists and service is configured
      */
     bool initialize(const std::string& modelDir,
-                    F0ModelType initialModel = F0ModelType::FCPE);
+                    F0ModelType initialModel = F0ModelType::FCPE,
+                    std::string* errorMessage = nullptr);
 
     /**
      * Extract F0 from audio
@@ -100,7 +101,7 @@ public:
      * @param type F0 model type (e.g., FCPE)
      * @return true if model file exists and selection updated
      */
-    bool setF0Model(F0ModelType type);
+    bool setF0Model(F0ModelType type, std::string* errorMessage = nullptr);
 
     /**
      * Get current F0 model type

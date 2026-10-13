@@ -5,6 +5,7 @@
 #include "../DSP/ReferenceFeatures.h"
 #include "../Utils/SilentGapDetector.h"
 #include <memory>
+#include <string>
 #include <vector>
 #include <cstdint>
 
@@ -14,6 +15,7 @@ namespace OpenTune {
 struct AnalysisState
 {
     OriginalF0State originalF0State{OriginalF0State::NotRequested};
+    std::string originalF0FailureReason;
     std::shared_ptr<PitchCurve> pitchCurve;
     DetectedKey detectedKey;
     std::vector<SilentGap> silentGaps;
@@ -22,6 +24,8 @@ struct AnalysisState
 
     bool setOriginalF0State(OriginalF0State state) noexcept
     {
+        if (state != OriginalF0State::Failed)
+            originalF0FailureReason.clear();
         if (originalF0State == state)
             return false;
 

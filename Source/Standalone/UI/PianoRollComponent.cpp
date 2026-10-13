@@ -1582,7 +1582,7 @@ void PianoRollComponent::drawPlayheadNoteHighlight(juce::Graphics& g)
                 hitIndices.push_back(i);
         }
         if (!hitIndices.empty())
-            renderer_->drawSelectedNoteHighlights(g, ctx, *notes, hitIndices, item);
+            renderer_->drawSelectedNoteHighlights(g, ctx, *notes, hitIndices, item, true);
     }
 }
 
@@ -4991,6 +4991,13 @@ bool PianoRollComponent::handleViewportShortcut(const juce::KeyPress& key)
 bool PianoRollComponent::keyPressed(const juce::KeyPress& key) {
     if (handleViewportShortcut(key))
         return true;
+
+    const auto keyCode = key.getKeyCode();
+    if (!key.getModifiers().isAnyModifierKeyDown()
+        && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey
+            || keyCode == juce::KeyPress::leftKey || keyCode == juce::KeyPress::rightKey)) {
+        return toolHandler_->keyPressed(key);
+    }
 
     if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Undo, key)) {
         listeners_.call([](Listener& l) { l.undoRequested(); });

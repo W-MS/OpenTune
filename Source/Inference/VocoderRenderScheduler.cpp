@@ -30,8 +30,10 @@ VocoderRenderScheduler::InferenceFailure VocoderRenderScheduler::classifyInferen
     };
 }
 
-bool VocoderRenderScheduler::initialize(VocoderInferenceService* service) {
+bool VocoderRenderScheduler::initialize(VocoderInferenceService* service, std::string* errorMessage) {
     if (!service) {
+        if (errorMessage != nullptr)
+            *errorMessage = "Vocoder scheduler initialization received no inference service";
         AppLogger::error("[VocoderRenderScheduler] Service is null");
         return false;
     }
@@ -44,7 +46,15 @@ bool VocoderRenderScheduler::initialize(VocoderInferenceService* service) {
         AppLogger::info("[VocoderRenderScheduler] Initialized with serial worker thread");
         return true;
     } catch (const std::exception& e) {
+        if (errorMessage != nullptr)
+            *errorMessage = "Vocoder scheduler worker creation failed: " + std::string(e.what());
         AppLogger::error("[VocoderRenderScheduler] Failed to create worker thread: " + juce::String(e.what()));
+        acceptingJobs_.store(false, std::memory_order_release);
+        return false;
+    } catch (...) {
+        if (errorMessage != nullptr)
+            *errorMessage = "Vocoder scheduler worker creation failed with an unknown exception";
+        AppLogger::error("[VocoderRenderScheduler] Failed to create worker thread: unknown exception");
         acceptingJobs_.store(false, std::memory_order_release);
         return false;
     }
@@ -100,16 +110,24 @@ void VocoderRenderScheduler::shutdown() {
     }
 }
 
-bool VocoderRenderScheduler::submit(Job job) {
-    if (!isJobPayloadWithinLimit(job.f0.capacity(), job.uv.capacity(), job.conditioning.capacity()))
+bool VocoderRenderScheduler::submit(Job job, std::string* rejectionReason) {
+    if (!isJobPayloadWithinLimit(job.f0.capacity(), job.uv.capacity(), job.conditioning.capacity())) {
+        if (rejectionReason != nullptr)
+            *rejectionReason = "Vocoder scheduler rejected the job because its payload exceeds the memory limit";
         return false;
-
+    }
     {
         std::lock_guard<std::mutex> lock(queueMutex_);
-        if (!acceptingJobs_.load())
+        if (!acceptingJobs_.load()) {
+            if (rejectionReason != nullptr)
+                *rejectionReason = "Vocoder scheduler is shutting down";
             return false;
+        }
 
         if (static_cast<int>(jobQueue_.size()) >= kMaxQueueDepth) {
+            if (rejectionReason != nullptr)
+                *rejectionReason = "Vocoder scheduler queue is full (capacity="
+                    + std::to_string(kMaxQueueDepth) + ")";
             return false;
         }
         jobQueue_.push_back(std::move(job));

@@ -2981,7 +2981,10 @@ bool ArrangementViewComponent::handleViewportShortcut(const juce::KeyPress& key)
 
 bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
 {
-    if (handleViewportShortcut(key))
+    const bool placementNudge =
+        KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::NudgeLeft, key)
+        || KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::NudgeRight, key);
+    if (!placementNudge && handleViewportShortcut(key))
         return true;
 
     if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::SelectAll, key))

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace OpenTune {
@@ -88,6 +89,7 @@ public:
     void applyOriginalF0(std::shared_ptr<PitchCurve> curve);
     void submitSilentGaps(std::vector<SilentGap> gaps);
     void applyOriginalF0State(OriginalF0State state);
+    void applyOriginalF0FailureReason(std::string reason);
     void applyReferenceFeatures(const ReferenceFeatureSet& features);
 };
 

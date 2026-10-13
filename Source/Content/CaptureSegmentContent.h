@@ -27,6 +27,7 @@ public:
     // Apply methods for Capture segment content
     void applyAudioBuffer(const juce::AudioBuffer<float>& buffer, double sampleRate);
     void applyOriginalF0State(OriginalF0State state);
+    void applyOriginalF0FailureReason(std::string reason);
     void applyDetectedKey(const DetectedKey& key);
     void applyNotes(std::vector<Note> notes);
     // 替换唯一音量包络，并同步 Note::outputGainDb 派生值。

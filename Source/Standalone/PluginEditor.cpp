@@ -530,8 +530,6 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
     , overviewStrip_(pianoRoll_.getWaveformMipmapCache())
     , projectSession_(p, appPreferences_)
 {
-    lastObservedF0FailureGeneration_ = processorRef_.getF0FailureGeneration();
-
     if (auto* arrangement = processorRef_.getStandaloneArrangement())
         arrangement->setLanguage(appPreferences_.getState().shared.language);
 
@@ -837,8 +835,13 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
     auto applyF0Model = [safeThis = juce::Component::SafePointer<OpenTuneAudioProcessorEditor>(this), f0Type]() {
         if (safeThis == nullptr)
             return;
-        if (!safeThis->processorRef_.setF0ModelType(f0Type))
+        juce::String reason;
+        if (!safeThis->processorRef_.setF0ModelType(f0Type, &reason)) {
             safeThis->appPreferences_.setF0ModelType(F0ModelType::FCPE);
+            ConfirmDialogContent::showDiagnostic(
+                &safeThis->contentRoot_, LOC_RAW("OriginalF0 model initialization failed"), reason,
+                AppLogger::makeDiagnosticText("OriginalF0 model initialization", reason));
+        }
     };
 
     if (sharedPreferences.renderingPriority == RenderingPriority::CpuFirst)
@@ -1067,6 +1070,17 @@ bool OpenTuneAudioProcessorEditor::keyPressed(const juce::KeyPress& key)
 {
     if (onboardingOverlay_ != nullptr && onboardingOverlay_->isActive())
         return true;
+
+    const int keyCode = key.getKeyCode();
+    const bool unmodifiedArrow = !key.getModifiers().isAnyModifierKeyDown()
+        && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey
+            || keyCode == juce::KeyPress::leftKey || keyCode == juce::KeyPress::rightKey);
+    if (unmodifiedArrow) {
+        if (isWorkspaceView_ && arrangementView_.hasKeyboardFocus(true))
+            return arrangementView_.keyPressed(key);
+        if (!isWorkspaceView_ && pianoRoll_.hasKeyboardFocus(true))
+            return pianoRoll_.keyPressed(key);
+    }
 
     if (isWorkspaceView_ ? arrangementView_.handleViewportShortcut(key)
                          : pianoRoll_.handleViewportShortcut(key))
@@ -1697,16 +1711,22 @@ void OpenTuneAudioProcessorEditor::timerCallback()
 
     const RenderStatusSnapshot statusSnapshot = getRenderStatusSnapshot();
 
-    // Original F0 overlay：与 vocoder 无关，独立于渲染状态
-    const uint64_t f0FailureGeneration = processorRef_.getF0FailureGeneration();
-    if (f0FailureGeneration != lastObservedF0FailureGeneration_) {
-        lastObservedF0FailureGeneration_ = f0FailureGeneration;
-        const auto summary = LOC(kOriginalF0NotReady);
+    for (const auto& f0FailureEvent : processorRef_.takeOriginalF0FailureEvents()) {
+        const auto reason = f0FailureEvent.reason.isNotEmpty()
+            ? f0FailureEvent.reason
+            : LOC(kOriginalF0FailureReasonUnavailable);
+        const auto summary = Loc::format(
+            LOC(kOriginalF0FailureDetail),
+            juce::String(static_cast<juce::int64>(f0FailureEvent.contentKey.objectId)),
+            getDomainKindName(f0FailureEvent.contentKey.domainKind), reason);
         ConfirmDialogContent::showDiagnostic(
-            &contentRoot_,
-            LOC(kOriginalF0),
-            summary,
-            AppLogger::makeDiagnosticText("OriginalF0/FCPE", summary));
+            &contentRoot_, LOC(kOriginalF0FailureTitle), summary,
+            AppLogger::makeDiagnosticText(
+                "OriginalF0/FCPE domain="
+                    + juce::String(getDomainKindName(f0FailureEvent.contentKey.domainKind))
+                    + " contentKey="
+                    + juce::String(static_cast<juce::int64>(f0FailureEvent.contentKey.objectId)),
+                reason));
     }
 
     if (originalF0OverlayLatched_ && !isWorkspaceView_) {
@@ -2360,14 +2380,6 @@ void OpenTuneAudioProcessorEditor::startPendingImport(PendingImport pendingImpor
                     if (!refreshAccepted) {
                         AppLogger::log("ClipDerivedRefresh: standalone request rejected contentKey.objectId="
                             + juce::String(static_cast<juce::int64>(committedPlacement.contentKey.objectId)));
-                        const auto summary = LOC_RAW("Failed to start OriginalF0 analysis.");
-                        ConfirmDialogContent::showDiagnostic(
-                            &safeThis->contentRoot_,
-                            LOC(kOriginalF0),
-                            summary,
-                            AppLogger::makeDiagnosticText("OriginalF0/FCPE", summary));
-                        safeThis->lastObservedF0FailureGeneration_ =
-                            safeThis->processorRef_.getF0FailureGeneration();
                     } else {
                         safeThis->originalF0OverlayLatched_ = true;
                         safeThis->originalF0OverlayTargetContentKey_ = committedPlacement.contentKey;
@@ -2748,7 +2760,13 @@ void OpenTuneAudioProcessorEditor::showPreferencesDialog()
         processorRef_.setVocoderModelWeight(weight);
     };
     auto onF0ModelChanged = [this](F0ModelType type) {
-        return processorRef_.setF0ModelType(type);
+        juce::String reason;
+        if (processorRef_.setF0ModelType(type, &reason))
+            return true;
+        ConfirmDialogContent::showDiagnostic(
+            &contentRoot_, LOC_RAW("OriginalF0 model initialization failed"), reason,
+            AppLogger::makeDiagnosticText("OriginalF0 model initialization", reason));
+        return false;
     };
     auto onLightPitchCorrectionChanged = [this](bool) {
         processorRef_.invalidateAllContentCaches();
@@ -3512,9 +3530,17 @@ void OpenTuneAudioProcessorEditor::autoTuneRequested()
     const auto result = pianoRoll_.applyAutoTuneToSelection();
     if (!result.applied()) {
         if (result.status != PianoRollComponent::AutoTuneApplyStatus::NoChange) {
+            auto message = result.message();
+            if (result.status == PianoRollComponent::AutoTuneApplyStatus::OriginalF0NotReady) {
+                const auto snapshot = processorRef_.getContentSnapshot(pianoRoll_.editedContentKey());
+                const auto reason = snapshot != nullptr && !snapshot->originalF0FailureReason.empty()
+                    ? juce::String(snapshot->originalF0FailureReason)
+                    : juce::String("OriginalF0 failure detail is unavailable at the content owner");
+                message += "\n\nReason: " + reason;
+            }
             ConfirmDialogContent::showMessage(&contentRoot_,
                                               LOC(kAutoDialog),
-                                              result.message());
+                                              message);
         }
         return;
     }

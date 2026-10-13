@@ -66,8 +66,12 @@ bool runRenderCacheCompletionContract()
     if (! checkRenderContract(jobs.size() == 1 && cache.claimPendingJob(jobs.front()), "blank_claim_failed"))
         return false;
     const auto blankRevision = jobs.front().targetRevision;
-    if (! checkRenderContract(cache.markChunkAsBlank(0, blankRevision), "first_blank_not_accepted")
-        || ! checkRenderContract(! cache.markChunkAsBlank(0, blankRevision), "repeated_blank_accepted")
+    if (! checkRenderContract(
+            cache.markChunkAsBlank(0, blankRevision) == OpenTune::RenderCache::ChunkRenderResult::Published,
+            "first_blank_not_accepted")
+        || ! checkRenderContract(
+            cache.markChunkAsBlank(0, blankRevision) == OpenTune::RenderCache::ChunkRenderResult::Stale,
+            "repeated_blank_accepted")
         || ! checkRenderContract(cache.getChunkStats().blank == 1, "blank_state_not_blank"))
         return false;
 
@@ -235,7 +239,9 @@ bool runRenderWorkerRequeueContract()
     retry.endSampleExclusive = 256;
     retry.queuedChunkStartSample = 0;
     retry.targetRevision = pending.front().targetRevision;
-    if (!checkRenderContract(service->requeueRenderChunk(retry), "requeue_submit_failed"))
+    if (!checkRenderContract(
+            service->requeueRenderChunk(retry) == OpenTune::RenderWorker::RequeueResult::Requeued,
+            "requeue_submit_failed"))
         return false;
 
     service->drainRenderWorker();
@@ -256,7 +262,9 @@ bool runRenderWorkerRequeueContract()
     retry.contentKey = detachedKey;
     retry.renderCache = detachedCache;
     retry.targetRevision = detachedPending.front().targetRevision;
-    if (!checkRenderContract(!service->requeueRenderChunk(retry),
+    if (!checkRenderContract(
+                                 service->requeueRenderChunk(retry)
+                                     != OpenTune::RenderWorker::RequeueResult::Requeued,
                              "detached_requeue_was_accepted")
         || !checkRenderContract(detachedCache->completeChunkRenderFailure(
                                     retry.startSample, retry.targetRevision),
@@ -396,7 +404,9 @@ int runChild(int argc, char** argv)
         completion.gate = completionGate;
         completion.applicationFailure = [&applicationFailures](OpenTune::ContentKey,
                                                                 uint64_t,
-                                                                const juce::String&) {
+                                                                uint64_t,
+                                                                const juce::String&,
+                                                                std::shared_ptr<OpenTune::RenderCache>) {
             applicationFailures.fetch_add(1, std::memory_order_relaxed);
         };
         completion.chunkSettled = [&settled](OpenTune::ContentKey,
@@ -435,7 +445,8 @@ int runChild(int argc, char** argv)
     service->detachExecutionLease(&owner);
     OpenTuneTest::trace("RenderRuntimeLifecycleTests", "lease_detached");
 
-    runtime.resetVocoder(nullptr, [](OpenTune::ProcessRenderRuntime::ControlResult) {});
+    runtime.resetVocoder(nullptr, [](OpenTune::ProcessRenderRuntime::ControlResult,
+                                     juce::String) {});
     std::thread firstShutdown([&runtime] {
         runtime.releaseOwner();
         juce::MessageManager::callAsync([] {

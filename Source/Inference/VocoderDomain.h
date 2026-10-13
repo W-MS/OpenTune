@@ -26,9 +26,9 @@ public:
     VocoderDomain(std::shared_ptr<Ort::Env> env);
     ~VocoderDomain();
 
-    bool initialize(const std::string& modelPath);
+    bool initialize(const std::string& modelPath, std::string* errorMessage = nullptr);
     void shutdown();
-    bool submit(Job job);
+    bool submit(Job job, std::string* rejectionReason = nullptr);
     int getVocoderHopSize() const;
     int getConditioningBins() const;
     VocoderConditioningType getConditioningType() const;

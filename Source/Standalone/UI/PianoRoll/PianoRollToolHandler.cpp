@@ -701,6 +701,9 @@ void PianoRollToolHandler::mouseUp(const juce::MouseEvent& e)
 
 bool PianoRollToolHandler::keyPressed(const juce::KeyPress& key)
 {
+    if (handleNoteArrowKey(key))
+        return true;
+
     const auto& shortcutSettings = ctx_.getShortcutSettings();
 
     // OpenDyne（NotesPrimary）工具切换：通过 KeyShortcutConfig 可配置
@@ -825,6 +828,135 @@ bool PianoRollToolHandler::keyPressed(const juce::KeyPress& key)
     }
 
     return false;
+}
+
+bool PianoRollToolHandler::handleNoteArrowKey(const juce::KeyPress& key)
+{
+    if (key.getModifiers().isAnyModifierKeyDown())
+        return false;
+
+    const int keyCode = key.getKeyCode();
+    if (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey) {
+        moveSelectedNotesPitchByKeyboard(keyCode == juce::KeyPress::upKey ? 1 : -1);
+        return true;
+    }
+    if (keyCode != juce::KeyPress::leftKey && keyCode != juce::KeyPress::rightKey)
+        return false;
+
+    const auto& notes = committedNotes(ctx_);
+    const auto selectedIndices = collectSelectedNoteIndices(notes);
+    if (selectedIndices.empty())
+        return true;
+
+    const bool moveRight = keyCode == juce::KeyPress::rightKey;
+    double boundaryTime = notes[static_cast<size_t>(selectedIndices.front())].startTime;
+    for (int index : selectedIndices) {
+        const double startTime = notes[static_cast<size_t>(index)].startTime;
+        boundaryTime = moveRight ? std::max(boundaryTime, startTime)
+                                 : std::min(boundaryTime, startTime);
+    }
+
+    int adjacentIndex = -1;
+    for (int index = 0; index < static_cast<int>(notes.size()); ++index) {
+        const double startTime = notes[static_cast<size_t>(index)].startTime;
+        if (moveRight && startTime > boundaryTime
+            && (adjacentIndex < 0 || startTime < notes[static_cast<size_t>(adjacentIndex)].startTime)) {
+            adjacentIndex = index;
+        } else if (!moveRight && startTime < boundaryTime
+                   && (adjacentIndex < 0 || startTime > notes[static_cast<size_t>(adjacentIndex)].startTime)) {
+            adjacentIndex = index;
+        }
+    }
+
+    if (adjacentIndex >= 0) {
+        ctx_.getState().noteSelection.setSingle(adjacentIndex, static_cast<int>(notes.size()));
+        if (ctx_.invalidateSelectionFeedback)
+            ctx_.invalidateSelectionFeedback();
+    }
+    return true;
+}
+
+void PianoRollToolHandler::moveSelectedNotesPitchByKeyboard(int direction)
+{
+    const auto& notes = committedNotes(ctx_);
+    const auto selectedIndices = collectSelectedNoteIndices(notes);
+    if (selectedIndices.empty())
+        return;
+
+    const bool openDyne = AudioEditingScheme::usesNotesPrimaryScheme(ctx_.getAudioEditingScheme());
+    const bool standardPitch = !openDyne
+        && ctx_.shouldSnapWholeNoteMoveToStandardPitch
+        && ctx_.shouldSnapWholeNoteMoveToStandardPitch();
+    const bool noSnap = openDyne && pitchGridMode_ == PitchGridMode::NoSnap;
+    const bool scaleSnapEnabled = openDyne
+        ? pitchGridMode_ == PitchGridMode::KeyScale
+        : !standardPitch;
+    const auto scaleSnap = ctx_.getActiveScaleSnap
+        ? ctx_.getActiveScaleSnap().value_or(ScaleSnapConfig{})
+        : ScaleSnapConfig{};
+
+    std::vector<Note> workingNotes = notes;
+    double rangeStart = std::numeric_limits<double>::max();
+    double rangeEnd = std::numeric_limits<double>::lowest();
+    std::vector<std::pair<int, float>> changedOffsets;
+    for (int noteIndex : selectedIndices) {
+        auto& note = workingNotes[static_cast<size_t>(noteIndex)];
+        const float baseMidi = PitchUtils::freqToMidi(note.pitch);
+        const float initialOffset = note.pitchOffset;
+        const float currentMidi = baseMidi + initialOffset;
+        float targetMidi = currentMidi;
+        if (noSnap) {
+            targetMidi += static_cast<float>(direction) * 0.01f;
+        } else if (scaleSnapEnabled) {
+            const float firstCandidate = direction > 0
+                ? std::floor(currentMidi) + 1.0f
+                : std::ceil(currentMidi) - 1.0f;
+            for (int distance = 0; distance < 12; ++distance) {
+                const float candidate = firstCandidate + static_cast<float>(direction * distance);
+                if (std::abs(scaleSnap.quantizeMidiToActiveScale(candidate) - candidate) <= 0.001f) {
+                    targetMidi = candidate;
+                    break;
+                }
+            }
+        } else {
+            targetMidi = direction > 0
+                ? std::floor(currentMidi) + 1.0f
+                : std::ceil(currentMidi) - 1.0f;
+        }
+        const float finalOffset = targetMidi - baseMidi;
+        if (std::abs(finalOffset - initialOffset) <= 0.001f)
+            continue;
+
+        note.pitchOffset = finalOffset;
+        note.dirty = true;
+        changedOffsets.emplace_back(noteIndex, initialOffset);
+        rangeStart = std::min(rangeStart, note.startTime);
+        rangeEnd = std::max(rangeEnd, note.endTime);
+    }
+    if (changedOffsets.empty())
+        return;
+
+    const F0FrameRange editRange = ctx_.getF0Timeline().rangeForTimes(rangeStart, rangeEnd);
+    const auto contentSnapshot = ctx_.getEditableContentSnapshot();
+    if (editRange.isEmpty() || contentSnapshot == nullptr || contentSnapshot->pitchCurve == nullptr)
+        return;
+
+    ctx_.beginNoteDraft();
+    auto& draft = ctx_.getNoteDraft();
+    draft.contentDirty = true;
+    draft.workingNotes = workingNotes;
+    ctx_.setUndoDescription(LOC_RAW("Move note"));
+    const bool committed = commitNoteBasedCorrection(ctx_, workingNotes, editRange);
+    ctx_.clearNoteDraft();
+    if (!committed) {
+        ctx_.setUndoDescription({});
+        return;
+    }
+
+    for (const auto& [noteIndex, oldOffset] : changedOffsets) {
+        ctx_.notifyNoteOffsetChanged(static_cast<size_t>(noteIndex), oldOffset,
+                                     workingNotes[static_cast<size_t>(noteIndex)].pitchOffset);
+    }
 }
 
 bool PianoRollToolHandler::isEmptySpaceMouseDown(const juce::MouseEvent& e)

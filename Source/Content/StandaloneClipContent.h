@@ -50,6 +50,7 @@ public:
     void applyDetectedKey(const DetectedKey& key);
     void applyReferenceFeatures(const ReferenceFeatureSet& features);
     void applyOriginalF0State(OriginalF0State state);
+    void applyOriginalF0FailureReason(std::string reason);
     void applyAudioBuffer(std::shared_ptr<const juce::AudioBuffer<float>> buffer, double sampleRate);
 
     // ── Content accessors ───────────────────────────────────

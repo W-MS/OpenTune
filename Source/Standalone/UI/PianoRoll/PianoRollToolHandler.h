@@ -304,6 +304,8 @@ private:
     void handleTimeToolMouseDoubleClick(const juce::MouseEvent& e);
     // §8.4: Delete key removes selected handle (non-endpoint).
     bool handleTimeToolDeleteSelected();
+    bool handleNoteArrowKey(const juce::KeyPress& key);
+    void moveSelectedNotesPitchByKeyboard(int direction);
     // Hit-test handles within ±5 px of a TimeGrid handle's output_seconds.
     // Returns 0 if no hit.
     uint64_t hitTestTimeGridHandle(const juce::MouseEvent& e) const;

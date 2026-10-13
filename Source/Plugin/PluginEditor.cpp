@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 
 #include "Editor/ConfirmDialogContent.h"
 #include "Editor/Preferences/SharedPreferencePages.h"
@@ -230,6 +231,10 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
     contentRoot_.addAndMakeVisible(topBar_);
     contentRoot_.addAndMakeVisible(parameterPanel_);
     parameterPanel_.addListener(this);
+    parameterPanel_.onPitchGridModeChanged = [this](PitchGridMode mode) {
+        if (auto* handler = pianoRoll_.getToolHandler())
+            handler->setPitchGridMode(mode);
+    };
 
     contentRoot_.addAndMakeVisible(pianoRoll_);
     pianoRoll_.addListener(this);
@@ -269,8 +274,13 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
     startTimerHz(kHeartbeatHz);
 
     const auto f0Type = appPreferences_.getState().shared.f0ModelType;
-    if (!processorRef_.setF0ModelType(f0Type))
+    juce::String f0InitializationError;
+    if (!processorRef_.setF0ModelType(f0Type, &f0InitializationError)) {
         appPreferences_.setF0ModelType(F0ModelType::FCPE);
+        ConfirmDialogContent::showDiagnostic(
+            &contentRoot_, LOC_RAW("OriginalF0 model initialization failed"), f0InitializationError,
+            AppLogger::makeDiagnosticText("OriginalF0 model initialization", f0InitializationError));
+    }
 
     grabKeyboardFocus();
 }
@@ -566,16 +576,6 @@ void OpenTuneAudioProcessorEditor::timerCallback()
                 pendingNoteGenerationOnReady_.erase(intentIt);
             }
         }
-        if (currentState == OriginalF0State::Failed
-            && (previous == lastObservedOriginalF0States_.end()
-                || previous->second != OriginalF0State::Failed)) {
-            const auto summary = LOC(kOriginalF0NotReady);
-            OpenTune::ConfirmDialogContent::showDiagnostic(
-                &contentRoot_,
-                LOC(kOriginalF0),
-                summary,
-                AppLogger::makeDiagnosticText("OriginalF0/FCPE", summary));
-        }
         lastObservedOriginalF0States_[contentKey] = currentState;
     };
 
@@ -585,6 +585,33 @@ void OpenTuneAudioProcessorEditor::timerCallback()
     if (auto* session = processorRef_.getCaptureSession()) {
         for (const auto& segment : session->listSegments())
             observeOriginalF0State(segment.contentKey);
+    }
+
+    auto f0FailureEvents = processorRef_.takeOriginalF0FailureEvents();
+#if JucePlugin_Enable_ARA
+    if (auto* dc = processorRef_.getDocumentController()) {
+        auto araEvents = dc->takeOriginalF0FailureEvents();
+        f0FailureEvents.insert(f0FailureEvents.end(),
+                               std::make_move_iterator(araEvents.begin()),
+                               std::make_move_iterator(araEvents.end()));
+    }
+#endif
+    for (const auto& event : f0FailureEvents) {
+        const auto reason = event.reason.isNotEmpty()
+            ? event.reason
+            : LOC(kOriginalF0FailureReasonUnavailable);
+        const auto summary = Loc::format(
+            LOC(kOriginalF0FailureDetail),
+            juce::String(static_cast<juce::int64>(event.contentKey.objectId)),
+            getDomainKindName(event.contentKey.domainKind), reason);
+        OpenTune::ConfirmDialogContent::showDiagnostic(
+            &contentRoot_, LOC(kOriginalF0FailureTitle), summary,
+            AppLogger::makeDiagnosticText(
+                "OriginalF0/FCPE domain="
+                    + juce::String(getDomainKindName(event.contentKey.domainKind))
+                    + " contentKey="
+                    + juce::String(static_cast<juce::int64>(event.contentKey.objectId)),
+                reason));
     }
 
     // Content 切换检测
@@ -909,6 +936,13 @@ bool OpenTuneAudioProcessorEditor::keyPressed(const juce::KeyPress& key)
 
 bool OpenTuneAudioProcessorEditor::handleEditorShortcut(const juce::KeyPress& key)
 {
+    const int keyCode = key.getKeyCode();
+    const bool unmodifiedArrow = !key.getModifiers().isAnyModifierKeyDown()
+        && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey
+            || keyCode == juce::KeyPress::leftKey || keyCode == juce::KeyPress::rightKey);
+    if (unmodifiedArrow && pianoRoll_.hasKeyboardFocus(true))
+        return pianoRoll_.keyPressed(key);
+
     if (pianoRoll_.handleViewportShortcut(key))
         return true;
 
@@ -1054,7 +1088,13 @@ void OpenTuneAudioProcessorEditor::showPreferencesDialog()
         processorRef_.setVocoderModelWeight(weight);
     };
     auto onF0ModelChanged = [this](F0ModelType type) {
-        return processorRef_.setF0ModelType(type);
+        juce::String reason;
+        if (processorRef_.setF0ModelType(type, &reason))
+            return true;
+        ConfirmDialogContent::showDiagnostic(
+            &contentRoot_, LOC_RAW("OriginalF0 model initialization failed"), reason,
+            AppLogger::makeDiagnosticText("OriginalF0 model initialization", reason));
+        return false;
     };
     auto onLightPitchCorrectionChanged = [this](bool) {
         processorRef_.invalidateAllContentCaches();
@@ -1488,10 +1528,21 @@ void OpenTuneAudioProcessorEditor::autoTuneRequested()
     }
 
     if (f0State == OriginalF0State::Failed) {
+        auto reason = processorRef_.getContentSnapshot(activeKey);
+        juce::String failureReason = reason != nullptr
+            ? juce::String(reason->originalF0FailureReason)
+            : juce::String{};
+#if JucePlugin_Enable_ARA
+        if (failureReason.isEmpty())
+            if (auto* dc = processorRef_.getDocumentController())
+                failureReason = juce::String(dc->readOriginalF0FailureReason(activeKey));
+#endif
+        if (failureReason.isEmpty())
+            failureReason = "OriginalF0 failure detail is unavailable at the content owner";
         OpenTune::ConfirmDialogContent::showMessage(
             &contentRoot_,
             LOC(kOriginalF0),
-            LOC(kOriginalF0ExtractionFailed));
+            LOC(kOriginalF0ExtractionFailed) + "\n\nReason: " + failureReason);
         return;
     }
 

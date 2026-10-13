@@ -345,7 +345,6 @@ private:
     // Original F0 阻塞事务锁：提取开始后 latch，直到"提取成功且当前钢琴卷帘可见"才释放
     bool originalF0OverlayLatched_ = false;
     ContentKey originalF0OverlayTargetContentKey_;
-    uint64_t lastObservedF0FailureGeneration_ = 0;
     juce::ThreadPool projectWorkerPool_{1};
     // Message-thread only; includes the posted completion and direct continuation.
     bool projectOperationBusy_{false};

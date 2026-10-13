@@ -34,6 +34,8 @@ struct RenderJob
     // field only identifies which pending chunk the worker is allowed to claim.
     int64_t queuedChunkStartSample{-1};
 
+    // Snapshot-wide identity for application failure deduplication.
+    uint64_t contentRevision{0};
     uint64_t targetRevision{0};
 
 };

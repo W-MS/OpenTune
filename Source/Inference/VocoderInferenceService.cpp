@@ -20,11 +20,13 @@ public:
     Impl(std::shared_ptr<Ort::Env> env) : env_(std::move(env)) {}
     ~Impl() = default;
 
-    bool initialize(const std::string& modelPath) {
+    bool initialize(const std::string& modelPath, std::string* errorMessage) {
         try {
             auto result = VocoderFactory::create(modelPath, *env_);
 
             if (!result.success()) {
+                if (errorMessage != nullptr)
+                    *errorMessage = result.errorMessage;
                 AppLogger::error("[VocoderInferenceService] Failed to load vocoder: "
                     + juce::String(result.errorMessage));
                 return false;
@@ -42,7 +44,14 @@ public:
             return true;
 
         } catch (const std::exception& e) {
+            if (errorMessage != nullptr)
+                *errorMessage = "Vocoder initialization threw std::exception: " + std::string(e.what());
             AppLogger::error("[VocoderInferenceService] Initialization error: " + juce::String(e.what()));
+            return false;
+        } catch (...) {
+            if (errorMessage != nullptr)
+                *errorMessage = "Vocoder initialization threw an unknown exception";
+            AppLogger::error("[VocoderInferenceService] Initialization error: unknown exception");
             return false;
         }
     }
@@ -110,8 +119,8 @@ VocoderInferenceService::VocoderInferenceService(std::shared_ptr<Ort::Env> env)
 
 VocoderInferenceService::~VocoderInferenceService() = default;
 
-bool VocoderInferenceService::initialize(const std::string& modelPath) {
-    return pImpl_->initialize(modelPath);
+bool VocoderInferenceService::initialize(const std::string& modelPath, std::string* errorMessage) {
+    return pImpl_->initialize(modelPath, errorMessage);
 }
 
 void VocoderInferenceService::shutdown() {

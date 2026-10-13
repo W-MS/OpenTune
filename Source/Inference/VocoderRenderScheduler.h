@@ -10,6 +10,7 @@
 #include <mutex>
 #include <deque>
 #include <thread>
+#include <string>
 #include <vector>
 #include "../Utils/Error.h"
 
@@ -60,7 +61,7 @@ public:
      * @param service Vocoder inference service (must outlive scheduler)
      * @return true if initialization successful
      */
-    bool initialize(VocoderInferenceService* service);
+    bool initialize(VocoderInferenceService* service, std::string* errorMessage = nullptr);
 
     /**
      * Shutdown and drain queue
@@ -71,7 +72,7 @@ public:
      * Submit a rendering job to the queue
      * @param job Job to execute
      */
-    bool submit(Job job);
+    bool submit(Job job, std::string* rejectionReason = nullptr);
 
     static constexpr int kMaxQueueDepth = 100;
 

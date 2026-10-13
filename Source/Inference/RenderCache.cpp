@@ -148,6 +148,17 @@ RenderCache::~RenderCache() {
     clear();
 }
 
+bool RenderCache::markFailureNotificationForContentRevision(uint64_t contentRevision)
+{
+    const juce::SpinLock::ScopedLockType guard(lock_);
+    if (hasNotifiedFailureContentRevision_
+        && notifiedFailureContentRevision_ >= contentRevision)
+        return false;
+    notifiedFailureContentRevision_ = contentRevision;
+    hasNotifiedFailureContentRevision_ = true;
+    return true;
+}
+
 void RenderCache::publishLocked(
     std::vector<std::shared_ptr<const PublishedRenderSnapshot>>& releases) {
     pruneRetiredSnapshotsLocked(releases);
@@ -999,7 +1010,7 @@ bool RenderCache::isCanonicalSettled() const
     return isCanonicalSettledLocked_();
 }
 
-bool RenderCache::markChunkAsBlank(int64_t startSample, uint64_t revision) {
+RenderCache::ChunkRenderResult RenderCache::markChunkAsBlank(int64_t startSample, uint64_t revision) {
     const double startSeconds = projectRenderSeconds(startSample);
     int64_t endSample = 0;
     std::shared_ptr<const std::vector<float>> oldAudio;
@@ -1007,20 +1018,20 @@ bool RenderCache::markChunkAsBlank(int64_t startSample, uint64_t revision) {
         const juce::SpinLock::ScopedLockType guard(lock_);
         auto it = chunks_.find(startSample);
         if (it == chunks_.end()) {
-            return false;
+            return ChunkRenderResult::Stale;
         }
 
         auto& chunk = it->second;
 
         if (chunk.status != Chunk::Status::Running) {
-            return false;
+            return ChunkRenderResult::Stale;
         }
 
         if (chunk.runningRevision != revision) {
             AppLogger::log("RenderCache::markChunkAsBlank STALE runningRevision="
                 + juce::String(static_cast<juce::int64>(chunk.runningRevision))
                 + " != revision=" + juce::String(static_cast<juce::int64>(revision)));
-            return false;
+            return ChunkRenderResult::Stale;
         }
 
         chunk.status = Chunk::Status::Blank;
@@ -1054,13 +1065,13 @@ bool RenderCache::markChunkAsBlank(int64_t startSample, uint64_t revision) {
             it->second.audio = std::move(oldAudio);
             std::atomic_store(&publishedSnapshot_, previousSnapshot);
         }
-        return false;
+        return ChunkRenderResult::MemoryLimitExceeded;
     }
 
     AppLogger::log("RenderCache::markChunkAsBlank start=" + juce::String(startSeconds, 3)
         + " endSampleExclusive=" + juce::String(endSample)
         + " revision=" + juce::String(static_cast<juce::int64>(revision)));
-    return true;
+    return ChunkRenderResult::Published;
 }
 
 } // namespace OpenTune

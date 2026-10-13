@@ -16,13 +16,15 @@ public:
 
     // initialize() 只保存配置并做文件存在性检查，不创建 ONNX session。
     // session 在 extractF0() 内按需创建、调用返回前析构。
-    bool initialize(const std::string& modelDir, F0ModelType initialModel) {
+    bool initialize(const std::string& modelDir, F0ModelType initialModel, std::string* errorMessage) {
         std::unique_lock<std::mutex> lock(extractorMutex_);
 
         if (initialized_.load(std::memory_order_acquire))
             return true;
 
         if (!ModelFactory::isModelAvailable(initialModel, modelDir)) {
+            if (errorMessage != nullptr)
+                *errorMessage = "F0 model file not found: " + ModelFactory::getModelPath(initialModel, modelDir);
             AppLogger::error("[F0InferenceService] F0 model not available: "
                 + juce::String(ModelFactory::getModelPath(initialModel, modelDir)));
             return false;
@@ -124,7 +126,7 @@ public:
         }
 
         Result<std::vector<float>> result = Result<std::vector<float>>::failure(
-            ErrorCode::ModelInferenceFailed, "F0 extractor creation failed");
+            ErrorCode::ModelInferenceFailed, "F0 extraction did not produce a result");
 
         // 按需创建局部 extractor，extractF0 完成后在本作用域退出时析构（含 session），
         // 早于 RunStateGuard 析构，确保 session 释放先于唤醒下一个 waiter。
@@ -136,14 +138,26 @@ public:
             if (!extractorResult) {
                 AppLogger::error("[F0InferenceService] Failed to create F0 extractor: "
                     + juce::String(extractorResult.error().fullMessage()));
+                result = Result<std::vector<float>>::failure(extractorResult.error());
             } else {
                 auto extractor = std::move(extractorResult).value();
 
                 // 缓存 hop/sample rate 供 getter 在 session 释放后使用
+                const int hopSize = extractor->getHopSize();
+                const int targetSampleRate = extractor->getTargetSampleRate();
                 {
                     std::unique_lock<std::mutex> elock(extractorMutex_);
-                    f0HopSize_ = extractor->getHopSize();
-                    f0SampleRate_ = extractor->getTargetSampleRate();
+                    f0HopSize_ = hopSize;
+                    f0SampleRate_ = targetSampleRate;
+                }
+
+                if (hopSize <= 0 || targetSampleRate <= 0) {
+                    result = Result<std::vector<float>>::failure(
+                        ErrorCode::InvalidParameter,
+                        "F0 extractor returned invalid coordinates (hopSize="
+                            + std::to_string(hopSize) + ", sampleRate="
+                            + std::to_string(targetSampleRate) + ")");
+                    return result;
                 }
 
                 // 应用用户配置的参数
@@ -155,10 +169,16 @@ public:
                     auto f0 = extractor->extractF0(audio, length, sampleRate,
                                                     runOptions_, progressCallback, partialCallback);
                     result = Result<std::vector<float>>::success(f0);
-                } catch (...) {
-                    AppLogger::error("[F0InferenceService] Exception during F0 extraction");
+                } catch (const std::exception& e) {
+                    AppLogger::error("[F0InferenceService] Exception during F0 extraction: "
+                        + juce::String(e.what()));
                     result = Result<std::vector<float>>::failure(
-                        ErrorCode::ModelInferenceFailed, "Exception during F0 extraction");
+                        ErrorCode::ModelInferenceFailed,
+                        "F0 inference threw std::exception: " + std::string(e.what()));
+                } catch (...) {
+                    AppLogger::error("[F0InferenceService] Exception during F0 extraction: unknown exception");
+                    result = Result<std::vector<float>>::failure(
+                        ErrorCode::ModelInferenceFailed, "F0 inference threw an unknown exception");
                 }
             }
         }
@@ -183,13 +203,15 @@ public:
     // setF0Model() 只更新所选模型（检查文件存在），不创建 session。
     // 正在进行的 extractF0() 调用继续使用已快照的旧配置，
     // 下一次调用使用新模型；不同时存在新旧 session。
-    bool setF0Model(F0ModelType type) {
+    bool setF0Model(F0ModelType type, std::string* errorMessage) {
         std::unique_lock<std::mutex> lock(extractorMutex_);
 
         if (type == currentModelType_)
             return true;
 
         if (!ModelFactory::isModelAvailable(type, modelDir_)) {
+            if (errorMessage != nullptr)
+                *errorMessage = "F0 model file not found: " + ModelFactory::getModelPath(type, modelDir_);
             AppLogger::error("[F0InferenceService] F0 model not available: "
                 + juce::String(ModelFactory::getModelPath(type, modelDir_)));
             return false;
@@ -295,8 +317,10 @@ F0InferenceService::F0InferenceService(std::shared_ptr<Ort::Env> env)
 
 F0InferenceService::~F0InferenceService() = default;
 
-bool F0InferenceService::initialize(const std::string& modelDir, F0ModelType initialModel) {
-    return pImpl_->initialize(modelDir, initialModel);
+bool F0InferenceService::initialize(const std::string& modelDir,
+                                    F0ModelType initialModel,
+                                    std::string* errorMessage) {
+    return pImpl_->initialize(modelDir, initialModel, errorMessage);
 }
 
 Result<std::vector<float>> F0InferenceService::extractF0(
@@ -315,8 +339,8 @@ void F0InferenceService::terminateActiveRun(const std::shared_ptr<F0RunOwnerStat
     pImpl_->terminateActiveRun(ownerState);
 }
 
-bool F0InferenceService::setF0Model(F0ModelType type) {
-    return pImpl_->setF0Model(type);
+bool F0InferenceService::setF0Model(F0ModelType type, std::string* errorMessage) {
+    return pImpl_->setF0Model(type, errorMessage);
 }
 
 F0ModelType F0InferenceService::getCurrentF0Model() const {
