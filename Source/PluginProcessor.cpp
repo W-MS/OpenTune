@@ -31,6 +31,7 @@
 #include "Utils/PitchControlConfig.h"
 #include "Utils/ScaleUiMapping.h"
 #include "Utils/PianoRollEditAction.h"
+#include "Utils/PianoRollNotePatchAction.h"
 #include "Utils/PitchShiftEditAction.h"
 #include "Render/Stage2TimeStretchRebuilder.h"
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -5050,6 +5051,46 @@ SelectedNoteParameterEditResult OpenTuneAudioProcessor::editSelectedNoteParamete
         patch->beforeSegments,
         patch->afterSegments,
         affectedRange));
+    return result;
+}
+
+OpenTuneAudioProcessor::SelectedNoteEqEditResult OpenTuneAudioProcessor::editSelectedNoteEq(
+    ContentKey key,
+    const std::vector<int>& selectedNoteIndices,
+    uint64_t expectedNotesRevision,
+    const std::optional<EqSettings>& settings,
+    juce::String undoDescription)
+{
+    SelectedNoteEqEditResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    auto plan = planSelectedNoteEqEdit(
+        key, *snapshot, selectedNoteIndices, expectedNotesRevision, settings);
+    result.status = plan.status;
+    if (plan.status == SelectedNoteEqEditStatus::StaleRevision) {
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+    if (plan.status != SelectedNoteEqEditStatus::Ready)
+        return result;
+
+    result.contentSnapshot = contentCommands_->commitNoteTopologyPatch(key, plan.afterPatch);
+    if (result.contentSnapshot == nullptr) {
+        result.status = SelectedNoteEqEditStatus::Failed;
+        return result;
+    }
+
+    undoManager_.addAction(std::make_unique<PianoRollNotePatchAction>(
+        contentCommands_, key, std::move(undoDescription),
+        std::move(plan.beforePatch), std::move(plan.afterPatch)));
+    result.status = SelectedNoteEqEditStatus::Applied;
     return result;
 }
 

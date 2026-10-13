@@ -61,6 +61,7 @@
 #include "Content/OriginalF0FailureEvent.h"
 #include "Content/ContentEditCommands.h"
 #include "Utils/SelectedNoteParameterEdit.h"
+#include "Utils/SelectedNoteEqEdit.h"
 #include "Render/ContentRenderService.h"
 #include "Runtime/ProcessRenderRuntime.h"
 #include <functional>
@@ -741,6 +742,17 @@ public:
         float vibratoDepthDefault,
         float vibratoRateDefault,
         juce::String undoDescription = "Edit note");
+    struct SelectedNoteEqEditResult
+    {
+        SelectedNoteEqEditStatus status = SelectedNoteEqEditStatus::Failed;
+        ContentCommitSnapshot contentSnapshot;
+    };
+    SelectedNoteEqEditResult editSelectedNoteEq(
+        ContentKey key,
+        const std::vector<int>& selectedNoteIndices,
+        uint64_t expectedNotesRevision,
+        const std::optional<EqSettings>& settings,
+        juce::String undoDescription);
     ContentCommitSnapshot commitContentNoteTopologyPatch(ContentKey key, ContentNoteRangePatch patch);
     // 一次替换整个 VolumeEnvelope，推进
     // outputGain/content revision，只走 republishPlaybackSource()（零 render enqueue）。

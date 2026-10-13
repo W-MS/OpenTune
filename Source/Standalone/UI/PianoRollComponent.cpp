@@ -885,21 +885,22 @@ void PianoRollComponent::openEqPopupForSelection(int primaryIndex)
 
     const Note& primary = notes[primaryIndex];
 
-    // 快照当前有效选中索引，供后续 apply/remove 使用
-    eqEditTargetIndices_.clear();
-    for (int idx : interactionState_.noteSelection.selectedIndices)
-        if (idx >= 0 && idx < static_cast<int>(notes.size()))
-            eqEditTargetIndices_.push_back(idx);
+    // 原样快照目标索引；事务按单一 snapshot 完整解析目标集合
+    eqEditTargetIndices_ = interactionState_.noteSelection.selectedIndices;
+    eqEditRevision_ = lastKnownNotesRevision_;
 
     eqPopup_ = std::make_unique<EqPopupComponent>();
     addAndMakeVisible(*eqPopup_);
-    // 主音符 eq 有值显示它，无值显示 EqSettings 默认；打开零 draft、零提交
+    // 主音符 eq 有值显示它，无值显示 EqSettings 默认；打开弹窗不提交
     eqPopup_->setEqSettings(primary.eq.value_or(EqSettings{}));
     eqPopup_->setPreviewMode(true);
     if (appPreferences_ != nullptr)
         eqPopup_->setRemoveConfirmationSuppressed(appPreferences_->getState().shared.suppressEqRemoveConfirmation);
     eqPopup_->onCommitSettings = [this](const EqSettings& settings) { applyEqSettingsToSelection(settings); };
-    eqPopup_->onRemoveEq = [this]() { removeEqFromSelection(); closeEqPopup(); };
+    eqPopup_->onRemoveEq = [this]() {
+        if (removeEqFromSelection())
+            closeEqPopup();
+    };
     eqPopup_->onClose = [this]() { closeEqPopup(); };
     eqPopup_->onReadSpectrum = [this](SpectrumArray& spectrum,
                                       SpectrumArray& peaks) {
@@ -925,10 +926,34 @@ void PianoRollComponent::openEqPopupForSelection(int primaryIndex)
 void PianoRollComponent::closeEqPopup()
 {
     eqEditTargetIndices_.clear();
+    eqEditRevision_ = 0;
     if (eqPopup_ == nullptr)
         return;
     removeChildComponent(eqPopup_.get());
     eqPopup_.reset();
+}
+
+void PianoRollComponent::invalidateEqPopup()
+{
+    eqEditTargetIndices_.clear();
+    eqEditRevision_ = 0;
+    if (eqPopup_ == nullptr)
+        return;
+
+    eqPopup_->onCommitSettings = {};
+    eqPopup_->onRemoveEq = {};
+    eqPopup_->onClose = {};
+    eqPopup_->onRemoveConfirmationSuppressed = {};
+    eqPopup_->onReadSpectrum = {};
+    eqPopup_->stopTimer();
+    eqPopup_->setVisible(false);
+    juce::Component::SafePointer<PianoRollComponent> safeThis(this);
+    juce::Component::SafePointer<EqPopupComponent> safePopup(eqPopup_.get());
+    juce::MessageManager::callAsync([safeThis, safePopup]() {
+        if (safeThis != nullptr && safePopup != nullptr
+            && safeThis->eqPopup_.get() == safePopup.getComponent())
+            safeThis->closeEqPopup();
+    });
 }
 
 
@@ -956,41 +981,57 @@ juce::Rectangle<int> PianoRollComponent::placeEqPopupBounds(const juce::Rectangl
 
 void PianoRollComponent::applyEqSettingsToSelection(const EqSettings& settings)
 {
-    if (!editedContentKey_.isValid() || contentCommands_ == nullptr)
+    if (!editedContentKey_.isValid() || processor_ == nullptr)
         return;
-    const auto& selected = eqEditTargetIndices_;
-    if (selected.empty())
+    const auto result = processor_->editSelectedNoteEq(
+        editedContentKey_, eqEditTargetIndices_, eqEditRevision_,
+        std::optional<EqSettings>{ settings }, LOC_RAW("Edit EQ"));
+    if (result.status == SelectedNoteEqEditStatus::StaleRevision) {
+        if (result.contentSnapshot != nullptr) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            interactionState_.noteSelection.clear();
+            requestContentRedraw();
+        }
+        invalidateEqPopup();
+        return;
+    }
+    if (result.status != SelectedNoteEqEditStatus::Applied)
         return;
 
-    // 严格复用 draft → 提交链：一次原子提交覆盖全部选中音符
-    beginNoteDraft();
-    auto& working = interactionState_.noteDraft.workingNotes;
-    for (int idx : selected) {
-        if (idx >= 0 && idx < static_cast<int>(working.size()))
-            working[idx].eq = settings;
-    }
-    interactionState_.noteDraft.contentDirty = true;
-    pendingUndoDescription_ = LOC_RAW("Edit EQ");
-    commitNoteDraft();
+    cachedNotes_ = result.contentSnapshot->notes;
+    lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+    eqEditRevision_ = result.contentSnapshot->notesRevision;
+    requestContentRedraw();
+    listeners_.call([](Listener& listener) { listener.contentEdited(); });
 }
 
-void PianoRollComponent::removeEqFromSelection()
+bool PianoRollComponent::removeEqFromSelection()
 {
-    if (!editedContentKey_.isValid() || contentCommands_ == nullptr)
-        return;
-    const auto& selected = eqEditTargetIndices_;
-    if (selected.empty())
-        return;
-
-    beginNoteDraft();
-    auto& working = interactionState_.noteDraft.workingNotes;
-    for (int idx : selected) {
-        if (idx >= 0 && idx < static_cast<int>(working.size()))
-            working[idx].eq = std::nullopt;
+    if (!editedContentKey_.isValid() || processor_ == nullptr)
+        return true;
+    const auto result = processor_->editSelectedNoteEq(
+        editedContentKey_, eqEditTargetIndices_, eqEditRevision_,
+        std::nullopt, LOC_RAW("Remove EQ"));
+    if (result.status == SelectedNoteEqEditStatus::StaleRevision) {
+        if (result.contentSnapshot != nullptr) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            interactionState_.noteSelection.clear();
+            requestContentRedraw();
+        }
+        invalidateEqPopup();
+        return false;
     }
-    interactionState_.noteDraft.contentDirty = true;
-    pendingUndoDescription_ = LOC_RAW("Remove EQ");
-    commitNoteDraft();
+    if (result.status != SelectedNoteEqEditStatus::Applied)
+        return true;
+
+    cachedNotes_ = result.contentSnapshot->notes;
+    lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+    eqEditRevision_ = result.contentSnapshot->notesRevision;
+    requestContentRedraw();
+    listeners_.call([](Listener& listener) { listener.contentEdited(); });
+    return true;
 }
 
 ContentCommitSnapshot PianoRollComponent::commitEditedContentPitchCorrectionSegments(const std::vector<PitchCorrectionSegment>& segments,
@@ -3342,6 +3383,7 @@ void PianoRollComponent::onNotesRevisionChanged()
     uint64_t rev = snap ? snap->notesRevision : 0;
     if (rev == lastKnownNotesRevision_) return;
     lastKnownNotesRevision_ = rev;
+    closeEqPopup();
     interactionState_.noteSelection.clear();
     refreshEditedContentNotes();
     requestContentRedraw();

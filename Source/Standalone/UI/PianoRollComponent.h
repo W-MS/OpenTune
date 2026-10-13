@@ -393,11 +393,11 @@ private:
 
     // ── EQ popup ──────────────────────────────────────────────
     void closeEqPopup();
-    /** 选中组统一写入同一 EqSettings：严格复用 beginNoteDraft → workingNotes →
-     *  contentDirty → pendingUndoDescription → commitNoteDraft，一次原子提交。 */
+    void invalidateEqPopup();
+    /** 将选中组统一写入同一 EqSettings，作为单次消息线程事务提交。 */
     void applyEqSettingsToSelection(const EqSettings& settings);
-    /** 清除选中组全部 Note.eq（nullopt），走同一 draft 提交链。 */
-    void removeEqFromSelection();
+    /** 清除选中组全部 Note.eq（nullopt），作为单次消息线程事务提交。 */
+    bool removeEqFromSelection();
     /** 预览尺寸 180x80 契约，在当前组件范围内靠近选择区放置。 */
     juce::Rectangle<int> placeEqPopupBounds(const juce::Rectangle<int>& anchor) const;
 
@@ -696,6 +696,7 @@ private:
     // per-note EQ 预览弹窗：PianoRollComponent 唯一持有，不经过任何中间转发层
     std::unique_ptr<EqPopupComponent> eqPopup_;
     std::vector<int> eqEditTargetIndices_; // EQ 弹窗绑定的目标音符索引快照
+    uint64_t eqEditRevision_ = 0;
 
     // EQ 工具 cursor：构造函数初始化列表中从 ToolbarIcons::createEqIconImage 构造一次并 resolveCursor。
     juce::MouseCursor eqCursor_;
