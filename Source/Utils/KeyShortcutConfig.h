@@ -2,6 +2,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <array>
+#include <cmath>
 #include <initializer_list>
 #include <vector>
 #include "LocalizationManager.h"
@@ -53,19 +54,81 @@ enum class ShortcutId {
     Count
 };
 
+enum class BindingType {
+    Keyboard,
+    WheelUp,
+    WheelDown,
+    WheelLeft,
+    WheelRight,
+    MiddleMouseButton,
+    MouseBack,
+    MouseForward
+};
+
+inline bool getWheelBindingType(const juce::MouseWheelDetails& wheel,
+                                juce::ModifierKeys modifiers,
+                                BindingType& type)
+{
+    // Shortcut labels follow physical wheel motion; native handlers continue using raw deltas.
+    const float direction = wheel.isReversed ? -1.0f : 1.0f;
+    float deltaX = wheel.deltaX * direction;
+    float deltaY = wheel.deltaY * direction;
+
+#if JUCE_MAC
+    if (modifiers.isShiftDown() && deltaY == 0.0f && deltaX != 0.0f) {
+        deltaY = deltaX;
+        deltaX = 0.0f;
+    }
+#else
+    juce::ignoreUnused(modifiers);
+#endif
+
+    if (deltaY != 0.0f && std::abs(deltaY) >= std::abs(deltaX))
+        type = deltaY > 0.0f ? BindingType::WheelUp : BindingType::WheelDown;
+    else if (deltaX != 0.0f)
+        type = deltaX > 0.0f ? BindingType::WheelLeft : BindingType::WheelRight;
+    else
+        return false;
+
+    return true;
+}
+
 struct KeyBinding {
+    BindingType type = BindingType::Keyboard;
     int keyCode = 0;
     juce::ModifierKeys modifiers;
     
     KeyBinding() = default;
     KeyBinding(int code, juce::ModifierKeys mods) : keyCode(code), modifiers(mods) {}
+    KeyBinding(BindingType bindingType, juce::ModifierKeys mods = {})
+        : type(bindingType), modifiers(mods) {}
+
+    bool isValid() const
+    {
+        switch (type) {
+            case BindingType::Keyboard: return keyCode > 0;
+            case BindingType::WheelUp:
+            case BindingType::WheelDown:
+            case BindingType::WheelLeft:
+            case BindingType::WheelRight:
+            case BindingType::MiddleMouseButton:
+            case BindingType::MouseBack:
+            case BindingType::MouseForward: return true;
+        }
+        return false;
+    }
     
     bool operator==(const KeyBinding& other) const
     {
+        if (type != other.type)
+            return false;
         if (keyCode != other.keyCode)
             return false;
-        bool ctrlMatch = (modifiers.isCtrlDown() || modifiers.isCommandDown()) ==
-                         (other.modifiers.isCtrlDown() || other.modifiers.isCommandDown());
+        const bool ctrlMatch = type == BindingType::Keyboard
+            ? (modifiers.isCtrlDown() || modifiers.isCommandDown())
+                == (other.modifiers.isCtrlDown() || other.modifiers.isCommandDown())
+            : modifiers.isCtrlDown() == other.modifiers.isCtrlDown()
+                && modifiers.isCommandDown() == other.modifiers.isCommandDown();
         bool shiftMatch = modifiers.isShiftDown() == other.modifiers.isShiftDown();
         bool altMatch = modifiers.isAltDown() == other.modifiers.isAltDown();
         return ctrlMatch && shiftMatch && altMatch;
@@ -99,6 +162,8 @@ struct ShortcutBinding {
     
     void addBinding(const KeyBinding& binding)
     {
+        if (!binding.isValid())
+            return;
         for (const auto& existing : bindings)
         {
             if (existing == binding)
@@ -129,13 +194,38 @@ struct ShortcutBinding {
     {
         juce::StringArray names;
         for (const auto& b : bindings)
-            names.add(getKeyDisplayName(b.keyCode, b.modifiers));
+            names.add(getDisplayName(b));
         return names.joinIntoString(", ");
     }
-    
+
 private:
-    static juce::String getKeyDisplayName(int keyCode, juce::ModifierKeys modifiers)
+    static juce::String getDisplayName(const KeyBinding& binding)
     {
+        if (binding.type != BindingType::Keyboard) {
+            juce::String text;
+#if JUCE_MAC
+            if (binding.modifiers.isCtrlDown()) text << "Ctrl+";
+            if (binding.modifiers.isCommandDown()) text << "Cmd+";
+#else
+            if (binding.modifiers.isCtrlDown() || binding.modifiers.isCommandDown()) text << "Ctrl+";
+#endif
+            if (binding.modifiers.isShiftDown()) text << "Shift+";
+            if (binding.modifiers.isAltDown()) text << "Alt+";
+            switch (binding.type) {
+                case BindingType::WheelUp: text << "Wheel Up"; break;
+                case BindingType::WheelDown: text << "Wheel Down"; break;
+                case BindingType::WheelLeft: text << "Wheel Left"; break;
+                case BindingType::WheelRight: text << "Wheel Right"; break;
+                case BindingType::MiddleMouseButton: text << "Middle Mouse Button"; break;
+                case BindingType::MouseBack: text << "Mouse Back"; break;
+                case BindingType::MouseForward: text << "Mouse Forward"; break;
+                case BindingType::Keyboard: break;
+            }
+            return text;
+        }
+
+        const int keyCode = binding.keyCode;
+        const auto modifiers = binding.modifiers;
         juce::String name;
         
 #if JUCE_MAC
@@ -257,17 +347,23 @@ inline const ShortcutInfo kShortcutInfos[] = {
 #endif
     { ShortcutId::Eq, "shared.shortcuts.toolEq", Loc::Keys::kToolEq, { KeyBinding('E', {}) } },
     { ShortcutId::ScrollHorizontalLeft, "shared.shortcuts.scrollHorizontalLeft", Loc::Keys::kScrollHorizontalLeft,
-      { KeyBinding(juce::KeyPress::leftKey, juce::ModifierKeys::altModifier) } },
+      { KeyBinding(juce::KeyPress::leftKey, juce::ModifierKeys::altModifier),
+        KeyBinding(BindingType::WheelUp, juce::ModifierKeys::altModifier) } },
     { ShortcutId::ScrollHorizontalRight, "shared.shortcuts.scrollHorizontalRight", Loc::Keys::kScrollHorizontalRight,
-      { KeyBinding(juce::KeyPress::rightKey, juce::ModifierKeys::altModifier) } },
+      { KeyBinding(juce::KeyPress::rightKey, juce::ModifierKeys::altModifier),
+        KeyBinding(BindingType::WheelDown, juce::ModifierKeys::altModifier) } },
     { ShortcutId::ZoomHorizontalIn, "shared.shortcuts.zoomHorizontalIn", Loc::Keys::kZoomHorizontalIn,
-      { KeyBinding(juce::KeyPress::rightKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier) } },
+      { KeyBinding(juce::KeyPress::rightKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier),
+        KeyBinding(BindingType::WheelUp, juce::ModifierKeys::ctrlModifier) } },
     { ShortcutId::ZoomHorizontalOut, "shared.shortcuts.zoomHorizontalOut", Loc::Keys::kZoomHorizontalOut,
-      { KeyBinding(juce::KeyPress::leftKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier) } },
+      { KeyBinding(juce::KeyPress::leftKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier),
+        KeyBinding(BindingType::WheelDown, juce::ModifierKeys::ctrlModifier) } },
     { ShortcutId::ZoomVerticalIn, "shared.shortcuts.zoomVerticalIn", Loc::Keys::kZoomVerticalIn,
-      { KeyBinding(juce::KeyPress::upKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier) } },
+      { KeyBinding(juce::KeyPress::upKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier),
+        KeyBinding(BindingType::WheelUp, juce::ModifierKeys::shiftModifier) } },
     { ShortcutId::ZoomVerticalOut, "shared.shortcuts.zoomVerticalOut", Loc::Keys::kZoomVerticalOut,
-      { KeyBinding(juce::KeyPress::downKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier) } },
+      { KeyBinding(juce::KeyPress::downKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier),
+        KeyBinding(BindingType::WheelDown, juce::ModifierKeys::shiftModifier) } },
     { ShortcutId::FitSelectedNotes, "shared.shortcuts.fitSelectedNotes", Loc::Keys::kFitSelectedNotes,
       { KeyBinding('0', juce::ModifierKeys::commandModifier) } },
     { ShortcutId::FitAllNotes, "shared.shortcuts.fitAllNotes", Loc::Keys::kFitAllNotes,
@@ -317,12 +413,27 @@ inline const ShortcutBinding& getShortcutBinding(const KeyShortcutSettings& sett
 
 inline juce::String toCanonicalString(const KeyBinding& binding)
 {
+    if (!binding.isValid())
+        return {};
+
     juce::String text;
     const auto modifierFlags = binding.modifiers.getRawFlags();
 
-    if ((modifierFlags & juce::ModifierKeys::ctrlModifier) != 0
-        || (modifierFlags & juce::ModifierKeys::commandModifier) != 0) {
-        text << "Ctrl+";
+    if (binding.type == BindingType::Keyboard) {
+        if ((modifierFlags & juce::ModifierKeys::ctrlModifier) != 0
+            || (modifierFlags & juce::ModifierKeys::commandModifier) != 0)
+            text << "Ctrl+";
+    } else {
+#if JUCE_MAC
+        if ((modifierFlags & juce::ModifierKeys::ctrlModifier) != 0)
+            text << "Ctrl+";
+        if ((modifierFlags & juce::ModifierKeys::commandModifier) != 0)
+            text << "Cmd+";
+#else
+        if ((modifierFlags & juce::ModifierKeys::ctrlModifier) != 0
+            || (modifierFlags & juce::ModifierKeys::commandModifier) != 0)
+            text << "Ctrl+";
+#endif
     }
     if ((modifierFlags & juce::ModifierKeys::shiftModifier) != 0) {
         text << "Shift+";
@@ -331,7 +442,21 @@ inline juce::String toCanonicalString(const KeyBinding& binding)
         text << "Alt+";
     }
 
-    if (binding.keyCode == juce::KeyPress::spaceKey) {
+    if (binding.type == BindingType::WheelUp) {
+        text << "Wheel Up";
+    } else if (binding.type == BindingType::WheelDown) {
+        text << "Wheel Down";
+    } else if (binding.type == BindingType::WheelLeft) {
+        text << "Wheel Left";
+    } else if (binding.type == BindingType::WheelRight) {
+        text << "Wheel Right";
+    } else if (binding.type == BindingType::MiddleMouseButton) {
+        text << "Middle Mouse Button";
+    } else if (binding.type == BindingType::MouseBack) {
+        text << "Mouse Back";
+    } else if (binding.type == BindingType::MouseForward) {
+        text << "Mouse Forward";
+    } else if (binding.keyCode == juce::KeyPress::spaceKey) {
         text << "Space";
     } else if (binding.keyCode == juce::KeyPress::returnKey) {
         text << "Enter";
@@ -374,7 +499,8 @@ inline juce::String toCanonicalString(const ShortcutBinding& binding)
 {
     juce::StringArray parts;
     for (const auto& keyBinding : binding.bindings) {
-        parts.add(toCanonicalString(keyBinding));
+        if (keyBinding.isValid())
+            parts.add(toCanonicalString(keyBinding));
     }
     return parts.joinIntoString("|");
 }
@@ -382,6 +508,11 @@ inline juce::String toCanonicalString(const ShortcutBinding& binding)
 inline bool parseShortcutBinding(const juce::String& text, ShortcutBinding& outBinding)
 {
     ShortcutBinding parsed;
+    if (text.trim().isEmpty()) {
+        outBinding = std::move(parsed);
+        return true;
+    }
+
     juce::StringArray parts;
     parts.addTokens(text, "|", "");
 
@@ -409,8 +540,15 @@ inline bool matchesShortcut(const KeyShortcutSettings& settings, ShortcutId id, 
     return binding.hasBinding(testBinding);
 }
 
+inline bool matchesShortcut(const KeyShortcutSettings& settings, ShortcutId id, const KeyBinding& input)
+{
+    return getShortcutBinding(settings, id).hasBinding(input);
+}
+
 inline void setShortcutBinding(KeyShortcutSettings& settings, ShortcutId id, const KeyBinding& binding)
 {
+    if (!binding.isValid())
+        return;
     auto& shortcutBinding = settings.bindings[static_cast<size_t>(id)];
     shortcutBinding.bindings.clear();
     shortcutBinding.addBinding(binding);
@@ -446,6 +584,16 @@ inline ShortcutId findConflictingShortcut(const KeyShortcutSettings& settings, S
     return ShortcutId::Count;
 }
 
+inline ShortcutId findShortcutForBinding(const KeyShortcutSettings& settings, const KeyBinding& binding)
+{
+    for (size_t i = 0; i < kShortcutCount; ++i) {
+        const auto id = static_cast<ShortcutId>(i);
+        if (getShortcutBinding(settings, id).hasBinding(binding))
+            return id;
+    }
+    return ShortcutId::Count;
+}
+
 inline bool parseKeyBinding(const juce::String& text, KeyBinding& outBinding)
 {
     juce::StringArray parts;
@@ -472,6 +620,27 @@ inline bool parseKeyBinding(const juce::String& text, KeyBinding& outBinding)
     }
     
     auto keyPart = parts[parts.size() - 1].trim().toLowerCase();
+    BindingType bindingType = BindingType::Keyboard;
+    if (keyPart == "wheel up")
+        bindingType = BindingType::WheelUp;
+    else if (keyPart == "wheel down")
+        bindingType = BindingType::WheelDown;
+    else if (keyPart == "wheel left")
+        bindingType = BindingType::WheelLeft;
+    else if (keyPart == "wheel right")
+        bindingType = BindingType::WheelRight;
+    else if (keyPart == "middle mouse button")
+        bindingType = BindingType::MiddleMouseButton;
+    else if (keyPart == "mouse back")
+        bindingType = BindingType::MouseBack;
+    else if (keyPart == "mouse forward")
+        bindingType = BindingType::MouseForward;
+
+    if (bindingType != BindingType::Keyboard) {
+        outBinding = KeyBinding(bindingType, modifiers);
+        return true;
+    }
+
     int keyCode = 0;
     
     if (keyPart == "space")
@@ -517,7 +686,7 @@ inline bool parseKeyBinding(const juce::String& text, KeyBinding& outBinding)
         auto c = keyPart[0];
         if (c >= 'a' && c <= 'z')
             keyCode = static_cast<int>(c);
-        else if (c >= '0' && c <= '9')
+        else if ((c >= '0' && c <= '9') || (c >= 32 && c < 127 && c != '+'))
             keyCode = static_cast<int>(c);
         else
             return false;

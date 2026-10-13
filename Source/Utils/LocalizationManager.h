@@ -624,7 +624,7 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kVocoderWeight, "Vocoder Model", "声码器模型", "ボコーダーモデル", "Модель вокодера", "Modelo de vocoder" },
 
         { Keys::kSetShortcut, "Set Shortcut", "设置快捷键", "ショートカットを設定", "Назначить сочетание", "Atajo" },
-        { Keys::kPressNewKeyCombination, "Press the new key combination", "按下新的组合键", "新しいキーの組み合わせを押してください", "Нажмите сочетание", "Pulse combinación" },
+        { Keys::kPressNewKeyCombination, "Press a key, wheel, middle or side button", "按下按键、滚动滚轮或点击鼠标中键/侧键", "キー、ホイール、中央またはサイドボタンを操作してください", "Нажмите клавишу, прокрутите колесо или нажмите среднюю/боковую кнопку", "Pulse una tecla, la rueda o un botón central/lateral" },
         { Keys::kCurrent, "Current", "当前", "現在", "Текущий", "Actual" },
         { Keys::kCancel, "Cancel", "取消", "キャンセル", "Отмена", "Cancelar" },
         { Keys::kOK, "OK", "确定", "OK", "ОК", "Aceptar" },
@@ -634,8 +634,8 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kNo, "No", "否", "いいえ", "Нет", "No" },
         { Keys::kResetAllToDefaults, "Reset All to Defaults", "全部恢复默认", "すべてデフォルトに戻す", "Сбросить все", "Restablecer todo" },
         
-        { Keys::kShortcutCaptureClickHint, "Click here, then press a key", "点击此处后按下快捷键", "ここをクリックしてキーを押してください", "Нажмите здесь и нажмите клавишу", "Haga clic aquí y pulse una tecla" },
-        { Keys::kShortcutCapturePressKey, "Press a key...", "请按下快捷键...", "キーを押してください...", "Нажмите клавишу...", "Pulse una tecla..." },
+        { Keys::kShortcutCaptureClickHint, "Click here, then use a key or mouse input", "点击此处后按下按键或使用鼠标输入", "ここをクリックしてキーまたはマウスを操作してください", "Нажмите здесь, затем используйте клавишу или мышь", "Haga clic aquí y use una tecla o el ratón" },
+        { Keys::kShortcutCapturePressKey, "Press a key, wheel, middle or side button...", "请按下按键、滚动滚轮或点击鼠标中键/侧键...", "キー、ホイール、中央またはサイドボタンを操作してください...", "Нажмите клавишу, прокрутите колесо или нажмите среднюю/боковую кнопку...", "Pulse una tecla, la rueda o un botón central/lateral..." },
         { Keys::kShortcutCaptureCancelHint, "Click Cancel to abort", "点击取消按钮取消", "キャンセルをクリックして中止", "Нажмите Отмена для отмены", "Pulse Cancelar para abortar" },
         { Keys::kDiagnosticLogTail, "(Only the last 256 KiB are retained)", "(仅保留最后 256 KiB)", "(最後の 256 KiB のみ保持)", "(Сохранены только последние 256 КиБ)", "(Solo se conservan los últimos 256 KiB)" },
 

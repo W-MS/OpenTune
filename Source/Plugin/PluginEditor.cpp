@@ -1499,6 +1499,37 @@ void OpenTuneAudioProcessorEditor::stopPlaybackRequested()
     stopRequested();
 }
 
+bool OpenTuneAudioProcessorEditor::pointerShortcutRequested(KeyShortcutConfig::ShortcutId id)
+{
+    switch (id) {
+        case KeyShortcutConfig::ShortcutId::Undo:
+            undoRequested();
+            return true;
+        case KeyShortcutConfig::ShortcutId::Redo:
+            redoRequested();
+            return true;
+        case KeyShortcutConfig::ShortcutId::PlayPause:
+            playPauseToggleRequested();
+            return true;
+        case KeyShortcutConfig::ShortcutId::PlayFromStart:
+#if JucePlugin_Enable_ARA
+            if (auto* docController = processorRef_.getDocumentController()) {
+                const double startPosition = processorRef_.getPlayStartPosition();
+                if (!docController->requestStartPlayback(startPosition))
+                    AppLogger::log("ARA: play-from-start request failed — host playback controller unavailable");
+                return true;
+            }
+#endif
+            surfaceRegularVst3HostControlledTransport("play from start");
+            return true;
+        case KeyShortcutConfig::ShortcutId::Stop:
+            stopPlaybackRequested();
+            return true;
+        default:
+            return false;
+    }
+}
+
 void OpenTuneAudioProcessorEditor::autoTuneRequested()
 {
     const auto activeKey = resolveCurrentContentKey();

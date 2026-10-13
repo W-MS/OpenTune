@@ -231,7 +231,8 @@ public:
     // ⚡️ §8.4 — double-click insert (Time tool only)
     void mouseDoubleClick(const juce::MouseEvent& e);
 
-    bool keyPressed(const juce::KeyPress& key);
+    bool keyPressed(const juce::KeyPress& key,
+                    const KeyShortcutConfig::KeyBinding* pointerShortcut = nullptr);
     // 删除键命令入口（Delete/Backspace/'1'/Cut 共用）：删除选中音符与选区内容
     void handleDeleteKey();
 

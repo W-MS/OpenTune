@@ -141,6 +141,7 @@ public:
     void trackDeleteRequested(int trackId) override;
     void trackColorRandomizeRequested(int trackId) override;
     void visibleTrackCountChanged(int newCount) override;
+    bool pointerShortcutBindingRequested(const KeyShortcutConfig::KeyBinding& binding) override;
 
     // ArrangementViewComponent::Listener
     void placementSelectionChanged(int trackId, uint64_t placementId) override;
@@ -157,6 +158,7 @@ public:
     bool playheadPositionChangeRequested(double timeSeconds) override;
     void playPauseToggleRequested() override;
     void stopPlaybackRequested() override;
+    bool pointerShortcutRequested(KeyShortcutConfig::ShortcutId id) override;
     void autoTuneRequested() override;
     void pitchCurveEdited(int startFrame, int endFrame) override;
     void contentEdited() override;

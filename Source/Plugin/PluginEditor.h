@@ -108,6 +108,7 @@ public:
     bool playheadPositionChangeRequested(double timeSeconds) override;
     void playPauseToggleRequested() override;
     void stopPlaybackRequested() override;
+    bool pointerShortcutRequested(KeyShortcutConfig::ShortcutId id) override;
     void autoTuneRequested() override;
     void pitchShiftRequested() override;
     void pitchCurveEdited(int startFrame, int endFrame) override;

@@ -699,43 +699,49 @@ void PianoRollToolHandler::mouseUp(const juce::MouseEvent& e)
     }
 }
 
-bool PianoRollToolHandler::keyPressed(const juce::KeyPress& key)
+bool PianoRollToolHandler::keyPressed(const juce::KeyPress& key,
+                                      const KeyShortcutConfig::KeyBinding* pointerShortcut)
 {
     if (handleNoteArrowKey(key))
         return true;
 
     const auto& shortcutSettings = ctx_.getShortcutSettings();
+    const auto matches = [&](KeyShortcutConfig::ShortcutId id) {
+        return pointerShortcut != nullptr
+            ? KeyShortcutConfig::matchesShortcut(shortcutSettings, id, *pointerShortcut)
+            : KeyShortcutConfig::matchesShortcut(shortcutSettings, id, key);
+    };
 
     // OpenDyne（NotesPrimary）工具切换：通过 KeyShortcutConfig 可配置
     const bool isOpenDyne = AudioEditingScheme::usesNotesPrimaryScheme(ctx_.getAudioEditingScheme());
     if (isOpenDyne) {
-        if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::ToolODSelect, key)) {
+        if (matches(KeyShortcutConfig::ShortcutId::ToolODSelect)) {
             ctx_.setCurrentTool(ToolId::Select);
             return true;
         }
-        if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::ToolODPitch, key)) {
+        if (matches(KeyShortcutConfig::ShortcutId::ToolODPitch)) {
             ctx_.setCurrentTool(ToolId::Pitch);
             return true;
         }
-        if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::ToolODPitchModulation, key)) {
+        if (matches(KeyShortcutConfig::ShortcutId::ToolODPitchModulation)) {
             ctx_.setCurrentTool(ToolId::PitchModulation);
             return true;
         }
-        if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::ToolODPitchDrift, key)) {
+        if (matches(KeyShortcutConfig::ShortcutId::ToolODPitchDrift)) {
             ctx_.setCurrentTool(ToolId::PitchDrift);
             return true;
         }
-        if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::ToolODVolumeEnvelope, key)) {
+        if (matches(KeyShortcutConfig::ShortcutId::ToolODVolumeEnvelope)) {
             ctx_.setCurrentTool(ToolId::VolumeEnvelope);
             return true;
         }
-        if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::ToolODScissors, key)) {
+        if (matches(KeyShortcutConfig::ShortcutId::ToolODScissors)) {
             ctx_.setCurrentTool(ToolId::Scissors);
             return true;
         }
     }
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::SelectAll, key)) {
+    if (matches(KeyShortcutConfig::ShortcutId::SelectAll)) {
         const auto& notes = committedNotes(ctx_);
         const auto contentSnapshot = ctx_.getEditableContentSnapshot();
         bool hasNotes = !notes.empty();
@@ -762,56 +768,56 @@ bool PianoRollToolHandler::keyPressed(const juce::KeyPress& key)
     // HandDraw 两种模式共用（OpenDyne 下自由绘制音高曲线）。
     // ToolTimeTool/ToolAutoTune 与通用 SelectAll/Delete/CancelSelection 两 scheme 共用。
     if (!isOpenDyne) {
-        if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::ToolDrawNote, key)) {
+        if (matches(KeyShortcutConfig::ShortcutId::ToolDrawNote)) {
             ctx_.setCurrentTool(ToolId::DrawNote);
             return true;
         }
 
-        if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::ToolSelect, key)) {
+        if (matches(KeyShortcutConfig::ShortcutId::ToolSelect)) {
             ctx_.setCurrentTool(ToolId::Select);
             return true;
         }
 
-        if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::ToolLineAnchor, key)) {
+        if (matches(KeyShortcutConfig::ShortcutId::ToolLineAnchor)) {
             ctx_.setCurrentTool(ToolId::LineAnchor);
             return true;
         }
     }
 
     // EQ 工具两种模式共用（ShortcutId::Eq 可配置，默认 E）
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::Eq, key)) {
+    if (matches(KeyShortcutConfig::ShortcutId::Eq)) {
         ctx_.setCurrentTool(ToolId::Eq);
         return true;
     }
 
     // HandDraw 两种模式共用
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::ToolHandDraw, key)) {
+    if (matches(KeyShortcutConfig::ShortcutId::ToolHandDraw)) {
         ctx_.setCurrentTool(ToolId::HandDraw);
         return true;
     }
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::ToolTimeTool, key)) {
+    if (matches(KeyShortcutConfig::ShortcutId::ToolTimeTool)) {
         ctx_.setCurrentTool(ToolId::TimeTool);
         return true;
     }
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::ToolAutoTune, key)) {
+    if (matches(KeyShortcutConfig::ShortcutId::ToolAutoTune)) {
         ctx_.notifyAutoTuneRequested();
         return true;
     }
     // ==== End tool switching ====
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::PlayPause, key)) {
+    if (matches(KeyShortcutConfig::ShortcutId::PlayPause)) {
         ctx_.notifyPlayPauseToggle();
         return true;
     }
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::Stop, key)) {
+    if (matches(KeyShortcutConfig::ShortcutId::Stop)) {
         ctx_.notifyStopPlayback();
         return true;
     }
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::Delete, key)) {
+    if (matches(KeyShortcutConfig::ShortcutId::Delete)) {
         // Time tool always consumes Delete to avoid accidentally deleting notes
         // when a handle isn't selected. No-op when nothing's selected.
         if (currentTool_ == ToolId::TimeTool) {
@@ -822,7 +828,7 @@ bool PianoRollToolHandler::keyPressed(const juce::KeyPress& key)
         return true;
     }
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::CancelSelection, key)) {
+    if (matches(KeyShortcutConfig::ShortcutId::CancelSelection)) {
         ctx_.notifyEscapeKey();
         return true;
     }

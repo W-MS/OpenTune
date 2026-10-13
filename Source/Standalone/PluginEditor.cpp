@@ -1913,6 +1913,7 @@ void OpenTuneAudioProcessorEditor::syncSharedAppPreferences()
     shortcutSettings_ = preferencesState.shared.shortcuts;
     pianoRoll_.setShortcutSettings(shortcutSettings_);
     arrangementView_.setShortcutSettings(shortcutSettings_);
+    trackPanel_.setShortcutSettings(shortcutSettings_);
     menuBar_.setMouseTrailTheme(preferencesState.standalone.mouseTrailTheme);
     rippleOverlay_.setTrailTheme(preferencesState.standalone.mouseTrailTheme);
     menuBar_.setCursorStyle(preferencesState.standalone.cursorStyle);
@@ -3497,6 +3498,37 @@ void OpenTuneAudioProcessorEditor::playPauseToggleRequested()
 void OpenTuneAudioProcessorEditor::stopPlaybackRequested()
 {
     stopRequested();
+}
+
+bool OpenTuneAudioProcessorEditor::pointerShortcutRequested(KeyShortcutConfig::ShortcutId id)
+{
+    switch (id) {
+        case KeyShortcutConfig::ShortcutId::Undo:
+            if (shouldAcceptUndoRedoShortcut())
+                undoRequested();
+            return true;
+        case KeyShortcutConfig::ShortcutId::Redo:
+            if (shouldAcceptUndoRedoShortcut())
+                redoRequested();
+            return true;
+        case KeyShortcutConfig::ShortcutId::PlayPause:
+            playPauseToggleRequested();
+            return true;
+        case KeyShortcutConfig::ShortcutId::PlayFromStart:
+            playFromStartToggleRequested();
+            return true;
+        case KeyShortcutConfig::ShortcutId::Stop:
+            stopPlaybackRequested();
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool OpenTuneAudioProcessorEditor::pointerShortcutBindingRequested(
+    const KeyShortcutConfig::KeyBinding& binding)
+{
+    return arrangementView_.dispatchPointerShortcut(binding);
 }
 
 void OpenTuneAudioProcessorEditor::playFromStartToggleRequested()

@@ -106,6 +106,7 @@ public:
         virtual void escapeKeyPressed() {}
         virtual void undoRequested() {}
         virtual void redoRequested() {}
+        virtual bool pointerShortcutRequested(KeyShortcutConfig::ShortcutId /*id*/) { return false; }
         virtual void currentToolChanged(ToolId tool) { (void)tool; }
         virtual void timelineDisplayModeChanged(TimelineDisplayMode mode) { (void)mode; }
     };
@@ -428,6 +429,9 @@ public:
     juce::Rectangle<int> getTimelineViewportBounds() const;
 
 private:
+    bool matchesShortcut(KeyShortcutConfig::ShortcutId id, const juce::KeyPress& key) const;
+    bool handlePointerShortcut(const KeyShortcutConfig::KeyBinding& binding);
+
     void onScrollVBlankCallback(double timestampSec);
     int getTimelineContentViewportWidth() const;
     int getTimelineContentViewportHeight() const;
@@ -461,9 +465,7 @@ private:
     void handleVerticalScrollWheel(float deltaY);
     void handleHorizontalZoomWheel(const juce::MouseEvent& e, float deltaY);
 
-    // OpenDyne Melodyne-style navigation
-    void handleOpenDyneHorizontalScrollWheel(float deltaX, float deltaY);
-    void handleOpenDyneZoomAtMouse(const juce::MouseEvent& e, float deltaY);
+    // OpenDyne drag zoom/pan
     void beginOpenDyneZoomPan(const juce::MouseEvent& e);
     void updateOpenDyneZoomPan(const juce::MouseEvent& e);
     void endOpenDyneZoomPan();
@@ -553,6 +555,7 @@ private:
     ZoomSensitivityConfig::ZoomSensitivitySettings zoomSensitivity_ = ZoomSensitivityConfig::ZoomSensitivitySettings::getDefault();
     AudioEditingScheme::Scheme audioEditingScheme_ = AudioEditingScheme::Scheme::CorrectedF0Primary;
     KeyShortcutConfig::KeyShortcutSettings shortcutSettings_ = KeyShortcutConfig::KeyShortcutSettings::getDefault();
+    const KeyShortcutConfig::KeyBinding* pointerShortcutBinding_ = nullptr;
     juce::Colour trackDisplayColour_{0xFF4A90D9};
 
     int scaleRootNote_ = 0;

@@ -2393,6 +2393,16 @@ void ArrangementViewComponent::mouseDown(const juce::MouseEvent& e)
 {
     grabKeyboardFocus();
 
+    if (e.mods.isMiddleButtonDown()
+        && handlePointerShortcut({ KeyShortcutConfig::BindingType::MiddleMouseButton, e.mods }))
+        return;
+    if (e.mods.isBackButtonDown()
+        && handlePointerShortcut({ KeyShortcutConfig::BindingType::MouseBack, e.mods }))
+        return;
+    if (e.mods.isForwardButtonDown()
+        && handlePointerShortcut({ KeyShortcutConfig::BindingType::MouseForward, e.mods }))
+        return;
+
     // Ctrl+drag panning 鈥?only on empty area (not on a placement, to avoid
     // conflicting with Ctrl+click toggle placement selection).
     if (e.mods.isCtrlDown()) {
@@ -2818,31 +2828,17 @@ void ArrangementViewComponent::mouseDoubleClick(const juce::MouseEvent& e)
 void ArrangementViewComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
 {
     const auto& settings = zoomSensitivity_;
-    
-    // Shift + Wheel = Vertical Zoom (Track Height) - 与TrackPanel同步
-    if (e.mods.isShiftDown())
-    {
-        handleVerticalZoomWheel(wheel.deltaY);
-        return;
-    }
 
-    // Ctrl + Wheel = Horizontal Zoom at Pointer
-    if (e.mods.isCtrlDown())
-    {
-        handleHorizontalZoomWheel(wheel.deltaY,
-                                  viewportXToAbsoluteTime(e.x),
-                                  static_cast<double>(e.x - kArrangementContentStartX));
+    KeyShortcutConfig::BindingType wheelType;
+    if (KeyShortcutConfig::getWheelBindingType(wheel, e.mods, wheelType)
+        && handlePointerShortcut({ wheelType, e.mods }))
         return;
-    }
 
-    // Alt + Wheel = Horizontal Scroll (Time)
-    if (e.mods.isAltDown())
-    {
-        handleHorizontalScrollWheel(wheel.deltaY);
+    if (e.mods.isCtrlDown() || e.mods.isCommandDown()
+        || e.mods.isShiftDown() || e.mods.isAltDown())
         return;
-    }
 
-    // Default: Vertical Scroll (Tracks)
+    // Unmodified vertical and horizontal wheel scrolling.
     if (wheel.deltaY != 0.0f)
     {
         int scrollDelta = static_cast<int>(wheel.deltaY * settings.scrollSpeed);
@@ -2936,17 +2932,17 @@ void ArrangementViewComponent::handleHorizontalScrollWheel(float deltaY)
 
 bool ArrangementViewComponent::handleViewportShortcut(const juce::KeyPress& key)
 {
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ScrollHorizontalLeft, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ScrollHorizontalLeft, key))
     {
         handleHorizontalScrollWheel(1.0f);
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ScrollHorizontalRight, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ScrollHorizontalRight, key))
     {
         handleHorizontalScrollWheel(-1.0f);
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, key))
     {
         const double anchorX = getVisibleViewportWidth() * 0.5;
         const double zoomFactor = juce::jlimit(0.5, 1.5,
@@ -2956,7 +2952,7 @@ bool ArrangementViewComponent::handleViewportShortcut(const juce::KeyPress& key)
                             anchorX);
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomHorizontalOut, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomHorizontalOut, key))
     {
         const double anchorX = getVisibleViewportWidth() * 0.5;
         const double zoomFactor = juce::jlimit(0.5, 1.5,
@@ -2966,12 +2962,12 @@ bool ArrangementViewComponent::handleViewportShortcut(const juce::KeyPress& key)
                             anchorX);
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomVerticalIn, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomVerticalIn, key))
     {
         handleVerticalZoomWheel(1.0f, true);
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomVerticalOut, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomVerticalOut, key))
     {
         handleVerticalZoomWheel(-1.0f, true);
         return true;
@@ -2979,15 +2975,37 @@ bool ArrangementViewComponent::handleViewportShortcut(const juce::KeyPress& key)
     return false;
 }
 
+bool ArrangementViewComponent::matchesShortcut(KeyShortcutConfig::ShortcutId id,
+                                                const juce::KeyPress& key) const
+{
+    if (pointerShortcutBinding_ != nullptr)
+        return KeyShortcutConfig::matchesShortcut(shortcutSettings_, id, *pointerShortcutBinding_);
+    return KeyShortcutConfig::matchesShortcut(shortcutSettings_, id, key);
+}
+
+bool ArrangementViewComponent::handlePointerShortcut(const KeyShortcutConfig::KeyBinding& binding)
+{
+    const auto id = KeyShortcutConfig::findShortcutForBinding(shortcutSettings_, binding);
+    if (id == KeyShortcutConfig::ShortcutId::Count)
+        return false;
+
+    pointerShortcutBinding_ = &binding;
+    const bool handled = keyPressed(juce::KeyPress(0, binding.modifiers, 0));
+    pointerShortcutBinding_ = nullptr;
+    if (!handled)
+        listeners_.call([&](Listener& listener) { listener.pointerShortcutRequested(id); });
+    return true;
+}
+
 bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
 {
     const bool placementNudge =
-        KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::NudgeLeft, key)
-        || KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::NudgeRight, key);
+        matchesShortcut(KeyShortcutConfig::ShortcutId::NudgeLeft, key)
+        || matchesShortcut(KeyShortcutConfig::ShortcutId::NudgeRight, key);
     if (!placementNudge && handleViewportShortcut(key))
         return true;
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::SelectAll, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::SelectAll, key))
     {
         selectAllPlacementsInTrack(selectedTrack_);
         if (!selectedPlacements_.empty()) {
@@ -3002,7 +3020,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
     }
 
     // CopyClips 鈥?Ctrl+C
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Copy, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Copy, key))
     {
         if (!selectedPlacements_.empty())
         {
@@ -3030,7 +3048,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
     }
 
     // PasteClips 鈥?Ctrl+V (at playhead)
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Paste, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Paste, key))
     {
         auto& clipboard = processor_.getClipClipboard();
         if (clipboard.hasEntries())
@@ -3073,7 +3091,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
     }
 
     // DuplicateClip 鈥?Ctrl+D
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::DuplicateClip, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::DuplicateClip, key))
     {
         if (selectedPlacementId_ != 0 && selectedTrack_ >= 0)
         {
@@ -3116,7 +3134,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
         return true;
     }
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::SplitClip, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::SplitClip, key))
     {
         if (selectedTrack_ < 0 || selectedTrack_ >= OpenTuneAudioProcessor::MAX_TRACKS)
             return true;
@@ -3179,7 +3197,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
         return true;
     }
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::MergeClips, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::MergeClips, key))
     {
         if (selectedTrack_ < 0 || selectedTrack_ >= OpenTuneAudioProcessor::MAX_TRACKS)
             return true;
@@ -3215,7 +3233,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
         return true;
     }
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Delete, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Delete, key))
     {
         bool anyDeleted = false;
 
@@ -3247,7 +3265,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
     }
 
     // Nudge Left 鈥?move selected placements earlier by 10ms
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::NudgeLeft, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::NudgeLeft, key))
     {
         auto* arr = processor_.getStandaloneArrangement();
         if (!arr) return true;
@@ -3284,7 +3302,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
     }
 
     // Nudge Right 鈥?move selected placements later by 10ms
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::NudgeRight, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::NudgeRight, key))
     {
         auto* arr = processor_.getStandaloneArrangement();
         if (!arr) return true;
@@ -3321,7 +3339,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
     }
 
     // ToggleSnap 鈥?Ctrl+Shift+S
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ToggleSnap, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ToggleSnap, key))
     {
         auto snap = processor_.getSnapSettings();
         snap.enabled = !snap.enabled;

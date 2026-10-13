@@ -4195,6 +4195,16 @@ void PianoRollComponent::mouseDoubleClick(const juce::MouseEvent& e) {
 }
 
 void PianoRollComponent::mouseDown(const juce::MouseEvent& e) {
+    if (e.mods.isMiddleButtonDown()
+        && handlePointerShortcut({ KeyShortcutConfig::BindingType::MiddleMouseButton, e.mods }))
+        return;
+    if (e.mods.isBackButtonDown()
+        && handlePointerShortcut({ KeyShortcutConfig::BindingType::MouseBack, e.mods }))
+        return;
+    if (e.mods.isForwardButtonDown()
+        && handlePointerShortcut({ KeyShortcutConfig::BindingType::MouseForward, e.mods }))
+        return;
+
     // ── OpenDyne：Command+Alt+拖拽 = 同时缩放两轴；Command+Shift+拖拽 = 平移视区 ──
     if (isOpenDyne()) {
         if (e.mods.isCommandDown() && e.mods.isAltDown() && e.x >= getTimelineContentStartX()) {
@@ -4416,6 +4426,13 @@ void PianoRollComponent::handleHorizontalZoomWheel(const juce::MouseEvent& e, fl
 }
 
 void PianoRollComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) {
+    KeyShortcutConfig::BindingType wheelType;
+    if (KeyShortcutConfig::getWheelBindingType(wheel, e.mods, wheelType)) {
+        const KeyShortcutConfig::KeyBinding binding(wheelType, e.mods);
+        if (handlePointerShortcut(binding))
+            return;
+    }
+
     float deltaX = wheel.deltaX;
     float deltaY = wheel.deltaY;
 
@@ -4428,40 +4445,15 @@ void PianoRollComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::M
 
     if (deltaY == 0.0f && deltaX == 0.0f) return;
 
-    // ── OpenDyne（NotesPrimary）Melodyne 式导航 ──
-    if (isOpenDyne()) {
-        if (e.mods.isCommandDown()) {
-            handleOpenDyneZoomAtMouse(e, deltaY); // Windows Ctrl / macOS Command：横纵向同步缩放
-        } else if (e.mods.isAltDown()) {
-            handleVerticalZoomWheel(e, deltaY); // 纵向缩放音高轴
-        } else if (e.mods.isShiftDown()) {
-            handleOpenDyneHorizontalScrollWheel(deltaX, deltaY); // 横向滚动
-        } else {
-            handleVerticalScrollWheel(deltaY); // 纵向滚动
-        }
+    if (e.mods.isShiftDown() || e.mods.isCtrlDown()
+        || e.mods.isCommandDown() || e.mods.isAltDown())
         return;
-    }
 
-    if (e.mods.isShiftDown()) {
-        handleVerticalZoomWheel(e, deltaY);
-    } else if (e.mods.isCtrlDown()) {
-        handleHorizontalZoomWheel(e, deltaY);
-    } else if (e.mods.isAltDown()) {
-        handleHorizontalScrollWheel(deltaX, deltaY);
+    if (deltaX != 0.0f && deltaY == 0.0f) {
+        handleHorizontalScrollWheel(deltaX, 0.0f);
     } else {
         handleVerticalScrollWheel(deltaY);
     }
-}
-
-void PianoRollComponent::handleOpenDyneHorizontalScrollWheel(float deltaX, float deltaY) {
-    handleHorizontalScrollWheel(deltaX != 0.0f ? deltaX : deltaY, 0.0f);
-}
-
-void PianoRollComponent::handleOpenDyneZoomAtMouse(const juce::MouseEvent& e, float deltaY) {
-    saveOpenDyneZoomState();
-    // 时间轴与音高轴同时缩放，保持鼠标下的时间与音高不动
-    handleHorizontalZoomWheel(e, deltaY);
-    handleVerticalZoomWheel(e, deltaY);
 }
 
 void PianoRollComponent::beginOpenDyneZoomPan(const juce::MouseEvent& e) {
@@ -4949,43 +4941,65 @@ void PianoRollComponent::duplicateNotes()
 
 bool PianoRollComponent::handleViewportShortcut(const juce::KeyPress& key)
 {
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ScrollHorizontalLeft, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ScrollHorizontalLeft, key)) {
         handleHorizontalScrollWheel(0.0f, 1.0f);
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ScrollHorizontalRight, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ScrollHorizontalRight, key)) {
         handleHorizontalScrollWheel(0.0f, -1.0f);
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, key)) {
         beginZoomPreviewAt(getTimelineContentViewportWidth() / 2,
                            1.0 + zoomSensitivity_.horizontalZoomFactor);
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomHorizontalOut, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomHorizontalOut, key)) {
         beginZoomPreviewAt(getTimelineContentViewportWidth() / 2,
                            1.0 / (1.0 + zoomSensitivity_.horizontalZoomFactor));
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomVerticalIn, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomVerticalIn, key)) {
         handleVerticalZoomAt(1.0f + zoomSensitivity_.verticalZoomFactor,
                              static_cast<float>(getTimelineContentViewportHeight()) * 0.5f);
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ZoomVerticalOut, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomVerticalOut, key)) {
         handleVerticalZoomAt(1.0f / (1.0f + zoomSensitivity_.verticalZoomFactor),
                              static_cast<float>(getTimelineContentViewportHeight()) * 0.5f);
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::FitSelectedNotes, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::FitSelectedNotes, key)) {
         fitToSelectedNotes();
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::FitAllNotes, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::FitAllNotes, key)) {
         fitToAllNotes();
         return true;
     }
     return false;
+}
+
+bool PianoRollComponent::matchesShortcut(KeyShortcutConfig::ShortcutId id,
+                                          const juce::KeyPress& key) const
+{
+    if (pointerShortcutBinding_ != nullptr)
+        return KeyShortcutConfig::matchesShortcut(shortcutSettings_, id, *pointerShortcutBinding_);
+    return KeyShortcutConfig::matchesShortcut(shortcutSettings_, id, key);
+}
+
+bool PianoRollComponent::handlePointerShortcut(const KeyShortcutConfig::KeyBinding& binding)
+{
+    const auto id = KeyShortcutConfig::findShortcutForBinding(shortcutSettings_, binding);
+    if (id == KeyShortcutConfig::ShortcutId::Count)
+        return false;
+
+    pointerShortcutBinding_ = &binding;
+    const bool handled = keyPressed(juce::KeyPress(0, binding.modifiers, 0));
+    pointerShortcutBinding_ = nullptr;
+    if (!handled)
+        listeners_.call([&](Listener& listener) { listener.pointerShortcutRequested(id); });
+    return true;
 }
 
 bool PianoRollComponent::keyPressed(const juce::KeyPress& key) {
@@ -4999,32 +5013,32 @@ bool PianoRollComponent::keyPressed(const juce::KeyPress& key) {
         return toolHandler_->keyPressed(key);
     }
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Undo, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Undo, key)) {
         listeners_.call([](Listener& l) { l.undoRequested(); });
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Redo, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Redo, key)) {
         listeners_.call([](Listener& l) { l.redoRequested(); });
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Copy, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Copy, key)) {
         copySelectedNotes();
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Paste, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Paste, key)) {
         pasteNotes();
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Cut, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Cut, key)) {
         copySelectedNotes();
         toolHandler_->handleDeleteKey();  // 剪切语义：复制到剪贴板 + 删除选中
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::DuplicateClip, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::DuplicateClip, key)) {
         duplicateNotes();
         return true;
     }
-    return toolHandler_->keyPressed(key);
+    return toolHandler_->keyPressed(key, pointerShortcutBinding_);
 }
 
 std::optional<PianoRollRenderer::ContentRenderItem> PianoRollComponent::buildContentRenderItem(
