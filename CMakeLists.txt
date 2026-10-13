@@ -720,6 +720,8 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/UndoManager.h
         Source/Utils/PianoRollEditAction.cpp
         Source/Utils/PianoRollEditAction.h
+        Source/Utils/SelectedNoteParameterEdit.cpp
+        Source/Utils/SelectedNoteParameterEdit.h
         Source/Utils/PianoRollNotePatchAction.cpp
         Source/Utils/PianoRollNotePatchAction.h
         Source/Utils/AutomationLane.cpp
@@ -1512,6 +1514,21 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTunePitchParameterTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME PitchParameterContractTests COMMAND OpenTunePitchParameterTests)
+
+    add_executable(OpenTuneSelectedNoteParameterEditTests
+        Tests/SelectedNoteParameterEditTests.cpp
+    )
+    target_include_directories(OpenTuneSelectedNoteParameterEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneSelectedNoteParameterEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneSelectedNoteParameterEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME SelectedNoteParameterEditTests COMMAND OpenTuneSelectedNoteParameterEditTests)
 
     # PitchLaneVisualPolicy tests — pure standard library, no JUCE linkage
     add_executable(OpenTunePitchLaneVisualPolicyTests

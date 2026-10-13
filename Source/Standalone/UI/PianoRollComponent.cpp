@@ -25,6 +25,7 @@
 #include "TimelineViewportPolicy.h"
 #include "TimelineLayerComposer.h"
 #include "PianoRoll/PianoRollTimeMap.h"
+#include "../../PluginProcessor.h"
 namespace OpenTune {
 
 namespace {
@@ -2760,92 +2761,64 @@ AudioEditingScheme::ParameterEditResult PianoRollComponent::editParameter(AudioE
         return result;
     }
 
-    const auto contentSnapshot = readEditedSnapshot();
-    if (contentSnapshot == nullptr) {
-        result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+    if (target == AudioEditingScheme::ParameterTarget::SelectedNotes) {
+        interactionState_.noteSelection.trimToNoteCount(static_cast<int>(notes.size()));
+        if (processor_ == nullptr) {
+            result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+            return result;
+        }
+
+        const auto edit = processor_->editSelectedNoteParameter(
+            editedContentKey_,
+            interactionState_.noteSelection.selectedIndices,
+            lastKnownNotesRevision_,
+            id,
+            value,
+            currentRetuneSpeed_,
+            currentVibratoDepth_,
+            currentVibratoRate_,
+            LOC_RAW("Edit note"));
+        result.status = edit.status;
+        result.changed = edit.changed;
+        if (edit.status != AudioEditingScheme::ParameterEditStatus::Applied || !edit.changed) {
+            if (edit.contentSnapshot != nullptr) {
+                cachedNotes_ = edit.contentSnapshot->notes;
+                interactionState_.noteSelection.clear();
+                if (edit.contentSnapshot->pitchCurve != nullptr)
+                    applyEditedContentCurve(edit.contentSnapshot->pitchCurve);
+                lastKnownNotesRevision_ = edit.contentSnapshot->notesRevision;
+                lastKnownPitchRevision_ = edit.contentSnapshot->pitchRevision;
+                requestContentRedraw();
+            }
+            return result;
+        }
+
+        const auto affectedRange = edit.affectedRange;
+        if (!affectedRange.isEmpty()) {
+            const auto committedSnapshot = edit.contentSnapshot;
+            if (committedSnapshot == nullptr) {
+                result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+                return result;
+            }
+            cachedNotes_ = committedSnapshot->notes;
+            interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+            if (committedSnapshot->pitchCurve != nullptr)
+                applyEditedContentCurve(committedSnapshot->pitchCurve);
+            pendingUndoDescription_ = {};
+            undoSnapshotCaptured_ = false;
+            lastKnownNotesRevision_ = committedSnapshot->notesRevision;
+            lastKnownPitchRevision_ = committedSnapshot->pitchRevision;
+            requestContentRedraw();
+            listeners_.call([affectedRange](Listener& l) {
+                l.pitchCurveEdited(affectedRange.startFrame, affectedRange.endFrameExclusive - 1);
+            });
+        }
         return result;
     }
 
-    if (target == AudioEditingScheme::ParameterTarget::SelectedNotes) {
-        double dirtyStartTime = 1e30;
-        double dirtyEndTime = -1e30;
-        bool anySelected = false;
-
-        interactionState_.noteSelection.trimToNoteCount(static_cast<int>(notes.size()));
-        for (int noteIndex : interactionState_.noteSelection.selectedIndices) {
-            auto& n = notes[static_cast<size_t>(noteIndex)];
-            anySelected = true;
-
-            float oldValue = 0.0f;
-            switch (id) {
-                case AudioEditingScheme::ParameterId::RetuneSpeed:
-                    oldValue = n.retuneSpeed;
-                    n.retuneSpeed = value;
-                    break;
-                case AudioEditingScheme::ParameterId::VibratoDepth:
-                    oldValue = n.vibratoDepth;
-                    n.vibratoDepth = value;
-                    break;
-                case AudioEditingScheme::ParameterId::VibratoRate:
-                    oldValue = n.vibratoRate;
-                    n.vibratoRate = value;
-                    break;
-            }
-            if (std::abs(value - oldValue) > 1e-6f)
-                result.changed = true;
-
-            n.dirty = true;
-            dirtyStartTime = std::min(dirtyStartTime, n.startTime);
-            dirtyEndTime = std::max(dirtyEndTime, n.endTime);
-        }
-
-        if (!anySelected) {
-            result.status = AudioEditingScheme::ParameterEditStatus::NoTarget;
-            return result;
-        }
-
-        if (!result.changed) {
-            result.status = AudioEditingScheme::ParameterEditStatus::Applied;
-            return result;
-        }
-
-        if (dirtyEndTime > dirtyStartTime) {
-            const auto editRange = f0tl.rangeForTimes(dirtyStartTime, dirtyEndTime);
-            if (!editRange.isEmpty()) {
-                auto scratchCurve = PitchCurve::fromSnapshot(currentCurve_);
-                const auto snap = scratchCurve->applyCorrectionToRange(
-                    notes, editRange.startFrame, editRange.endFrameExclusive,
-                    static_cast<float>(contentSnapshot->pitchShiftSettings.getPitchRatio()),
-                    currentRetuneSpeed_, currentVibratoDepth_, currentVibratoRate_);
-
-                const auto affectedRange = PitchCurve::expandNoteBasedCorrectionRange(
-                    editRange.startFrame, editRange.endFrameExclusive, f0tl.endFrameExclusive());
-
-                const double affectedStartSec = f0tl.timeAtFrame(affectedRange.startFrame);
-                const double affectedEndSec = f0tl.timeAtFrame(affectedRange.endFrameExclusive);
-                std::vector<Note> notesInRange;
-                for (const auto& n : notes) {
-                    if (n.endTime > affectedStartSec && n.startTime < affectedEndSec)
-                        notesInRange.push_back(n);
-                }
-
-                auto allSegments = snap->getCorrectionSegments();
-                std::vector<PitchCorrectionSegment> segmentsInRange;
-                for (const auto& seg : allSegments) {
-                    if (seg.startFrame < affectedRange.endFrameExclusive && seg.endFrame > affectedRange.startFrame)
-                        segmentsInRange.push_back(seg);
-                }
-
-                pendingUndoDescription_ = LOC_RAW("Edit note");
-                if (!commitEditedContentNotesAndSegments(*contentSnapshot, notesInRange, segmentsInRange, affectedRange)) {
-                    result.status = AudioEditingScheme::ParameterEditStatus::Failed;
-                    return result;
-                }
-                listeners_.call([affectedRange](Listener& l) { l.pitchCurveEdited(affectedRange.startFrame, affectedRange.endFrameExclusive - 1); });
-            }
-        }
-
-        result.status = AudioEditingScheme::ParameterEditStatus::Applied;
+    const auto contentSnapshot = readEditedSnapshot();
+    if (contentSnapshot == nullptr) {
+        result.status = AudioEditingScheme::ParameterEditStatus::Failed;
         return result;
     }
 
@@ -3369,6 +3342,7 @@ void PianoRollComponent::onNotesRevisionChanged()
     uint64_t rev = snap ? snap->notesRevision : 0;
     if (rev == lastKnownNotesRevision_) return;
     lastKnownNotesRevision_ = rev;
+    interactionState_.noteSelection.clear();
     refreshEditedContentNotes();
     requestContentRedraw();
 }

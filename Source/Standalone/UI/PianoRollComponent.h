@@ -57,6 +57,7 @@ namespace OpenTune {
 
 class PianoKeyAudition;
 class AppPreferences;
+class OpenTuneAudioProcessor;
 struct PlayHeadState;
 
 struct PianoRollComponentTestProbe;
@@ -158,6 +159,7 @@ public:
     void setReadContentSnapshot(ReadContentSnapshotFn fn) { readContentSnapshot_ = std::move(fn); }
 
     void setContentCommands(std::shared_ptr<ContentEditCommands> commands);
+    void setProcessor(OpenTuneAudioProcessor* processor) noexcept { processor_ = processor; }
 
     ContentKey editedContentKey() const { return editedContentKey_; }
     ContentTimelineProjection activeContentProjection() const noexcept;
@@ -633,6 +635,7 @@ private:
 
     ReadContentSnapshotFn readContentSnapshot_;
     std::shared_ptr<ContentEditCommands> contentCommands_;
+    OpenTuneAudioProcessor* processor_ = nullptr;
 
     std::shared_ptr<const EditableContentSnapshot> readSnapshotFor(ContentKey key) const {
         return readContentSnapshot_ ? readContentSnapshot_(key) : nullptr;

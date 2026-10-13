@@ -60,6 +60,7 @@
 #include "Content/ContentKey.h"
 #include "Content/OriginalF0FailureEvent.h"
 #include "Content/ContentEditCommands.h"
+#include "Utils/SelectedNoteParameterEdit.h"
 #include "Render/ContentRenderService.h"
 #include "Runtime/ProcessRenderRuntime.h"
 #include <functional>
@@ -729,6 +730,17 @@ public:
         ContentEditRangeFrames affectedRange,
         std::vector<float> originalF0InRange,
         std::optional<std::vector<F0FrameRange>> erasedRanges = std::nullopt);
+    // Message-thread transaction for selected-note Retune/Vibrato parameter edits.
+    SelectedNoteParameterEditResult editSelectedNoteParameter(
+        ContentKey key,
+        const std::vector<int>& selectedNoteIndices,
+        uint64_t expectedNotesRevision,
+        AudioEditingScheme::ParameterId parameterId,
+        float value,
+        float retuneSpeedDefault,
+        float vibratoDepthDefault,
+        float vibratoRateDefault,
+        juce::String undoDescription = "Edit note");
     ContentCommitSnapshot commitContentNoteTopologyPatch(ContentKey key, ContentNoteRangePatch patch);
     // 一次替换整个 VolumeEnvelope，推进
     // outputGain/content revision，只走 republishPlaybackSource()（零 render enqueue）。

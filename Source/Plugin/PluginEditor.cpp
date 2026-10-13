@@ -248,6 +248,7 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
     renderBadge_.setVisible(false);
 
     contentCommands_ = processorRef_.getContentCommands();
+    pianoRoll_.setProcessor(&processorRef_);
     pianoRoll_.setContentCommands(contentCommands_);
     pianoRoll_.setReadContentSnapshot([this](ContentKey key) {
         return processorRef_.getContentSnapshot(key);

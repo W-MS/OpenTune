@@ -4980,6 +4980,79 @@ ContentCommitSnapshot OpenTuneAudioProcessor::commitContentNotesAndSegmentsWithO
         std::move(originalF0InRange), std::move(erasedRanges));
 }
 
+SelectedNoteParameterEditResult OpenTuneAudioProcessor::editSelectedNoteParameter(
+    ContentKey key,
+    const std::vector<int>& selectedNoteIndices,
+    uint64_t expectedNotesRevision,
+    AudioEditingScheme::ParameterId parameterId,
+    float value,
+    float retuneSpeedDefault,
+    float vibratoDepthDefault,
+    float vibratoRateDefault,
+    juce::String undoDescription)
+{
+    SelectedNoteParameterEditResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread()) {
+        result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+        return result;
+    }
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || snapshot->pitchCurve == nullptr || contentCommands_ == nullptr) {
+        result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+        return result;
+    }
+    const auto patch = planSelectedNoteParameterEdit(
+        key, *snapshot, selectedNoteIndices, expectedNotesRevision, parameterId, value,
+        retuneSpeedDefault, vibratoDepthDefault, vibratoRateDefault);
+    if (!patch) {
+        if (snapshot->notesRevision != expectedNotesRevision) {
+            result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+            result.contentSnapshot = snapshot;
+            return result;
+        }
+        const bool hasSelectedNote = std::any_of(
+            selectedNoteIndices.begin(), selectedNoteIndices.end(),
+            [&snapshot](int index) {
+                return index >= 0 && index < static_cast<int>(snapshot->notes.size());
+            });
+        result.status = hasSelectedNote
+            ? AudioEditingScheme::ParameterEditStatus::Failed
+            : AudioEditingScheme::ParameterEditStatus::NoTarget;
+        return result;
+    }
+
+    result.status = AudioEditingScheme::ParameterEditStatus::Applied;
+    result.changed = patch->changed;
+    result.affectedRange = patch->affectedRange;
+    if (!patch->changed || patch->affectedRange.isEmpty())
+        return result;
+
+    const ContentEditRangeFrames affectedRange{
+        patch->affectedRange.startFrame,
+        patch->affectedRange.endFrameExclusive
+    };
+    result.contentSnapshot = contentCommands_->commitNotesAndSegments(
+        patch->contentKey, patch->afterNotes, patch->afterSegments, affectedRange);
+    if (result.contentSnapshot == nullptr) {
+        result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+        return result;
+    }
+
+    undoManager_.addAction(std::make_unique<PianoRollEditAction>(
+        contentCommands_,
+        patch->contentKey,
+        std::move(undoDescription),
+        patch->beforeNotes,
+        patch->afterNotes,
+        patch->beforeSegments,
+        patch->afterSegments,
+        affectedRange));
+    return result;
+}
+
 ContentCommitSnapshot OpenTuneAudioProcessor::commitContentNotesAndSegmentsInternal(
     ContentKey key,
     std::vector<Note> notesInRange,

@@ -711,6 +711,7 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
     pianoRoll_.setReadContentSnapshot([this](ContentKey key) {
         return processorRef_.getContentSnapshot(key);
     });
+    pianoRoll_.setProcessor(&processorRef_);
     pianoRoll_.setContentCommands(processorRef_.getContentCommands());
     pianoRoll_.setPianoKeyAudition(&processorRef_.getPianoKeyAudition());
     {
