@@ -62,6 +62,7 @@
 #include "Content/ContentEditCommands.h"
 #include "Utils/SelectedNoteParameterEdit.h"
 #include "Utils/SelectedNoteEqEdit.h"
+#include "Utils/SelectedNoteDeleteEdit.h"
 #include "Render/ContentRenderService.h"
 #include "Runtime/ProcessRenderRuntime.h"
 #include <functional>
@@ -752,6 +753,12 @@ public:
         const std::vector<int>& selectedNoteIndices,
         uint64_t expectedNotesRevision,
         const std::optional<EqSettings>& settings,
+        juce::String undoDescription);
+    // Message-thread transaction for ordinary Piano Roll selected-note deletion.
+    SelectedNoteDeleteResult deleteSelectedPianoRollNotes(
+        ContentKey key,
+        const std::vector<int>& selectedNoteIndices,
+        uint64_t expectedNotesRevision,
         juce::String undoDescription);
     ContentCommitSnapshot commitContentNoteTopologyPatch(ContentKey key, ContentNoteRangePatch patch);
     // 一次替换整个 VolumeEnvelope，推进

@@ -1135,93 +1135,24 @@ void PianoRollToolHandler::cancelActiveMouseGesture()
 void PianoRollToolHandler::handleDeleteKey()
 // 删除键处理：只删除选中的音符并清除对应音高修正；无选中则不删除
 {
-    const auto beforeNotes = std::vector<Note>(displayNotes(ctx_));
-    ctx_.beginNoteDraft();
-    auto& notes = workingDraftNotes(ctx_);
+    const auto& notes = committedNotes(ctx_);
     const auto selectedIndices = collectSelectedNoteIndices(notes);
-
-    if (selectedIndices.empty()) {
-        ctx_.clearNoteDraft();
+    if (selectedIndices.empty())
         return;
-    }
 
-    int globalDirtyStartFrame = INT_MAX;
-    int globalDirtyEndFrame = INT_MIN;
-
-    const auto contentSnapshot = ctx_.getEditableContentSnapshot();
-    const auto f0tl = ctx_.getF0Timeline();
-
-    // 每个选中音符独立计算清除范围：不连续选中时，中间未选中音符的修正必须保留
-    // 本地累积需要清除的修正范围，不立即提交，最后一次性与音符原子提交
-    std::vector<F0FrameRange> correctionClearRanges;
-    if (contentSnapshot != nullptr && contentSnapshot->pitchCurve != nullptr) {
-        for (int noteIndex : selectedIndices) {
-            const auto& note = notes[static_cast<size_t>(noteIndex)];
-            const auto noteRange = f0tl.rangeForTimes(note.startTime, note.endTime);
-            if (noteRange.isEmpty())
-                continue;
-            correctionClearRanges.push_back(noteRange);
-            globalDirtyStartFrame = std::min(globalDirtyStartFrame, noteRange.startFrame);
-            globalDirtyEndFrame = std::max(globalDirtyEndFrame, noteRange.endFrameExclusive - 1);
-        }
-
-        // 按 startFrame 排序并合并重叠/相邻范围，避免同一帧重复清除
-        std::sort(correctionClearRanges.begin(), correctionClearRanges.end(),
-                  [](const F0FrameRange& a, const F0FrameRange& b) { return a.startFrame < b.startFrame; });
-        std::vector<F0FrameRange> mergedRanges;
-        for (const auto& range : correctionClearRanges) {
-            if (!mergedRanges.empty() && range.startFrame <= mergedRanges.back().endFrameExclusive) {
-                mergedRanges.back().endFrameExclusive =
-                    std::max(mergedRanges.back().endFrameExclusive, range.endFrameExclusive);
-            } else {
-                mergedRanges.push_back(range);
-            }
-        }
-        correctionClearRanges = std::move(mergedRanges);
-    }
-
-    deleteSelectedNotes(notes);
-    // 删除后 noteSelection 已清空，F0 范围自动从空 noteSelection 计算。
-
-    ctx_.getNoteDraft().contentDirty = true;
-    ctx_.getNoteDraft().workingNotes = notes;
-    ctx_.setUndoDescription(LOC_RAW("Delete note"));
-
-    // 同步计算清除修正 + 删除音符，一次性原子提交
-    bool committed = false;
-    if (contentSnapshot != nullptr && contentSnapshot->pitchCurve != nullptr && !correctionClearRanges.empty()) {
-        auto scratchCurve = PitchCurve::fromSnapshot(contentSnapshot->pitchCurve);
-        auto snap = contentSnapshot->pitchCurve;
-        for (const auto& range : correctionClearRanges) {
-            snap = scratchCurve->clearCorrectionRange(range.startFrame, range.endFrameExclusive);
-        }
-        // delete 路径：affectedRange = globalDirty*Frame 的覆盖范围（含端点）。
-        // F0FrameRange 的 endFrameExclusive 语义。
-        const F0FrameRange affectedRange{globalDirtyStartFrame, globalDirtyEndFrame + 1};
-
-        // Extract segments overlapping the affected range (range-scoped, not full)
-        auto allSegments = snap->getCorrectionSegments();
-        std::vector<PitchCorrectionSegment> segmentsInRange;
-        for (const auto& seg : allSegments) {
-            if (seg.startFrame < affectedRange.endFrameExclusive && seg.endFrame > affectedRange.startFrame)
-                segmentsInRange.push_back(seg);
-        }
-
-        auto commitSnap = ctx_.commitNotesAndSegments(notes, segmentsInRange, affectedRange);
-        committed = (commitSnap != nullptr);
-        if (committed) {
-            ctx_.notifyPitchCurveEdited(globalDirtyStartFrame, globalDirtyEndFrame);
-        }
-    } else {
-        committed = ctx_.commitNoteDraft();
-    }
-
-    if (committed) {
-        if (ctx_.invalidateLiveNotes) ctx_.invalidateLiveNotes(beforeNotes, committedNotes(ctx_));
+    auto result = ctx_.deleteSelectedPianoRollNotes(
+        selectedIndices, ctx_.getNotesRevision(), LOC_RAW("Delete note"));
+    if (result.status == SelectedNoteDeleteStatus::StaleRevision)
         return;
-    }
+    if (result.status != SelectedNoteDeleteStatus::Applied)
+        return;
 
-    ctx_.clearNoteDraft();
+    if (result.pitchCurveEdited) {
+        ctx_.notifyPitchCurveEdited(result.affectedRange.startFrame,
+                                    result.affectedRange.endFrameExclusive - 1);
+    }
+    if (ctx_.invalidateLiveNotes)
+        ctx_.invalidateLiveNotes(result.beforeNotes, result.contentSnapshot->notes);
 }
 
 void PianoRollToolHandler::handleSelectTool(const juce::MouseEvent& e)
@@ -3146,35 +3077,6 @@ void PianoRollToolHandler::showToolContextMenu(const juce::MouseEvent& e)
 {
     juce::ignoreUnused(e);
     ctx_.showToolSelectionMenu();
-}
-
-void PianoRollToolHandler::deleteSelectedNotes(std::vector<Note>& notes)
-{
-    const auto selectedIndices = collectSelectedNoteIndices(notes);
-    if (selectedIndices.empty()) {
-        return;
-    }
-
-    std::vector<char> deleteMask(notes.size(), 0);
-    for (int noteIndex : selectedIndices) {
-        if (noteIndex >= 0 && noteIndex < static_cast<int>(deleteMask.size())) {
-            deleteMask[static_cast<size_t>(noteIndex)] = 1;
-        }
-    }
-
-    int noteIndex = 0;
-    notes.erase(
-        std::remove_if(notes.begin(), notes.end(), [&deleteMask, &noteIndex](const Note&) {
-            const bool shouldDelete = deleteMask[static_cast<size_t>(noteIndex)] != 0;
-            ++noteIndex;
-            return shouldDelete;
-        }),
-        notes.end()
-    );
-    ctx_.getState().noteSelection.clear();
-    ctx_.getState().selection.isSelectingF0 = false;
-    ctx_.getState().selection.f0SelectionAnchorFrame = -1;
-    ctx_.getState().selection.f0SelectionCurrentFrame = -1;
 }
 
 void PianoRollToolHandler::handleLineAnchorMouseDown(const juce::MouseEvent& e)

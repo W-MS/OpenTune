@@ -182,6 +182,37 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
             && appPreferences_->getWholeNoteMoveSnapMode() == WholeNoteMoveSnapMode::StandardPitch;
     };
     toolCtx.getEditableContentSnapshot = [this]() { return readEditedSnapshot(); };
+    toolCtx.getNotesRevision = [this]() { return lastKnownNotesRevision_; };
+    toolCtx.deleteSelectedPianoRollNotes = [this](
+        const std::vector<int>& selectedIndices, uint64_t expectedNotesRevision, juce::String description) {
+        if (processor_ == nullptr)
+            return SelectedNoteDeleteResult{};
+
+        auto result = processor_->deleteSelectedPianoRollNotes(
+            editedContentKey_, selectedIndices, expectedNotesRevision, std::move(description));
+        if (result.status == SelectedNoteDeleteStatus::Applied
+            || result.status == SelectedNoteDeleteStatus::StaleRevision) {
+            if (result.status == SelectedNoteDeleteStatus::StaleRevision)
+                closeEqPopup();
+            interactionState_.noteSelection.clear();
+            interactionState_.selection.isSelectingF0 = false;
+            interactionState_.selection.f0SelectionAnchorFrame = -1;
+            interactionState_.selection.f0SelectionCurrentFrame = -1;
+            interactionState_.noteDraft.clear();
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            lastKnownPitchRevision_ = result.contentSnapshot->pitchRevision;
+            applyEditedContentCurve(result.contentSnapshot->pitchCurve);
+            requestContentRedraw();
+            if (result.status == SelectedNoteDeleteStatus::Applied) {
+                pendingUndoDescription_ = {};
+                undoSnapshotCaptured_ = false;
+                if (!result.pitchCurveEdited)
+                    listeners_.call([](Listener& listener) { listener.contentEdited(); });
+            }
+        }
+        return result;
+    };
     toolCtx.getOriginalF0 = [this]() -> std::vector<float> {
         if (!currentCurve_) return {};
         return currentCurve_->getOriginalF0();

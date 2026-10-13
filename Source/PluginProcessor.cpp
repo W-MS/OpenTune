@@ -5094,6 +5094,65 @@ OpenTuneAudioProcessor::SelectedNoteEqEditResult OpenTuneAudioProcessor::editSel
     return result;
 }
 
+SelectedNoteDeleteResult OpenTuneAudioProcessor::deleteSelectedPianoRollNotes(
+    ContentKey key,
+    const std::vector<int>& selectedNoteIndices,
+    uint64_t expectedNotesRevision,
+    juce::String undoDescription)
+{
+    SelectedNoteDeleteResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    auto plan = planSelectedNoteDelete(*snapshot, selectedNoteIndices, expectedNotesRevision);
+    result.status = plan.status;
+    if (plan.status == SelectedNoteDeleteStatus::StaleRevision) {
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+    if (plan.status != SelectedNoteDeleteStatus::Ready)
+        return result;
+
+    result.beforeNotes = snapshot->notes;
+    if (auto* edit = std::get_if<SelectedNoteTopologyDelete>(&plan.edit)) {
+        result.contentSnapshot = contentCommands_->commitNoteTopologyPatch(key, edit->afterPatch);
+        if (result.contentSnapshot == nullptr) {
+            result.status = SelectedNoteDeleteStatus::Failed;
+            return result;
+        }
+        undoManager_.addAction(std::make_unique<PianoRollNotePatchAction>(
+            contentCommands_, key, std::move(undoDescription),
+            std::move(edit->beforePatch), std::move(edit->afterPatch)));
+    } else {
+        auto& curveEdit = std::get<SelectedNotePitchCurveDelete>(plan.edit);
+        result.affectedRange = curveEdit.affectedRange;
+        result.pitchCurveEdited = true;
+        const ContentEditRangeFrames affectedRange{
+            curveEdit.affectedRange.startFrame,
+            curveEdit.affectedRange.endFrameExclusive
+        };
+        result.contentSnapshot = contentCommands_->commitNotesAndSegments(
+            key, curveEdit.afterNotes, curveEdit.afterSegments, affectedRange);
+        if (result.contentSnapshot == nullptr) {
+            result.status = SelectedNoteDeleteStatus::Failed;
+            return result;
+        }
+        undoManager_.addAction(std::make_unique<PianoRollEditAction>(
+            contentCommands_, key, std::move(undoDescription),
+            std::move(curveEdit.beforeNotes), std::move(curveEdit.afterNotes),
+            std::move(curveEdit.beforeSegments), std::move(curveEdit.afterSegments), affectedRange));
+    }
+
+    result.status = SelectedNoteDeleteStatus::Applied;
+    return result;
+}
+
 ContentCommitSnapshot OpenTuneAudioProcessor::commitContentNotesAndSegmentsInternal(
     ContentKey key,
     std::vector<Note> notesInRange,

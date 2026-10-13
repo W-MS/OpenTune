@@ -23,6 +23,7 @@
 #include "UI/ViewMapper.h"
 #include "../../../Content/ContentEditCommands.h"
 #include "../../../Content/EditableContentSnapshot.h"
+#include "../../../Utils/SelectedNoteDeleteEdit.h"
 #include <vector>
 #include <functional>
 #include <cstdint>
@@ -130,6 +131,9 @@ public:
         std::function<void(std::unique_ptr<UndoAction>)> pushUndoAction;
 
         std::function<std::shared_ptr<const EditableContentSnapshot>()> getEditableContentSnapshot;
+        std::function<uint64_t()> getNotesRevision;
+        std::function<SelectedNoteDeleteResult(const std::vector<int>&, uint64_t, juce::String)>
+            deleteSelectedPianoRollNotes;
 
         std::function<int()> getPianoKeyWidth;
         std::function<ContentTimelineProjection()> getContentProjection;
@@ -327,7 +331,6 @@ private:
     void beginEmptySpaceIntent(const juce::MouseEvent& e);
     void cancelActiveMouseGesture();
 
-    void deleteSelectedNotes(std::vector<Note>& notes);
 
     // === Note 选择辅助 ===
     struct NoteHitResult

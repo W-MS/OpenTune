@@ -724,6 +724,8 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/SelectedNoteParameterEdit.h
         Source/Utils/SelectedNoteEqEdit.cpp
         Source/Utils/SelectedNoteEqEdit.h
+        Source/Utils/SelectedNoteDeleteEdit.cpp
+        Source/Utils/SelectedNoteDeleteEdit.h
         Source/Utils/PianoRollNotePatchAction.cpp
         Source/Utils/PianoRollNotePatchAction.h
         Source/Utils/AutomationLane.cpp
@@ -1546,6 +1548,21 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTuneSelectedNoteEqEditTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME SelectedNoteEqEditTests COMMAND OpenTuneSelectedNoteEqEditTests)
+
+    add_executable(OpenTuneSelectedNoteDeleteEditTests
+        Tests/SelectedNoteDeleteEditTests.cpp
+    )
+    target_include_directories(OpenTuneSelectedNoteDeleteEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneSelectedNoteDeleteEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneSelectedNoteDeleteEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME SelectedNoteDeleteEditTests COMMAND OpenTuneSelectedNoteDeleteEditTests)
 
     # PitchLaneVisualPolicy tests — pure standard library, no JUCE linkage
     add_executable(OpenTunePitchLaneVisualPolicyTests
