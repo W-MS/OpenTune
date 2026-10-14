@@ -175,6 +175,7 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
             pendingUndoDescription_ = {};
             undoSnapshotCaptured_ = false;
             requestContentRedraw();
+            listeners_.call([](Listener& listener) { listener.contentEdited(); });
             return true;
         }
         if (result.status == ScissorsCommitStatus::StaleRevision
@@ -4982,6 +4983,7 @@ void PianoRollComponent::pasteNotes()
 
     requestContentRedraw();
     overlay_->repaint();
+    listeners_.call([](Listener& listener) { listener.contentEdited(); });
 }
 
 void PianoRollComponent::duplicateNotes()
