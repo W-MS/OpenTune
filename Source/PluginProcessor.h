@@ -63,6 +63,7 @@
 #include "Utils/SelectedNoteParameterEdit.h"
 #include "Utils/SelectedNoteEqEdit.h"
 #include "Utils/SelectedNoteDeleteEdit.h"
+#include "Utils/PasteTopologyEdit.h"
 #include "Render/ContentRenderService.h"
 #include "Runtime/ProcessRenderRuntime.h"
 #include <functional>
@@ -758,6 +759,21 @@ public:
     SelectedNoteDeleteResult deleteSelectedPianoRollNotes(
         ContentKey key,
         const std::vector<int>& selectedNoteIndices,
+        uint64_t expectedNotesRevision,
+        juce::String undoDescription);
+    // Message-thread transaction for Piano Roll note paste. The UI resolves the
+    // paste start (source seconds) and passes the clipboard verbatim; the plan
+    // (translation + topology) is computed here against one snapshot read.
+    struct PasteNotesResult
+    {
+        PasteNotesStatus status = PasteNotesStatus::Failed;
+        ContentCommitSnapshot contentSnapshot;
+        std::vector<Note> pastedNotes;
+    };
+    PasteNotesResult pasteNotesAt(
+        ContentKey key,
+        const std::vector<Note>& clipboardNotes,
+        double pasteStartTime,
         uint64_t expectedNotesRevision,
         juce::String undoDescription);
     ContentCommitSnapshot commitContentNoteTopologyPatch(ContentKey key, ContentNoteRangePatch patch);

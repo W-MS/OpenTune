@@ -4895,6 +4895,7 @@ void PianoRollComponent::pasteNotes()
 {
     if (notesClipboard_.empty()) return;
     if (contentCommands_ == nullptr || !editedContentKey_.isValid()) return;
+    if (processor_ == nullptr) return;
 
     const auto& notes = getCommittedNotes();
     const auto& sel = interactionState_.noteSelection;
@@ -4921,62 +4922,40 @@ void PianoRollComponent::pasteNotes()
         pasteStartTime = maxEnd;
     }
 
-    // 剪贴板始终保存 source 时间；粘贴音符之间的 source 相对间距保持不变
-    double clipMinTime = notesClipboard_.front().startTime;
-    for (const auto& n : notesClipboard_) {
-        clipMinTime = std::min(clipMinTime, n.startTime);
-    }
-
-    std::vector<Note> pastedNotes;
-    pastedNotes.reserve(notesClipboard_.size());
-    for (auto n : notesClipboard_) {
-        const double origStart = n.startTime;
-        const double origDuration = n.endTime - n.startTime;
-        n.startTime = pasteStartTime + (origStart - clipMinTime);
-        n.endTime = n.startTime + origDuration;
-        n.dirty = true;
-        pastedNotes.push_back(n);
-    }
-
-    // 拓扑计划：归一化合并 + affected range（粘贴包络 ∪ 严格相交原音符完整边界）
-    // + before/after patch 内容。range 覆盖被截短原音符的完整区间，Undo/Redo 对称。
-    const auto plan = planPasteTopology(notes, pastedNotes);
-
-    // 拓扑编辑事务：commitNoteTopologyPatch 内部处理
-    // revision 推进 + republishPlaybackSource + snapshot 返回
-    ContentNoteRangePatch afterPatch;
-    afterPatch.affectedRange.startSeconds = plan.affectedRange.startSeconds;
-    afterPatch.affectedRange.endSeconds = plan.affectedRange.endSeconds;
-    afterPatch.afterNotesInRange = plan.afterNotesInRange;
-
-    const auto committedSnap = contentCommands_->commitNoteTopologyPatch(editedContentKey_, afterPatch);
-    if (!committedSnap) return;
-
-    cachedNotes_ = committedSnap->notes;
-    interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
-
-    // 构建 before-patch：仅范围内的原有 notes，用于 Undo
-    ContentNoteRangePatch beforePatch;
-    beforePatch.affectedRange = afterPatch.affectedRange;
-    beforePatch.afterNotesInRange = plan.beforeNotesInRange;
-
-    auto action = std::make_unique<PianoRollNotePatchAction>(
-        contentCommands_,
+    // 拓扑编辑事务：Processor 读一次 snapshot，plan（平移 + 拓扑）在 Processor 内计算，
+    // commitNoteTopologyPatch 处理 revision 推进 + republishPlaybackSource + snapshot 返回。
+    const auto result = processor_->pasteNotesAt(
         editedContentKey_,
-        pendingUndoDescription_.isNotEmpty() ? pendingUndoDescription_ : LOC(kPaste),
-        std::move(beforePatch),
-        std::move(afterPatch));
+        notesClipboard_,
+        pasteStartTime,
+        lastKnownNotesRevision_,
+        pendingUndoDescription_.isNotEmpty() ? pendingUndoDescription_ : LOC(kPaste));
 
-    undoManager_.addAction(std::move(action));
+    if (result.status == PasteNotesStatus::StaleRevision) {
+        if (result.contentSnapshot != nullptr) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            interactionState_.noteSelection.clear();
+            requestContentRedraw();
+        }
+        pendingUndoDescription_ = {};
+        undoSnapshotCaptured_ = false;
+        return;
+    }
+    if (result.status != PasteNotesStatus::Applied) return;
+
+    cachedNotes_ = result.contentSnapshot->notes;
+    interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+    lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+
     pendingUndoDescription_ = {};
     undoSnapshotCaptured_ = false;
-    lastKnownNotesRevision_ = committedSnap->notesRevision;
 
-    // 选中刚粘贴的 notes（按 source 时间匹配）
+    // 选中刚粘贴的 notes（按旧 exact start/end 匹配）
     interactionState_.noteSelection.clear();
     const int noteCount = static_cast<int>(cachedNotes_.size());
     for (int i = 0; i < noteCount; ++i) {
-        for (const auto& pn : pastedNotes) {
+        for (const auto& pn : result.pastedNotes) {
             if (cachedNotes_[static_cast<size_t>(i)].startTime == pn.startTime
                 && cachedNotes_[static_cast<size_t>(i)].endTime == pn.endTime) {
                 interactionState_.noteSelection.add(i, noteCount);

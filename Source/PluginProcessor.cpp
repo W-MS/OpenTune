@@ -5153,6 +5153,47 @@ SelectedNoteDeleteResult OpenTuneAudioProcessor::deleteSelectedPianoRollNotes(
     return result;
 }
 
+OpenTuneAudioProcessor::PasteNotesResult OpenTuneAudioProcessor::pasteNotesAt(
+    ContentKey key,
+    const std::vector<Note>& clipboardNotes,
+    double pasteStartTime,
+    uint64_t expectedNotesRevision,
+    juce::String undoDescription)
+{
+    PasteNotesResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    auto plan = planPasteNotesEdit(*snapshot, clipboardNotes, pasteStartTime, expectedNotesRevision);
+    result.status = plan.status;
+    if (plan.status == PasteNotesStatus::StaleRevision
+        || plan.status == PasteNotesStatus::EmptyClipboard) {
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+    if (plan.status != PasteNotesStatus::Ready)
+        return result;
+
+    result.pastedNotes = plan.pastedNotes;
+    result.contentSnapshot = contentCommands_->commitNoteTopologyPatch(key, plan.afterPatch);
+    if (result.contentSnapshot == nullptr) {
+        result.status = PasteNotesStatus::Failed;
+        return result;
+    }
+
+    undoManager_.addAction(std::make_unique<PianoRollNotePatchAction>(
+        contentCommands_, key, std::move(undoDescription),
+        std::move(plan.beforePatch), std::move(plan.afterPatch)));
+    result.status = PasteNotesStatus::Applied;
+    return result;
+}
+
 ContentCommitSnapshot OpenTuneAudioProcessor::commitContentNotesAndSegmentsInternal(
     ContentKey key,
     std::vector<Note> notesInRange,
