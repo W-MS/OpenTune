@@ -740,6 +740,8 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/AutomationLane.h
         Source/Utils/VolumeEnvelopeEditAction.cpp
         Source/Utils/VolumeEnvelopeEditAction.h
+        Source/Utils/VolumeEnvelopeRegionEdit.cpp
+        Source/Utils/VolumeEnvelopeRegionEdit.h
         Source/Utils/ScissorsUndoAction.cpp
         Source/Utils/ScissorsUndoAction.h
         Source/Utils/PitchShiftSettings.h
@@ -1578,6 +1580,22 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTuneEqFilterEditOpsTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME EqFilterEditOpsTests COMMAND OpenTuneEqFilterEditOpsTests)
+
+    # VolumeEnvelope region-gain planner + undo action tests — pure planner, no plugin runtime
+    add_executable(OpenTuneVolumeEnvelopeRegionEditTests
+        Tests/VolumeEnvelopeRegionEditTests.cpp
+    )
+    target_include_directories(OpenTuneVolumeEnvelopeRegionEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneVolumeEnvelopeRegionEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneVolumeEnvelopeRegionEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME VolumeEnvelopeRegionEditTests COMMAND OpenTuneVolumeEnvelopeRegionEditTests)
 
     add_executable(OpenTuneSelectedNoteDeleteEditTests
         Tests/SelectedNoteDeleteEditTests.cpp

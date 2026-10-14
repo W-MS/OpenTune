@@ -398,6 +398,7 @@ private:
     void applyEqSettingsToSelection(const EqSettings& settings);
     /** 清除选中组全部 Note.eq（nullopt），作为单次消息线程事务提交。 */
     bool removeEqFromSelection();
+    void handleVolumeEnvelopeRegionEditResult(const VolumeEnvelopeRegionEditResult& result);
     /** 预览尺寸 180x80 契约，在当前组件范围内靠近选择区放置。 */
     juce::Rectangle<int> placeEqPopupBounds(const juce::Rectangle<int>& anchor) const;
 

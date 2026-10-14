@@ -65,6 +65,7 @@
 #include "Utils/SelectedNoteDeleteEdit.h"
 #include "Utils/PasteTopologyEdit.h"
 #include "Utils/ScissorsTopologyEdit.h"
+#include "Utils/VolumeEnvelopeRegionEdit.h"
 #include "Render/ContentRenderService.h"
 #include "Runtime/ProcessRenderRuntime.h"
 #include <functional>
@@ -787,9 +788,26 @@ public:
         uint64_t expectedNotesRevision,
         juce::String undoDescription);
     ContentCommitSnapshot commitContentNoteTopologyPatch(ContentKey key, ContentNoteRangePatch patch);
-    // 一次替换整个 VolumeEnvelope，推进
-    // outputGain/content revision，只走 republishPlaybackSource()（零 render enqueue）。
+    // 一次替换整个 VolumeEnvelope，推进 notesRevision（owner 的 applyVolumeEnvelope
+    // 只 ++notesRevision，不推进 contentRevision——gain 仅 playback 读 late apply，
+    // 不使 render cache 失效），只走 republishPlaybackSource()（零 render enqueue）。
     ContentCommitSnapshot commitVolumeEnvelope(ContentKey key, AutomationLane envelope);
+    // Message-thread transaction for VolumeEnvelope tool region-gain drag commit.
+    // Reads one snapshot, plans region deltas against the baseline envelope with
+    // expectedNotesRevision validation, commits via commitVolumeEnvelope, records
+    // undo (fixed ContentKey). NoChange does not commit/undo.
+    VolumeEnvelopeRegionEditResult editVolumeEnvelopeRegions(
+        ContentKey key,
+        const std::vector<int>& selectedNoteIndices,
+        uint64_t expectedNotesRevision,
+        float deltaGainDb,
+        juce::String undoDescription);
+    // Message-thread transaction for VolumeEnvelope tool double-click region reset.
+    VolumeEnvelopeRegionEditResult resetVolumeEnvelopeRegion(
+        ContentKey key,
+        int noteIndex,
+        uint64_t expectedNotesRevision,
+        juce::String undoDescription);
     // 无渲染发布入口：按 content domain 调现有装配函数，只读最新 snapshot、
     // 发布携带该 snapshot（AutomationLane/TimeGrid/revision）的不可变播放源。
     void republishPlaybackSource(ContentKey key);
@@ -805,6 +823,11 @@ public:
         ContentKey key,
         const PitchShiftSettings& newSettings);
 private:
+    VolumeEnvelopeRegionEditResult commitVolumeEnvelopeRegionPlan(
+        ContentKey key,
+        ContentCommitSnapshot snapshot,
+        VolumeEnvelopeRegionEditPlan plan,
+        juce::String undoDescription);
     ContentCommitSnapshot commitContentNotesAndSegmentsInternal(
         ContentKey key,
         std::vector<Note> notes,

@@ -6,7 +6,7 @@
 #include "../Utils/AppLogger.h"
 #include "../../Utils/PianoRollEditAction.h"
 #include "../../Utils/PianoRollNotePatchAction.h"
-#include "../../Utils/VolumeEnvelopeEditAction.h"
+#include "../../Utils/VolumeEnvelopeRegionEdit.h"
 #include "../../Utils/TimeGridEditAction.h"   // 閳库槄?vocal-time-stretch ?.7
 #include "../../Utils/CursorTheme.h"
 #include <algorithm>
@@ -113,6 +113,35 @@ void PianoRollComponent::initializeRenderer() {
     renderer_ = std::make_unique<PianoRollRenderer>();
 }
 
+void PianoRollComponent::handleVolumeEnvelopeRegionEditResult(
+    const VolumeEnvelopeRegionEditResult& result)
+{
+    if (result.status == VolumeEnvelopeRegionEditStatus::StaleRevision) {
+        closeEqPopup();
+        if (result.contentSnapshot != nullptr) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+        }
+        interactionState_.noteSelection.clear();
+    }
+
+    const bool applied = result.status == VolumeEnvelopeRegionEditStatus::Applied
+        && result.contentSnapshot != nullptr;
+    if (applied) {
+        cachedNotes_ = result.contentSnapshot->notes;
+        interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+        lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+    }
+
+    // Drag preview was rasterized during mouseDrag. Rebuild after every result so
+    // NoChange/Failed also remove it from the retained content surface.
+    requestContentRedraw();
+    overlay_->repaint();
+    if (applied) {
+        listeners_.call([](Listener& listener) { listener.contentEdited(); });
+    }
+}
+
 PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
     PianoRollToolHandler::Context toolCtx;
     toolCtx.getState = [this]() -> InteractionState& { return interactionState_; };
@@ -146,21 +175,30 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
             std::vector<float>(originalF0InRange), erasedRanges);
     };
     // ── OpenDyne 契约回调（Pitch/Scissors/Gain 域） ──
-    toolCtx.commitVolumeEnvelope = [this](AutomationLane before, AutomationLane after) -> ContentCommitSnapshot {
-        if (contentCommands_ == nullptr || !editedContentKey_.isValid()) return nullptr;
-        const auto committedSnap = contentCommands_->commitVolumeEnvelope(editedContentKey_, after);
-        if (committedSnap != nullptr) {
-            undoManager_.addAction(std::make_unique<VolumeEnvelopeEditAction>(
-                contentCommands_, editedContentKey_, LOC(kToolVolumeEnvelope),
-                std::move(before), std::move(after)));
-        }
-        refreshEditedContentNotes();
-        contentDirty_ = true;
-        rasterizeDirtySurfaces();
-        overlay_->repaint();
-        if (committedSnap != nullptr)
-            listeners_.call([](Listener& listener) { listener.contentEdited(); });
-        return committedSnap;
+    // VolumeEnvelope 事务：Processor 消息线程读 snapshot → planner（revision 校验 +
+    // baseline 区域 delta/reset）→ commitVolumeEnvelope + undo（固定 ContentKey）。
+    // Applied 后按原 UI 行为刷新 notes 缓存 / dirty / rasterize / repaint / contentEdited；
+    // NoChange 不提交不 undo；StaleRevision 刷新缓存/revision + 清选择。
+    toolCtx.editVolumeEnvelopeRegions =
+        [this](const std::vector<int>& selectedIndices, uint64_t expectedNotesRevision,
+               float deltaGainDb, juce::String description) -> VolumeEnvelopeRegionEditResult {
+        if (processor_ == nullptr || !editedContentKey_.isValid())
+            return {};
+        const auto result = processor_->editVolumeEnvelopeRegions(
+            editedContentKey_, selectedIndices, expectedNotesRevision, deltaGainDb,
+            std::move(description));
+        handleVolumeEnvelopeRegionEditResult(result);
+        return result;
+    };
+    toolCtx.resetVolumeEnvelopeRegion =
+        [this](int noteIndex, uint64_t expectedNotesRevision,
+               juce::String description) -> VolumeEnvelopeRegionEditResult {
+        if (processor_ == nullptr || !editedContentKey_.isValid())
+            return {};
+        const auto result = processor_->resetVolumeEnvelopeRegion(
+            editedContentKey_, noteIndex, expectedNotesRevision, std::move(description));
+        handleVolumeEnvelopeRegionEditResult(result);
+        return result;
     };
     // Scissors 事务：Processor 校验 revision + 全量替换 + republish + undo（固定
     // ContentKey）。失败/StaleRevision 时刷新 notes 缓存/revision，不推 undo。

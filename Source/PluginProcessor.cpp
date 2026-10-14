@@ -31,6 +31,7 @@
 #include "Utils/PitchControlConfig.h"
 #include "Utils/ScaleUiMapping.h"
 #include "Utils/PianoRollEditAction.h"
+#include "Utils/VolumeEnvelopeEditAction.h"
 #include "Utils/PianoRollNotePatchAction.h"
 #include "Utils/ScissorsUndoAction.h"
 #include "Utils/PitchShiftEditAction.h"
@@ -5415,6 +5416,80 @@ ContentCommitSnapshot OpenTuneAudioProcessor::commitVolumeEnvelope(ContentKey ke
 
     republishPlaybackSource(key);
     return getContentSnapshot(key);
+}
+
+VolumeEnvelopeRegionEditResult OpenTuneAudioProcessor::commitVolumeEnvelopeRegionPlan(
+    ContentKey key,
+    ContentCommitSnapshot snapshot,
+    VolumeEnvelopeRegionEditPlan plan,
+    juce::String undoDescription)
+{
+    VolumeEnvelopeRegionEditResult result;
+    if (plan.status != VolumeEnvelopeRegionEditStatus::Ready) {
+        result.status = plan.status;
+        if (plan.status == VolumeEnvelopeRegionEditStatus::StaleRevision)
+            result.contentSnapshot = std::move(snapshot);
+        return result;
+    }
+
+    auto committedSnap = commitVolumeEnvelope(key, plan.afterEnvelope);
+    if (committedSnap == nullptr) {
+        result.status = VolumeEnvelopeRegionEditStatus::Failed;
+        return result;
+    }
+
+    undoManager_.addAction(std::make_unique<VolumeEnvelopeEditAction>(
+        contentCommands_, key, std::move(undoDescription),
+        std::move(plan.beforeEnvelope), std::move(plan.afterEnvelope)));
+    result.status = VolumeEnvelopeRegionEditStatus::Applied;
+    result.contentSnapshot = std::move(committedSnap);
+    return result;
+}
+
+VolumeEnvelopeRegionEditResult OpenTuneAudioProcessor::editVolumeEnvelopeRegions(
+    ContentKey key,
+    const std::vector<int>& selectedNoteIndices,
+    uint64_t expectedNotesRevision,
+    float deltaGainDb,
+    juce::String undoDescription)
+{
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    VolumeEnvelopeRegionEditResult result;
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    return commitVolumeEnvelopeRegionPlan(
+        key, snapshot,
+        planVolumeEnvelopeRegionDeltaEdit(*snapshot, selectedNoteIndices,
+                                          expectedNotesRevision, deltaGainDb),
+        std::move(undoDescription));
+}
+
+VolumeEnvelopeRegionEditResult OpenTuneAudioProcessor::resetVolumeEnvelopeRegion(
+    ContentKey key,
+    int noteIndex,
+    uint64_t expectedNotesRevision,
+    juce::String undoDescription)
+{
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    VolumeEnvelopeRegionEditResult result;
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    return commitVolumeEnvelopeRegionPlan(
+        key, snapshot,
+        planVolumeEnvelopeRegionResetEdit(*snapshot, noteIndex, expectedNotesRevision),
+        std::move(undoDescription));
 }
 
 void OpenTuneAudioProcessor::republishPlaybackSource(ContentKey key)

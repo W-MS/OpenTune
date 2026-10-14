@@ -23,6 +23,7 @@
 #include "../../../Content/ContentEditCommands.h"
 #include "../../../Content/EditableContentSnapshot.h"
 #include "../../../Utils/SelectedNoteDeleteEdit.h"
+#include "../../../Utils/VolumeEnvelopeRegionEdit.h"
 #include <vector>
 #include <functional>
 #include <cstdint>
@@ -116,9 +117,13 @@ public:
                                              const std::optional<std::vector<F0FrameRange>>&)> commitNotesAndSegmentsWithOriginalF0;
 
         // === OpenDyne（NotesPrimary）提交与配置回调 ===
-        // Volume Envelope 提交：整体替换 AutomationLane，推进 outputGain/content
-        // revision，内部 republish，零 render。
-        std::function<ContentCommitSnapshot(AutomationLane, AutomationLane)> commitVolumeEnvelope;
+        // Volume Envelope 事务：Processor 消息线程读 snapshot → planner 校验
+        // expectedNotesRevision → commitVolumeEnvelope + undo（固定 ContentKey）。
+        // NoChange 不提交/不 undo；StaleRevision 返回 snapshot 供 UI 刷新。
+        std::function<VolumeEnvelopeRegionEditResult(const std::vector<int>&, uint64_t, float, juce::String)>
+            editVolumeEnvelopeRegions;
+        std::function<VolumeEnvelopeRegionEditResult(int, uint64_t, juce::String)>
+            resetVolumeEnvelopeRegion;
         // Scissors 事务：Processor 读一次 snapshot 校验 revision → 全量替换 notes →
         // republish + 记录 undo（固定 ContentKey）。失败/StaleRevision 返回 false（由 UI 刷新）。
         std::function<bool(const std::vector<Note>& afterNotes, juce::String undoDescription)> commitScissorsNotes;
@@ -382,6 +387,8 @@ private:
     double lastDrawTime_ = 0.0;
     float lastDrawF0_ = 0.0f;
     AutomationLane volumeDragBaselineEnvelope_;
+    std::vector<int> volumeDragSelectedIndices_;
+    uint64_t volumeDragExpectedNotesRevision_ = 0;
 };
 
 } // namespace OpenTune

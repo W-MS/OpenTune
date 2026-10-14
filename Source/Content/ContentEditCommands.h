@@ -93,9 +93,9 @@ public:
     // only; the processor keeps its analysisFinished/F0 callback chain unchanged.
     virtual bool ensureTimeToolAnchorSeed(ContentKey key) = 0;
 
-    // 一次替换整个 AutomationLane，推进
-    // outputGain/content revision，调用 republishPlaybackSource()；
-    // 不 enqueue render、不失效 RenderCache。
+    // 一次替换整个 AutomationLane，只推进 notesRevision（gain 仅 playback 读
+    // late apply，不推进 contentRevision、不使 RenderCache 失效），调用
+    // republishPlaybackSource()；不 enqueue render。
     virtual ContentCommitSnapshot commitVolumeEnvelope(ContentKey key,
                                                        AutomationLane envelope) = 0;
 
