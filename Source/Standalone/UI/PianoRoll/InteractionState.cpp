@@ -148,8 +148,8 @@ void NoteResizeState::clear()
     isDirty = false;
     noteIndex = -1;
     edge = NoteResizeEdge::None;
-    originalStartTime = 0.0;
-    originalEndTime = 0.0;
+    clampedTime = 0.0;
+    expectedNotesRevision = 0;
 }
 
 // ============================================================================

@@ -18,6 +18,7 @@ namespace {
 
 constexpr int kNoteResizeEdgeThresholdPx = 6;
 constexpr float kNotePitchHitToleranceSemitones = 1.0f;
+constexpr double kNoteResizeMinDuration = 0.02;
 
 void selectNotesForEditedFrameRange(PianoRollToolHandler::Context& ctx,
                                     int startFrame,
@@ -78,7 +79,9 @@ std::shared_ptr<const EditableContentSnapshot> buildNoteBasedCorrectionState(
 
 bool commitNoteBasedCorrection(PianoRollToolHandler::Context& ctx,
                                const std::vector<Note>& notes,
-                               F0FrameRange editRange)
+                               F0FrameRange editRange,
+                               const std::function<bool(const std::vector<PitchCorrectionSegment>&,
+                                                        F0FrameRange)>& commit = {})
 {
     const auto f0tl = ctx.getF0Timeline();
     const auto snap = buildNoteBasedCorrectionState(ctx, notes, editRange);
@@ -97,7 +100,10 @@ bool commitNoteBasedCorrection(PianoRollToolHandler::Context& ctx,
             segmentsInRange.push_back(seg);
     }
 
-    if (!ctx.commitNotesAndSegments(notes, segmentsInRange, affectedRange)) {
+    const bool committed = commit
+        ? commit(segmentsInRange, affectedRange)
+        : ctx.commitNotesAndSegments(notes, segmentsInRange, affectedRange) != nullptr;
+    if (!committed) {
         return false;
     }
 
@@ -1025,9 +1031,7 @@ void PianoRollToolHandler::handleSelectTool(const juce::MouseEvent& e)
 {
     const auto& notes = committedNotes(ctx_);
 
-    ctx_.getState().noteResize.isResizing = false;
-    ctx_.getState().noteResize.noteIndex = -1;
-    ctx_.getState().noteResize.edge = NoteResizeEdge::None;
+    ctx_.getState().noteResize.clear();
 
     const auto sourceTime = pixelXToSourceTime(e.x);
     if (!sourceTime)
@@ -1048,13 +1052,11 @@ void PianoRollToolHandler::handleSelectTool(const juce::MouseEvent& e)
     bool isShiftDown = e.mods.isShiftDown();
 
     if (hit.noteIndex >= 0 && hit.edge != NoteResizeEdge::None) {
-        const auto& note = notes[static_cast<size_t>(hit.noteIndex)];
         ctx_.getState().noteResize.isResizing = true;
         ctx_.getState().noteResize.isDirty = false;
         ctx_.getState().noteResize.noteIndex = hit.noteIndex;
         ctx_.getState().noteResize.edge = hit.edge;
-        ctx_.getState().noteResize.originalStartTime = note.startTime;
-        ctx_.getState().noteResize.originalEndTime = note.endTime;
+        ctx_.getState().noteResize.expectedNotesRevision = ctx_.getNotesRevision();
 
         auto& noteSelection = ctx_.getState().noteSelection;
         const int noteCount = static_cast<int>(notes.size());
@@ -1143,9 +1145,7 @@ void PianoRollToolHandler::beginAreaSelection(const juce::MouseEvent& e)
     ctx_.getState().frameSelection.clear();
     ctx_.getState().noteDrag.draggedNoteIndices.clear();
     ctx_.getState().noteDrag.previewSnapshot.reset();
-    ctx_.getState().noteResize.isResizing = false;
-    ctx_.getState().noteResize.noteIndex = -1;
-    ctx_.getState().noteResize.edge = NoteResizeEdge::None;
+    ctx_.getState().noteResize.clear();
 
     if (e.x >= ctx_.getPianoKeyWidth()) {
         ctx_.getState().selection.isSelectingArea = true;
@@ -1562,9 +1562,8 @@ void PianoRollToolHandler::handleSelectDrag(const juce::MouseEvent& e)
         }
         ctx_.getNoteDraft().contentDirty = true;
 
-        auto& notes = workingDraftNotes(ctx_);
-        resetDraftNotesToBaseline(ctx_);
-        if (ctx_.getState().noteResize.noteIndex >= static_cast<int>(notes.size())) {
+        auto& draft = ctx_.getNoteDraft();
+        if (ctx_.getState().noteResize.noteIndex >= static_cast<int>(draft.baselineNotes.size())) {
             return;
         }
 
@@ -1578,47 +1577,15 @@ void PianoRollToolHandler::handleSelectDrag(const juce::MouseEvent& e)
                                                  editRange.endSeconds,
                                                  *currentTime);
 
-        double minDuration = 0.02;
         const int resizeIdx = static_cast<int>(ctx_.getState().noteResize.noteIndex);
-
-        // notes 已按 startTime 全局排序且互不重叠：右边缘只可能推让 resizeIdx+1，
-        // 左边缘只可能推让 resizeIdx-1。目标先进入时间间隙；仅当实际侵入邻居时
-        // 才移动邻居边界，且邻居保持最小长度 minDuration，目标扩展受其限制。
-        // 不按 pitch 过滤，不链式压缩多个音符。
-        if (ctx_.getState().noteResize.edge == NoteResizeEdge::Left) {
-            double newStart = std::min(clampedTime, notes[static_cast<size_t>(resizeIdx)].endTime - minDuration);
-            newStart = std::max(0.0, newStart);
-            if (resizeIdx > 0) {
-                const auto& prev = notes[static_cast<size_t>(resizeIdx - 1)];
-                if (newStart < prev.endTime) {
-                    // 短前驱（时长 < minDuration）不可再压缩：目标最小 start 至多到 prev.endTime，
-                    // 不会越过其 end；正常前驱则以 prev.startTime + minDuration 为下界。
-                    newStart = std::max(newStart, std::min(prev.endTime, prev.startTime + minDuration));
-                    if (newStart < prev.endTime) {
-                        notes[static_cast<size_t>(resizeIdx - 1)].endTime = newStart;
-                        notes[static_cast<size_t>(resizeIdx - 1)].dirty = true;
-                    }
-                }
-            }
-            notes[static_cast<size_t>(resizeIdx)].startTime = newStart;
-        } else if (ctx_.getState().noteResize.edge == NoteResizeEdge::Right) {
-            double newEnd = std::max(clampedTime, notes[static_cast<size_t>(resizeIdx)].startTime + minDuration);
-            if (resizeIdx + 1 < static_cast<int>(notes.size())) {
-                const auto& next = notes[static_cast<size_t>(resizeIdx + 1)];
-                if (newEnd > next.startTime) {
-                    // 短后继（时长 < minDuration）不可再压缩：目标最大 end 至少到 next.startTime，
-                    // 不会越过其 start；正常后继则以 next.endTime - minDuration 为上界。
-                    newEnd = std::min(newEnd, std::max(next.startTime, next.endTime - minDuration));
-                    if (newEnd > next.startTime) {
-                        notes[static_cast<size_t>(resizeIdx + 1)].startTime = newEnd;
-                        notes[static_cast<size_t>(resizeIdx + 1)].dirty = true;
-                    }
-                }
-            }
-            notes[static_cast<size_t>(resizeIdx)].endTime = newEnd;
-        }
-
-        notes[static_cast<size_t>(resizeIdx)].dirty = true;
+        const auto plan = planNoteResizeEdit(draft.baselineNotes,
+                                             resizeIdx,
+                                             ctx_.getState().noteResize.edge,
+                                             clampedTime,
+                                             kNoteResizeMinDuration);
+        draft.workingNotes = plan.afterNotes;
+        ctx_.getState().noteResize.clampedTime = clampedTime;
+        auto& notes = draft.workingNotes;
         if (ctx_.invalidateLiveNotes) ctx_.invalidateLiveNotes(beforeNotes, notes);
         return;
     }
@@ -1661,8 +1628,6 @@ void PianoRollToolHandler::handleSelectUp(const juce::MouseEvent& e)
     const auto f0tl = ctx_.getF0Timeline();
 
     bool resizeMoved = false;
-    double resizedStartTime = 0.0;
-    double resizedEndTime = 0.0;
     const int resizeIdx = static_cast<int>(ctx_.getState().noteResize.noteIndex);
     if (ctx_.getState().noteResize.isResizing
         && resizeIdx >= 0
@@ -1674,8 +1639,6 @@ void PianoRollToolHandler::handleSelectUp(const juce::MouseEvent& e)
         // 以 baseline 与当前边界对比判定 resize 目标是否实际移动。
         resizeMoved = baselineTarget.startTime != resizedNote.startTime
             || baselineTarget.endTime != resizedNote.endTime;
-        resizedStartTime = resizedNote.startTime;
-        resizedEndTime = resizedNote.endTime;
     }
 
     notes.erase(
@@ -1686,43 +1649,47 @@ void PianoRollToolHandler::handleSelectUp(const juce::MouseEvent& e)
 
     if (ctx_.getState().noteResize.isResizing && resizeMoved) {
         const auto& baseline = draftBaselineNotes(ctx_);
-        double dirtyStartTime = std::min(baseline[static_cast<size_t>(resizeIdx)].startTime, resizedStartTime);
-        double dirtyEndTime = std::max(baseline[static_cast<size_t>(resizeIdx)].endTime, resizedEndTime);
-        // 只合并 resize 目标与本次实际退让的唯一时间邻居：notes 按 startTime 全局
-        // 排序且互不重叠，左边缘只可能推让 resizeIdx-1，右边缘只可能推让 resizeIdx+1。
-        // 用 baseline 与当前 notes 的旧/新边界扩展脏区，覆盖目标和被推让邻居的
-        // 完整旧/新区间，保证 commitNotesAndSegments 的范围过滤、F0 重算与 undo
-        // 都包含邻居变化。不扫描 notes[i].dirty：dirty 是历史编辑保留的渲染标记，
-        // 会把无关音符纳入全局范围。
-        const int neighborIdx = ctx_.getState().noteResize.edge == NoteResizeEdge::Left
-            ? resizeIdx - 1
-            : resizeIdx + 1;
-        if (neighborIdx >= 0 && neighborIdx < static_cast<int>(notes.size())) {
-            const auto& oldNeighbor = baseline[static_cast<size_t>(neighborIdx)];
-            const auto& newNeighbor = notes[static_cast<size_t>(neighborIdx)];
-            const bool neighborYielded = ctx_.getState().noteResize.edge == NoteResizeEdge::Left
-                ? oldNeighbor.endTime != newNeighbor.endTime
-                : oldNeighbor.startTime != newNeighbor.startTime;
-            if (neighborYielded) {
-                dirtyStartTime = std::min(dirtyStartTime, std::min(oldNeighbor.startTime, newNeighbor.startTime));
-                dirtyEndTime = std::max(dirtyEndTime, std::max(oldNeighbor.endTime, newNeighbor.endTime));
-            }
-        }
+        const auto& resize = ctx_.getState().noteResize;
+        const auto resizePlan = planNoteResizeEdit(baseline,
+                                                   resizeIdx,
+                                                   resize.edge,
+                                                   resize.clampedTime,
+                                                   kNoteResizeMinDuration);
         const auto contentSnapshot = ctx_.getEditableContentSnapshot();
         F0FrameRange editRange;
         if (contentSnapshot != nullptr && contentSnapshot->pitchCurve != nullptr) {
-            editRange = f0tl.rangeForTimes(dirtyStartTime, dirtyEndTime);
+            editRange = f0tl.rangeForTimes(resizePlan.dirtyStartTime, resizePlan.dirtyEndTime);
         }
 
         ctx_.getNoteDraft().workingNotes = notes;
         ctx_.setUndoDescription(LOC_RAW("Resize note"));
+        suppressFinalNoteDraftCommit = true;
 
-        // 同步计算修正并一次性提交音符和F0
+        const auto expectedNotesRevision = resize.expectedNotesRevision;
+        const auto edge = resize.edge;
+        const auto clampedTime = resize.clampedTime;
         if (contentSnapshot != nullptr && contentSnapshot->pitchCurve != nullptr && !editRange.isEmpty()) {
-            commitNoteBasedCorrection(ctx_, notes, editRange);
-            suppressFinalNoteDraftCommit = true;
+            const auto commitResize = [this, expectedNotesRevision, resizeIdx, edge, clampedTime]
+                (const std::vector<PitchCorrectionSegment>& segments, F0FrameRange affectedRange) {
+                return ctx_.commitNoteResize(expectedNotesRevision,
+                                             resizeIdx,
+                                             edge,
+                                             clampedTime,
+                                             kNoteResizeMinDuration,
+                                             segments,
+                                             affectedRange,
+                                             LOC_RAW("Resize note"));
+            };
+            commitNoteBasedCorrection(ctx_, notes, editRange, commitResize);
         } else {
-            ctx_.commitNoteDraft();
+            ctx_.commitNoteResize(expectedNotesRevision,
+                                  resizeIdx,
+                                  edge,
+                                  clampedTime,
+                                  kNoteResizeMinDuration,
+                                  {},
+                                  {},
+                                  LOC_RAW("Resize note"));
         }
     }
 
@@ -1732,10 +1699,7 @@ void PianoRollToolHandler::handleSelectUp(const juce::MouseEvent& e)
         ctx_.commitNoteDraft();
     }
 
-    ctx_.getState().noteResize.isResizing = false;
-    ctx_.getState().noteResize.isDirty = false;
-    ctx_.getState().noteResize.noteIndex = -1;
-    ctx_.getState().noteResize.edge = NoteResizeEdge::None;
+    ctx_.getState().noteResize.clear();
 
     if (ctx_.getState().selection.isSelectingArea) {
         ctx_.getState().selection.isSelectingArea = false;

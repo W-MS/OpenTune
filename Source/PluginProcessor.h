@@ -69,6 +69,7 @@
 #include "Utils/EraserStrokeEdit.h"
 #include "Utils/ManualCorrectionEdit.h"
 #include "Utils/DrawNoteEdit.h"
+#include "Utils/NoteResizeEdit.h"
 #include "Render/ContentRenderService.h"
 #include "Runtime/ProcessRenderRuntime.h"
 #include <functional>
@@ -785,6 +786,30 @@ public:
         ContentKey key,
         const DrawNoteEditInput& input,
         uint64_t expectedNotesRevision,
+        juce::String undoDescription);
+    // Message-thread resize transaction: validate the mouse-down revision, then commit one scoped patch and undo action.
+    enum class NoteResizeCommitStatus
+    {
+        Failed,
+        StaleRevision,
+        Applied
+    };
+    struct NoteResizeCommitResult
+    {
+        NoteResizeCommitStatus status = NoteResizeCommitStatus::Failed;
+        ContentCommitSnapshot contentSnapshot;
+        F0FrameRange affectedRange;
+        bool pitchCurveEdited = false;
+    };
+    NoteResizeCommitResult resizePianoRollNote(
+        ContentKey key,
+        int noteIndex,
+        NoteResizeEdge edge,
+        double clampedTime,
+        double minDuration,
+        uint64_t expectedNotesRevision,
+        const std::vector<PitchCorrectionSegment>& segments,
+        F0FrameRange affectedRange,
         juce::String undoDescription);
     // Message-thread transaction for Scissors split/merge. The UI resolves the
     // split time and tolerance (pixel-faithful) and computes the pure planner plan;

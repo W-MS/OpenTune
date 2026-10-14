@@ -107,6 +107,9 @@ public:
         // 第三参 affectedRange 来自 ToolHandler 编辑时计算的精确范围，用于
         // undo/redo 时只重渲染该范围（而不是 segments 列表反推的并集 = 全长）。
         std::function<ContentCommitSnapshot(const std::vector<Note>&, const std::vector<PitchCorrectionSegment>&, F0FrameRange)> commitNotesAndSegments;
+        std::function<bool(uint64_t, int, NoteResizeEdge, double, double,
+                           const std::vector<PitchCorrectionSegment>&, F0FrameRange, juce::String)>
+            commitNoteResize;
         // === OpenDyne（NotesPrimary）提交与配置回调 ===
         // Volume Envelope 事务：Processor 消息线程读 snapshot → planner 校验
         // expectedNotesRevision → commitVolumeEnvelope + undo（固定 ContentKey）。

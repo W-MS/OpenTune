@@ -5273,6 +5273,100 @@ DrawNoteCommitResult OpenTuneAudioProcessor::drawNote(
     return result;
 }
 
+OpenTuneAudioProcessor::NoteResizeCommitResult OpenTuneAudioProcessor::resizePianoRollNote(
+    ContentKey key,
+    int noteIndex,
+    NoteResizeEdge edge,
+    double clampedTime,
+    double minDuration,
+    uint64_t expectedNotesRevision,
+    const std::vector<PitchCorrectionSegment>& segments,
+    F0FrameRange affectedRange,
+    juce::String undoDescription)
+{
+    NoteResizeCommitResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+    result.contentSnapshot = snapshot;
+    if (snapshot->notesRevision != expectedNotesRevision) {
+        result.status = NoteResizeCommitStatus::StaleRevision;
+        return result;
+    }
+
+    const auto plan = planNoteResizeEdit(
+        snapshot->notes, noteIndex, edge, clampedTime, minDuration);
+    if (affectedRange.isEmpty()) {
+        ContentNoteRangePatch beforePatch;
+        ContentNoteRangePatch afterPatch;
+        beforePatch.affectedRange = { plan.dirtyStartTime, plan.dirtyEndTime };
+        afterPatch.affectedRange = beforePatch.affectedRange;
+        beforePatch.afterNotesInRange = filterNotesToRange(
+            snapshot->notes, plan.dirtyStartTime, plan.dirtyEndTime);
+        afterPatch.afterNotesInRange = filterNotesToRange(
+            plan.afterNotes, plan.dirtyStartTime, plan.dirtyEndTime);
+
+        result.contentSnapshot = contentCommands_->commitNoteTopologyPatch(key, afterPatch);
+        if (result.contentSnapshot == nullptr) {
+            result.contentSnapshot = snapshot;
+            return result;
+        }
+        undoManager_.addAction(std::make_unique<PianoRollNotePatchAction>(
+            contentCommands_, key, std::move(undoDescription),
+            std::move(beforePatch), std::move(afterPatch)));
+        result.status = NoteResizeCommitStatus::Applied;
+        return result;
+    }
+
+    if (snapshot->pitchCurve == nullptr)
+        return result;
+
+    const auto& curve = snapshot->pitchCurve;
+    const F0Timeline timeline(curve->getHopSize(), curve->getSampleRate(),
+                              static_cast<int>(curve->size()));
+    const double rangeStartSeconds = timeline.timeAtFrame(affectedRange.startFrame);
+    const double rangeEndSeconds = timeline.timeAtFrame(affectedRange.endFrameExclusive);
+    auto beforeNotes = filterNotesToRange(
+        snapshot->notes, rangeStartSeconds, rangeEndSeconds);
+    auto beforeSegments = clipSegmentsToFrameRange(
+        curve->getCorrectionSegments(),
+        affectedRange.startFrame,
+        affectedRange.endFrameExclusive);
+    const ContentEditRangeFrames ownerRange{
+        affectedRange.startFrame,
+        affectedRange.endFrameExclusive
+    };
+    result.contentSnapshot = contentCommands_->commitNotesAndSegments(
+        key,
+        filterNotesToRange(plan.afterNotes, rangeStartSeconds, rangeEndSeconds),
+        clipSegmentsToFrameRange(segments, affectedRange.startFrame, affectedRange.endFrameExclusive),
+        ownerRange);
+    if (result.contentSnapshot == nullptr) {
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+
+    auto afterNotes = filterNotesToRange(
+        result.contentSnapshot->notes, rangeStartSeconds, rangeEndSeconds);
+    auto afterSegments = clipSegmentsToFrameRange(
+        result.contentSnapshot->pitchCurve->getCorrectionSegments(),
+        affectedRange.startFrame,
+        affectedRange.endFrameExclusive);
+    undoManager_.addAction(std::make_unique<PianoRollEditAction>(
+        contentCommands_, key, std::move(undoDescription),
+        std::move(beforeNotes), std::move(afterNotes),
+        std::move(beforeSegments), std::move(afterSegments), ownerRange));
+    result.status = NoteResizeCommitStatus::Applied;
+    result.affectedRange = affectedRange;
+    result.pitchCurveEdited = true;
+    return result;
+}
+
 ScissorsCommitResult OpenTuneAudioProcessor::applyScissorsNotes(
     ContentKey key,
     const std::vector<Note>& afterNotes,

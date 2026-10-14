@@ -218,6 +218,48 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
         if (snap == nullptr) return ContentCommitSnapshot{};
         return commitEditedContentNotesAndSegments(*snap, notes, segments, affectedRange);
     };
+    toolCtx.commitNoteResize = [this](uint64_t expectedNotesRevision,
+                                      int noteIndex,
+                                      NoteResizeEdge edge,
+                                      double clampedTime,
+                                      double minDuration,
+                                      const std::vector<PitchCorrectionSegment>& segments,
+                                      F0FrameRange affectedRange,
+                                      juce::String description) -> bool {
+        if (processor_ == nullptr || !editedContentKey_.isValid())
+            return false;
+
+        const auto beforeNotes = cachedNotes_;
+        const auto result = processor_->resizePianoRollNote(
+            editedContentKey_, noteIndex, edge, clampedTime, minDuration,
+            expectedNotesRevision, segments, affectedRange, std::move(description));
+        pendingUndoDescription_ = {};
+        undoSnapshotCaptured_ = false;
+        if (result.contentSnapshot != nullptr) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            lastKnownPitchRevision_ = result.contentSnapshot->pitchRevision;
+            applyEditedContentCurve(result.contentSnapshot->pitchCurve);
+        }
+
+        if (result.status == OpenTuneAudioProcessor::NoteResizeCommitStatus::StaleRevision) {
+            closeEqPopup();
+            interactionState_.noteSelection.clear();
+        } else if (result.status == OpenTuneAudioProcessor::NoteResizeCommitStatus::Applied) {
+            interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+        }
+        if (result.status != OpenTuneAudioProcessor::NoteResizeCommitStatus::Applied)
+            interactionState_.noteDraft.clear();
+
+        invalidateLiveNotes(beforeNotes, cachedNotes_);
+        requestContentRedraw();
+        overlay_->repaint();
+        if (result.status == OpenTuneAudioProcessor::NoteResizeCommitStatus::Applied
+            && !result.pitchCurveEdited) {
+            listeners_.call([](Listener& listener) { listener.contentEdited(); });
+        }
+        return result.status == OpenTuneAudioProcessor::NoteResizeCommitStatus::Applied;
+    };
     // ── OpenDyne 契约回调（Pitch/Scissors/Gain 域） ──
     // VolumeEnvelope 事务：Processor 消息线程读 snapshot → planner（revision 校验 +
     // baseline 区域 delta/reset）→ commitVolumeEnvelope + undo（固定 ContentKey）。
