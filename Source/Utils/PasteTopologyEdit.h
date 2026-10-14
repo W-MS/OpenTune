@@ -25,13 +25,6 @@ struct PasteNotesEditPlan
     ContentNoteRangePatch afterPatch;
 };
 
-struct PasteNotesEditResult
-{
-    PasteNotesStatus status = PasteNotesStatus::Failed;
-    ContentCommitSnapshot contentSnapshot;
-    std::vector<Note> pastedNotes;
-};
-
 // 纯计算：revision 校验（不匹配 → StaleRevision）→ 剪贴板平移到 pasteStartTime
 // （保留各字段与时长，dirty=true）→ planPasteTopology 生成 before/after 拓扑补丁。
 PasteNotesEditPlan planPasteNotesEdit(
