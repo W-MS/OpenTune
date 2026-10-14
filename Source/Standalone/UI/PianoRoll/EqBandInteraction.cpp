@@ -6,6 +6,7 @@
 
 #include "EqBandInteraction.h"
 #include "EqGraphRenderer.h"
+#include "../../../Utils/EqFilterEditOps.h"
 #include <cmath>
 #include <algorithm>
 
@@ -27,6 +28,7 @@ EqSettings EqBandInteraction::updateDrag(juce::Point<float> currentPos, const Eq
     EqSettings result = dragStartSettings_;
     auto& f = result.filters[dragFilterIndex_];
     const double freq = renderer_->xToFreq(currentPos.getX());
+    const double gain = renderer_->yToGain(currentPos.getY());
 
     switch (f.type)
     {
@@ -36,16 +38,8 @@ EqSettings EqBandInteraction::updateDrag(juce::Point<float> currentPos, const Eq
         break;
     case EqFilterType::LowShelf:
     case EqFilterType::HighShelf:
-        f.frequencyHz = static_cast<float>(std::clamp(freq, 20.0, 20000.0));
-        f.gainDb = std::clamp(
-            static_cast<float>(renderer_->yToGain(currentPos.getY())),
-            -12.0f, 12.0f);
-        break;
     case EqFilterType::Peak:
-        f.frequencyHz = static_cast<float>(std::clamp(freq, 500.0, 12000.0));
-        f.gainDb = std::clamp(
-            static_cast<float>(renderer_->yToGain(currentPos.getY())),
-            -12.0f, 12.0f);
+        setEqFilterFrequencyAndGain(f, freq, gain);
         break;
     }
 

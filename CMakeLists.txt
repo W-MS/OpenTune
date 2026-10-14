@@ -709,6 +709,8 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/DetectedKey.h
         Source/Utils/Note.h
         Source/Utils/NoteEqSettings.h
+        Source/Utils/EqFilterEditOps.h
+        Source/Utils/EqFilterEditOps.cpp
         Source/Utils/SpectrumDisplayData.h
         Source/Utils/OnnxRuntimeDelayLoadHook.cpp
         Source/Utils/ModelPathResolver.h
@@ -1565,6 +1567,17 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTuneSelectedNoteEqEditTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME SelectedNoteEqEditTests COMMAND OpenTuneSelectedNoteEqEditTests)
+
+    add_executable(OpenTuneEqFilterEditOpsTests
+        Tests/EqFilterEditOpsTests.cpp
+        Source/Utils/EqFilterEditOps.cpp
+    )
+    target_include_directories(OpenTuneEqFilterEditOpsTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    if(MSVC)
+        target_compile_options(OpenTuneEqFilterEditOpsTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME EqFilterEditOpsTests COMMAND OpenTuneEqFilterEditOpsTests)
 
     add_executable(OpenTuneSelectedNoteDeleteEditTests
         Tests/SelectedNoteDeleteEditTests.cpp
