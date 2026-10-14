@@ -581,8 +581,6 @@ private:
     float dragStartVerticalScrollOffset_ = 0.0f;
     double dragStartVisibleStartSeconds_ = 0.0;
 
-    float calculateEffectivePIP(Note& note);
-
 private:
 
     bool showWaveform_ = true;

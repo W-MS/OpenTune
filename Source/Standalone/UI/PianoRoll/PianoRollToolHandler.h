@@ -26,6 +26,7 @@
 #include "../../../Utils/VolumeEnvelopeRegionEdit.h"
 #include "../../../Utils/EraserStrokeEdit.h"
 #include "../../../Utils/ManualCorrectionEdit.h"
+#include "../../../Utils/DrawNoteEdit.h"
 #include <vector>
 #include <functional>
 #include <cstdint>
@@ -101,6 +102,8 @@ public:
         std::function<void()> beginNoteDraft;
         std::function<bool()> commitNoteDraft;
         std::function<void()> clearNoteDraft;
+        std::function<DrawNoteCommitResult(const DrawNoteEditInput&, uint64_t, juce::String)> commitDrawNote;
+        std::function<void(const DrawNoteCommitResult&, const std::vector<Note>&, int)> applyDrawNoteResult;
         // 第三参 affectedRange 来自 ToolHandler 编辑时计算的精确范围，用于
         // undo/redo 时只重渲染该范围（而不是 segments 列表反推的并集 = 全长）。
         std::function<ContentCommitSnapshot(const std::vector<Note>&, const std::vector<PitchCorrectionSegment>&, F0FrameRange)> commitNotesAndSegments;
@@ -138,8 +141,6 @@ public:
         std::function<float()> getVibratoRate;
         std::function<AudioEditingScheme::Scheme()> getAudioEditingScheme;
         std::function<const KeyShortcutConfig::KeyShortcutSettings&()> getShortcutSettings;
-        std::function<float(Note&)> calculateEffectivePIP;
-
         std::function<double()> getDirtyStartTime;
         std::function<void(double)> setDirtyStartTime;
         std::function<double()> getDirtyEndTime;

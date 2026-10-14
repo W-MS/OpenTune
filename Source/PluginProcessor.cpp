@@ -5196,6 +5196,83 @@ OpenTuneAudioProcessor::PasteNotesResult OpenTuneAudioProcessor::pasteNotesAt(
     return result;
 }
 
+DrawNoteCommitResult OpenTuneAudioProcessor::drawNote(
+    ContentKey key,
+    const DrawNoteEditInput& input,
+    uint64_t expectedNotesRevision,
+    juce::String undoDescription)
+{
+    DrawNoteCommitResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    auto plan = planDrawNoteEdit(*snapshot, input, expectedNotesRevision);
+    if (plan.status == DrawNotePlanStatus::StaleRevision) {
+        result.status = DrawNoteCommitStatus::StaleRevision;
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+    if (plan.status == DrawNotePlanStatus::NoChange) {
+        result.status = DrawNoteCommitStatus::NoChange;
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+
+    result.insertedNote = plan.insertedNote;
+    result.pitchCurveEdited = plan.pitchCurveEdited;
+    result.affectedRange = plan.affectedRange;
+    if (!plan.pitchCurveEdited) {
+        result.contentSnapshot = contentCommands_->commitNoteTopologyPatch(key, plan.afterPatch);
+        if (result.contentSnapshot == nullptr) {
+            result.contentSnapshot = snapshot;
+            return result;
+        }
+
+        undoManager_.addAction(std::make_unique<PianoRollNotePatchAction>(
+            contentCommands_, key, std::move(undoDescription),
+            std::move(plan.beforePatch), std::move(plan.afterPatch)));
+    } else {
+        result.contentSnapshot = contentCommands_->commitNotesAndSegments(
+            key,
+            plan.afterNotes,
+            plan.segmentsToCommit,
+            ContentEditRangeFrames{ plan.affectedRange.startFrame,
+                                    plan.affectedRange.endFrameExclusive });
+        if (result.contentSnapshot == nullptr) {
+            result.contentSnapshot = snapshot;
+            return result;
+        }
+
+        const auto& curve = snapshot->pitchCurve;
+        const F0Timeline timeline(curve->getHopSize(), curve->getSampleRate(),
+                                  static_cast<int>(curve->size()));
+        const double rangeStartSeconds = timeline.timeAtFrame(plan.affectedRange.startFrame);
+        const double rangeEndSeconds = timeline.timeAtFrame(plan.affectedRange.endFrameExclusive);
+        auto afterNotes = filterNotesToRange(
+            result.contentSnapshot->notes, rangeStartSeconds, rangeEndSeconds);
+        auto afterSegments = clipSegmentsToFrameRange(
+            result.contentSnapshot->pitchCurve->getCorrectionSegments(),
+            plan.affectedRange.startFrame,
+            plan.affectedRange.endFrameExclusive);
+
+        undoManager_.addAction(std::make_unique<PianoRollEditAction>(
+            contentCommands_, key, std::move(undoDescription),
+            std::move(plan.beforeNotesInPitchRange), std::move(afterNotes),
+            std::move(plan.beforeSegments), std::move(afterSegments),
+            ContentEditRangeFrames{ plan.affectedRange.startFrame,
+                                    plan.affectedRange.endFrameExclusive }));
+    }
+
+    result.status = DrawNoteCommitStatus::Applied;
+    return result;
+}
+
 ScissorsCommitResult OpenTuneAudioProcessor::applyScissorsNotes(
     ContentKey key,
     const std::vector<Note>& afterNotes,

@@ -2573,7 +2573,6 @@ void PianoRollToolHandler::handleDrawCurveUp(const juce::MouseEvent& e)
 
 void PianoRollToolHandler::handleDrawNoteUp(const juce::MouseEvent& e)
 // 绘制音符工具鼠标释放处理：完成音符绘制，分割重叠音符，应用最小时间
-// Option B: noteDraft 浠呭湪 mouseUp 鏃朵竴娆℃€у垱寤哄苟鎻愪氦
 {
     const auto beforeNotes = std::vector<Note>(committedNotes(ctx_));
 
@@ -2616,99 +2615,25 @@ void PianoRollToolHandler::handleDrawNoteUp(const juce::MouseEvent& e)
     double endTime = *releaseTime;
     editRange.normalizeForCommit(startTime, endTime);
 
-    // One-shot: begin noteDraft from committed notes, build final state, commit
-    ctx_.beginNoteDraft();
-    auto notes = ctx_.getNoteDraft().workingNotes;  // copy of committed notes
+    // 提交规范化后的 source-time 音符范围。
+    const DrawNoteEditInput input{
+        startTime,
+        endTime,
+        ctx_.getDrawingNotePitch(),
+        ctx_.getRetuneSpeed(),
+        ctx_.getVibratoDepth(),
+        ctx_.getVibratoRate()
+    };
+    const auto result = ctx_.commitDrawNote(
+        input, ctx_.getNotesRevision(), LOC_RAW("Draw note"));
 
-    if (ctx_.getDrawingNotePitch() > 0.0f) {
-        std::vector<Note> updatedNotes;
-        updatedNotes.reserve(notes.size() + 2);
-
-        for (size_t i = 0; i < notes.size(); ++i) {
-            const auto& note = notes[i];
-            bool overlap = note.endTime > startTime && note.startTime < endTime;
-            if (!overlap) {
-                updatedNotes.push_back(note);
-                continue;
-            }
-
-            if (note.startTime < startTime) {
-                Note left = note;
-                left.endTime = startTime;
-                if (left.endTime > left.startTime) {
-                    updatedNotes.push_back(left);
-                }
-            }
-
-            if (note.endTime > endTime) {
-                Note right = note;
-                right.startTime = endTime;
-                if (right.endTime > right.startTime) {
-                    updatedNotes.push_back(right);
-                }
-            }
-        }
-
-        notes = std::move(updatedNotes);
-
-        Note finalNote;
-        finalNote.startTime = startTime;
-        finalNote.endTime = endTime;
-        finalNote.pitch = ctx_.getDrawingNotePitch();
-        finalNote.pitchOffset = 0.0f;
-        finalNote.retuneSpeed = ctx_.getRetuneSpeed();
-        finalNote.vibratoDepth = ctx_.getVibratoDepth();
-        finalNote.vibratoRate = ctx_.getVibratoRate();
-        finalNote.dirty = true;
-
-        float newPip = ctx_.calculateEffectivePIP(finalNote);
-        if (newPip > 0.0f) {
-            const float sourceMidi = PitchUtils::freqToMidi(newPip);
-            finalNote.pitch = PitchUtils::midiToFreq(std::round(sourceMidi));
-            finalNote.originalPitch = newPip;
-
-            const float targetMidi = PitchUtils::freqToMidi(ctx_.getDrawingNotePitch());
-            finalNote.pitchOffset = targetMidi - std::round(sourceMidi);
-        } else {
-            finalNote.pitch = ctx_.getDrawingNotePitch();
-            finalNote.originalPitch = ctx_.getDrawingNotePitch();
-            finalNote.pitchOffset = 0.0f;
-        }
-
-        NoteSequence finalSequence;
-        finalSequence.setNotesSorted(notes);
-        finalSequence.insertNoteSorted(finalNote);
-        notes = finalSequence.getNotes();
-
-        double midTime = (startTime + endTime) / 2.0;
-        int newSelectedIndex = findNoteIndexAt(notes, midTime, finalNote.getAdjustedPitch(), 1.0f);
-        if (newSelectedIndex >= 0) {
-            ctx_.getState().noteSelection.setSingle(newSelectedIndex,
-                                                    static_cast<int>(notes.size()));
-        }
+    int selectedNoteIndex = -1;
+    if (result.status == DrawNoteCommitStatus::Applied && result.contentSnapshot != nullptr) {
+        const double midTime = (startTime + endTime) / 2.0;
+        selectedNoteIndex = findNoteIndexAt(
+            result.contentSnapshot->notes, midTime, result.insertedNote.getAdjustedPitch(), 1.0f);
     }
-
-    ctx_.getNoteDraft().contentDirty = true;
-    ctx_.getNoteDraft().workingNotes = notes;
-    ctx_.setUndoDescription(LOC_RAW("Draw note"));
-
-    // 同步计算修正并一次性提交音符和F0段，避免产生两个Undo Action
-    const auto contentSnapshot = ctx_.getEditableContentSnapshot();
-    if (contentSnapshot != nullptr && contentSnapshot->pitchCurve != nullptr) {
-        const auto f0tl = ctx_.getF0Timeline();
-        const F0FrameRange noteRange = f0tl.rangeForTimes(startTime, endTime);
-
-        if (!noteRange.isEmpty()) {
-            commitNoteBasedCorrection(ctx_, notes, noteRange);
-        } else {
-            ctx_.commitNoteDraft();
-        }
-    } else {
-        ctx_.commitNoteDraft();
-    }
-
-    ctx_.clearNoteDraft();
-    if (ctx_.invalidateLiveNotes) ctx_.invalidateLiveNotes(beforeNotes, committedNotes(ctx_));
+    ctx_.applyDrawNoteResult(result, beforeNotes, selectedNoteIndex);
 }
 
 void PianoRollToolHandler::showToolContextMenu(const juce::MouseEvent& e)

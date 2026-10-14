@@ -68,6 +68,7 @@
 #include "Utils/VolumeEnvelopeRegionEdit.h"
 #include "Utils/EraserStrokeEdit.h"
 #include "Utils/ManualCorrectionEdit.h"
+#include "Utils/DrawNoteEdit.h"
 #include "Render/ContentRenderService.h"
 #include "Runtime/ProcessRenderRuntime.h"
 #include <functional>
@@ -778,6 +779,11 @@ public:
         ContentKey key,
         const std::vector<Note>& clipboardNotes,
         double pasteStartTime,
+        uint64_t expectedNotesRevision,
+        juce::String undoDescription);
+    DrawNoteCommitResult drawNote(
+        ContentKey key,
+        const DrawNoteEditInput& input,
         uint64_t expectedNotesRevision,
         juce::String undoDescription);
     // Message-thread transaction for Scissors split/merge. The UI resolves the

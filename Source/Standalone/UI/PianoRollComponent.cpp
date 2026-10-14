@@ -155,6 +155,62 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
     toolCtx.beginNoteDraft = [this]() { beginNoteDraft(); };
     toolCtx.commitNoteDraft = [this]() { return commitNoteDraft(); };
     toolCtx.clearNoteDraft = [this]() { clearNoteDraft(); };
+    toolCtx.commitDrawNote = [this](const DrawNoteEditInput& input,
+                                    uint64_t expectedNotesRevision,
+                                    juce::String description) {
+        if (processor_ == nullptr || !editedContentKey_.isValid())
+            return DrawNoteCommitResult{};
+        return processor_->drawNote(
+            editedContentKey_, input, expectedNotesRevision, std::move(description));
+    };
+    toolCtx.applyDrawNoteResult = [this](const DrawNoteCommitResult& result,
+                                         const std::vector<Note>& beforeNotes,
+                                         int selectedNoteIndex) {
+        interactionState_.noteDraft.clear();
+        pendingUndoDescription_ = {};
+        undoSnapshotCaptured_ = false;
+
+        if (result.contentSnapshot != nullptr) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            lastKnownPitchRevision_ = result.contentSnapshot->pitchRevision;
+            applyEditedContentCurve(result.contentSnapshot->pitchCurve);
+        }
+
+        if (result.status == DrawNoteCommitStatus::Applied) {
+            interactionState_.noteSelection.clear();
+            if (selectedNoteIndex >= 0) {
+                interactionState_.noteSelection.setSingle(
+                    selectedNoteIndex, static_cast<int>(cachedNotes_.size()));
+            } else {
+                interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+            }
+            invalidateLiveNotes(beforeNotes, cachedNotes_);
+            requestContentRedraw();
+            overlay_->repaint();
+            if (result.pitchCurveEdited) {
+                const int startFrame = result.affectedRange.startFrame;
+                const int endFrame = result.affectedRange.endFrameExclusive - 1;
+                listeners_.call([startFrame, endFrame](Listener& listener) {
+                    listener.pitchCurveEdited(startFrame, endFrame);
+                });
+            } else {
+                listeners_.call([](Listener& listener) { listener.contentEdited(); });
+            }
+            return;
+        }
+
+        if (result.status == DrawNoteCommitStatus::NoChange) {
+            invalidateLiveNotes(beforeNotes, cachedNotes_);
+            return;
+        }
+
+        interactionState_.noteSelection.clear();
+        if (result.status == DrawNoteCommitStatus::StaleRevision)
+            closeEqPopup();
+        requestContentRedraw();
+        overlay_->repaint();
+    };
     toolCtx.commitNotesAndSegments = [this](const std::vector<Note>& notes,
                                              const std::vector<PitchCorrectionSegment>& segments,
                                              F0FrameRange affectedRange) {
@@ -305,7 +361,6 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
     toolCtx.getRetuneSpeed = [this]() { return currentRetuneSpeed_; };
     toolCtx.getVibratoDepth = [this]() { return currentVibratoDepth_; };
     toolCtx.getVibratoRate = [this]() { return currentVibratoRate_; };
-    toolCtx.calculateEffectivePIP = [this](Note& note) -> float { return calculateEffectivePIP(note); };
     toolCtx.getShortcutSettings = [this]() -> const KeyShortcutConfig::KeyShortcutSettings& { return shortcutSettings_; };
     toolCtx.setCurrentTool = [this](ToolId tool) { setCurrentTool(tool); };
     // EQ 工具：主音符 index 由 ToolHandler 唯一判定并直通；EQ cursor 经主题机制应用
@@ -5232,48 +5287,6 @@ void PianoRollComponent::fitToScreen() {
 
 float PianoRollComponent::getTotalHeight() const {
     return (maxMidi_ - minMidi_ + 1.0f) * pixelsPerSemitone_;
-}
-
-float PianoRollComponent::calculateEffectivePIP(Note& note) {
-    if (!currentCurve_) return -1.0f;
-
-    if (note.endTime <= note.startTime) return -1.0f;
-
-    // 获取当前全局 pitchRatio，使 originalPitch 始终处于 Effective F0 域
-    float pitchRatio = 1.0f;
-    const auto contentSnap = readEditedSnapshot();
-    if (contentSnap != nullptr)
-        pitchRatio = static_cast<float>(contentSnap->pitchShiftSettings.getPitchRatio());
-
-    const auto& originalF0 = currentCurve_->getOriginalF0();
-
-    const auto f0tl = currentF0Timeline();
-    if (f0tl.isEmpty()) return -1.0f;
-    const auto noteRange = f0tl.nonEmptyRangeForTimes(note.startTime, note.endTime);
-    const int startFrame = noteRange.startFrame;
-    const int endFrameExclusive = noteRange.endFrameExclusive;
-    
-    if (startFrame >= endFrameExclusive) return -1.0f;
-
-    int numFrames = endFrameExclusive - startFrame;
-    
-    std::vector<float> noteF0(static_cast<std::size_t>(numFrames));
-    std::copy(originalF0.begin() + startFrame, originalF0.begin() + endFrameExclusive, noteF0.begin());
-
-    std::vector<float> voicedF0;
-    voicedF0.reserve(noteF0.size());
-    for (float f : noteF0) {
-        float eff = f * pitchRatio;
-        if (eff > 0.0f) voicedF0.push_back(eff);
-    }
-
-    if (voicedF0.empty()) {
-        return -1.0f;
-    }
-
-    std::sort(voicedF0.begin(), voicedF0.end());
-    float medianF0 = voicedF0[voicedF0.size() / 2];
-    return medianF0;
 }
 
 juce::String PianoRollComponent::AutoTuneApplyResult::message() const

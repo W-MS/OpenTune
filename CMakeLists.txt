@@ -738,6 +738,8 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/ManualCorrectionEdit.h
         Source/Utils/PianoRollNotePatchAction.cpp
         Source/Utils/PianoRollNotePatchAction.h
+        Source/Utils/DrawNoteEdit.cpp
+        Source/Utils/DrawNoteEdit.h
         Source/Utils/AutomationLane.cpp
         Source/Utils/AutomationLane.h
         Source/Utils/VolumeEnvelopeEditAction.cpp
@@ -1645,6 +1647,21 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTunePasteTopologyEditTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME PasteTopologyEditTests COMMAND OpenTunePasteTopologyEditTests)
+
+    add_executable(OpenTuneDrawNoteEditTests
+        Tests/DrawNoteEditTests.cpp
+    )
+    target_include_directories(OpenTuneDrawNoteEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneDrawNoteEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneDrawNoteEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME DrawNoteEditTests COMMAND OpenTuneDrawNoteEditTests)
 
     # Scissors topology planner + undo action tests — pure planner, no plugin runtime
     add_executable(OpenTuneScissorsTopologyEditTests
