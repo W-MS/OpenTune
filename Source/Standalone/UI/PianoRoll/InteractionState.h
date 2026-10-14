@@ -4,6 +4,7 @@
 #include <vector>
 #include <utility>
 #include <memory>
+#include <cstdint>
 #include "Utils/Note.h"
 #include "Utils/F0Timeline.h"
 #include "Utils/AutomationLane.h"
@@ -132,6 +133,7 @@ struct EraserState
     juce::Point<float> cursorPosition;
     int startFrame = -1;
     int endFrameExclusive = -1;
+    uint64_t expectedNotesRevision = 0;
     std::vector<int> noteIndices;
 
     void clear()
@@ -141,6 +143,7 @@ struct EraserState
         cursorPosition = {};
         startFrame = -1;
         endFrameExclusive = -1;
+        expectedNotesRevision = 0;
         noteIndices.clear();
     }
 };

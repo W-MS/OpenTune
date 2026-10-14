@@ -66,6 +66,7 @@
 #include "Utils/PasteTopologyEdit.h"
 #include "Utils/ScissorsTopologyEdit.h"
 #include "Utils/VolumeEnvelopeRegionEdit.h"
+#include "Utils/EraserStrokeEdit.h"
 #include "Render/ContentRenderService.h"
 #include "Runtime/ProcessRenderRuntime.h"
 #include <functional>
@@ -785,6 +786,12 @@ public:
     ScissorsCommitResult applyScissorsNotes(
         ContentKey key,
         const std::vector<Note>& afterNotes,
+        uint64_t expectedNotesRevision,
+        juce::String undoDescription);
+    EraserStrokeEditResult editEraserStroke(
+        ContentKey key,
+        F0FrameRange brushRange,
+        const std::vector<int>& noteIndices,
         uint64_t expectedNotesRevision,
         juce::String undoDescription);
     ContentCommitSnapshot commitContentNoteTopologyPatch(ContentKey key, ContentNoteRangePatch patch);

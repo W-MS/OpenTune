@@ -742,6 +742,8 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/VolumeEnvelopeEditAction.h
         Source/Utils/VolumeEnvelopeRegionEdit.cpp
         Source/Utils/VolumeEnvelopeRegionEdit.h
+        Source/Utils/EraserStrokeEdit.cpp
+        Source/Utils/EraserStrokeEdit.h
         Source/Utils/ScissorsUndoAction.cpp
         Source/Utils/ScissorsUndoAction.h
         Source/Utils/PitchShiftSettings.h
@@ -1596,6 +1598,21 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTuneVolumeEnvelopeRegionEditTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME VolumeEnvelopeRegionEditTests COMMAND OpenTuneVolumeEnvelopeRegionEditTests)
+
+    add_executable(OpenTuneEraserStrokeEditTests
+        Tests/EraserStrokeEditTests.cpp
+    )
+    target_include_directories(OpenTuneEraserStrokeEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneEraserStrokeEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneEraserStrokeEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME EraserStrokeEditTests COMMAND OpenTuneEraserStrokeEditTests)
 
     add_executable(OpenTuneSelectedNoteDeleteEditTests
         Tests/SelectedNoteDeleteEditTests.cpp

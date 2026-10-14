@@ -1413,6 +1413,7 @@ void PianoRollToolHandler::handleEraserTool(const juce::MouseEvent& e)
     if (!eraser.isErasing) {
         eraser.clear();
         eraser.isErasing = true;
+        eraser.expectedNotesRevision = ctx_.getNotesRevision();
     }
 
     updateEraserCursor(e);
@@ -1495,97 +1496,23 @@ void PianoRollToolHandler::handleEraserUp()
         return;
     }
 
-    const auto contentSnapshot = ctx_.getEditableContentSnapshot();
-    if (contentSnapshot == nullptr || contentSnapshot->pitchCurve == nullptr) {
+    if (!ctx_.editEraserStroke) {
         clearFeedbackState();
         return;
     }
 
-    const auto& originalF0 = contentSnapshot->pitchCurve->getOriginalF0();
-    const int startFrame = std::max(0, eraser.startFrame);
-    const int endFrameExclusive = std::min(static_cast<int>(originalF0.size()),
-                                           eraser.endFrameExclusive);
-    if (endFrameExclusive <= startFrame || !ctx_.commitNotesAndSegmentsWithOriginalF0) {
-        clearFeedbackState();
-        return;
-    }
-
-    const auto beforeNotes = std::vector<Note>(ctx_.getCommittedNotes());
-    std::vector<bool> eraseNote(beforeNotes.size(), false);
-    for (const int noteIndex : eraser.noteIndices) {
-        if (noteIndex >= 0 && noteIndex < static_cast<int>(eraseNote.size()))
-            eraseNote[static_cast<size_t>(noteIndex)] = true;
-    }
-
-    std::vector<Note> afterNotes;
-    afterNotes.reserve(beforeNotes.size());
-    for (size_t i = 0; i < beforeNotes.size(); ++i) {
-        if (!eraseNote[i])
-            afterNotes.push_back(beforeNotes[i]);
-    }
-
-    int commitStartFrame = startFrame;
-    int commitEndFrameExclusive = endFrameExclusive;
-    const auto f0tl = ctx_.getF0Timeline();
-    // The content transaction may be wider than the brush only to remove a
-    // touched note as a whole. The OriginalF0 patch below still zeros only
-    // the brush time range.
-    for (const int noteIndex : eraser.noteIndices) {
-        if (noteIndex < 0 || noteIndex >= static_cast<int>(beforeNotes.size()))
-            continue;
-        const auto noteRange = f0tl.nonEmptyRangeForTimes(
-            beforeNotes[static_cast<size_t>(noteIndex)].startTime,
-            beforeNotes[static_cast<size_t>(noteIndex)].endTime);
-        if (!noteRange.isEmpty()) {
-            commitStartFrame = std::min(commitStartFrame, noteRange.startFrame);
-            commitEndFrameExclusive = std::max(commitEndFrameExclusive,
-                                               noteRange.endFrameExclusive);
-        }
-    }
-
-    auto scratchCurve = PitchCurve::fromSnapshot(contentSnapshot->pitchCurve);
-    scratchCurve->clearCorrectionRange(startFrame, endFrameExclusive);
-    const auto allSegments = scratchCurve->copyCorrectionSegments();
-    std::vector<PitchCorrectionSegment> afterSegments;
-    for (const auto& segment : allSegments) {
-        if (segment.startFrame < commitEndFrameExclusive
-            && segment.endFrame > commitStartFrame)
-            afterSegments.push_back(segment);
-    }
-
-    const std::vector<float> beforeOriginalF0(
-        originalF0.begin() + commitStartFrame,
-        originalF0.begin() + commitEndFrameExclusive);
-    std::vector<float> afterOriginalF0 = beforeOriginalF0;
-    for (int frame = startFrame; frame < endFrameExclusive; ++frame)
-        afterOriginalF0[static_cast<size_t>(frame - commitStartFrame)] = 0.0f;
-
-    // The commit range may have expanded to contain whole erased notes.  The
-    // range patch replaces erased metadata inside that range, so pass the
-    // complete old set in the expanded range together with this brush stroke.
-    std::vector<F0FrameRange> erasedRanges;
-    for (const auto& range : contentSnapshot->pitchCurve->getErasedRanges()) {
-        const int overlapStart = std::max(range.startFrame, commitStartFrame);
-        const int overlapEnd = std::min(range.endFrameExclusive, commitEndFrameExclusive);
-        if (overlapStart < overlapEnd)
-            erasedRanges.push_back({overlapStart, overlapEnd});
-    }
-    erasedRanges.push_back({startFrame, endFrameExclusive});
-
-    ctx_.setUndoDescription(LOC_RAW("Eraser"));
-    const auto committedSnapshot = ctx_.commitNotesAndSegmentsWithOriginalF0(
-        afterNotes,
-        afterSegments,
-        F0FrameRange{commitStartFrame, commitEndFrameExclusive},
-        afterOriginalF0,
-        std::move(erasedRanges));
-    if (committedSnapshot != nullptr) {
-        ctx_.getState().noteSelection.clear();
+    const auto result = ctx_.editEraserStroke(
+        F0FrameRange{ eraser.startFrame, eraser.endFrameExclusive },
+        eraser.noteIndices,
+        eraser.expectedNotesRevision,
+        LOC_RAW("Eraser"));
+    if (result.status == EraserStrokeEditStatus::Applied) {
         if (ctx_.clearLineAnchorSegmentSelection)
             ctx_.clearLineAnchorSegmentSelection();
         if (ctx_.invalidateLiveNotes)
-            ctx_.invalidateLiveNotes(beforeNotes, ctx_.getCommittedNotes());
-        ctx_.notifyPitchCurveEdited(commitStartFrame, commitEndFrameExclusive - 1);
+            ctx_.invalidateLiveNotes(result.beforeNotes, ctx_.getCommittedNotes());
+        ctx_.notifyPitchCurveEdited(result.affectedRange.startFrame,
+                                    result.affectedRange.endFrameExclusive - 1);
     }
 
     clearFeedbackState();

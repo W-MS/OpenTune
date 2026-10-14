@@ -162,18 +162,6 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
         if (snap == nullptr) return ContentCommitSnapshot{};
         return commitEditedContentNotesAndSegments(*snap, notes, segments, affectedRange);
     };
-    toolCtx.commitNotesAndSegmentsWithOriginalF0 = [this](
-        const std::vector<Note>& notes,
-        const std::vector<PitchCorrectionSegment>& segments,
-        F0FrameRange affectedRange,
-        const std::vector<float>& originalF0InRange,
-        const std::optional<std::vector<F0FrameRange>>& erasedRanges) {
-        const auto snap = readEditedSnapshot();
-        if (snap == nullptr) return ContentCommitSnapshot{};
-        return commitEditedContentNotesAndSegments(
-            *snap, notes, segments, affectedRange,
-            std::vector<float>(originalF0InRange), erasedRanges);
-    };
     // ── OpenDyne 契约回调（Pitch/Scissors/Gain 域） ──
     // VolumeEnvelope 事务：Processor 消息线程读 snapshot → planner（revision 校验 +
     // baseline 区域 delta/reset）→ commitVolumeEnvelope + undo（固定 ContentKey）。
@@ -238,6 +226,43 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
     };
     toolCtx.getEditableContentSnapshot = [this]() { return readEditedSnapshot(); };
     toolCtx.getNotesRevision = [this]() { return lastKnownNotesRevision_; };
+    toolCtx.editEraserStroke = [this](F0FrameRange brushRange,
+                                      const std::vector<int>& noteIndices,
+                                      uint64_t expectedNotesRevision,
+                                      juce::String description) -> EraserStrokeEditResult {
+        if (processor_ == nullptr || !editedContentKey_.isValid())
+            return EraserStrokeEditResult{};
+
+        auto result = processor_->editEraserStroke(
+            editedContentKey_, brushRange, noteIndices, expectedNotesRevision,
+            std::move(description));
+        if (result.status == EraserStrokeEditStatus::StaleRevision) {
+            closeEqPopup();
+            interactionState_.noteSelection.clear();
+            if (result.contentSnapshot != nullptr) {
+                cachedNotes_ = result.contentSnapshot->notes;
+                lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+                lastKnownPitchRevision_ = result.contentSnapshot->pitchRevision;
+                applyEditedContentCurve(result.contentSnapshot->pitchCurve);
+            }
+            requestContentRedraw();
+            overlay_->repaint();
+            return result;
+        }
+        if (result.status != EraserStrokeEditStatus::Applied)
+            return result;
+
+        cachedNotes_ = result.contentSnapshot->notes;
+        interactionState_.noteSelection.clear();
+        lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+        lastKnownPitchRevision_ = result.contentSnapshot->pitchRevision;
+        applyEditedContentCurve(result.contentSnapshot->pitchCurve);
+        pendingUndoDescription_ = {};
+        undoSnapshotCaptured_ = false;
+        requestContentRedraw();
+        overlay_->repaint();
+        return result;
+    };
     toolCtx.deleteSelectedPianoRollNotes = [this](
         const std::vector<int>& selectedIndices, uint64_t expectedNotesRevision, juce::String description) {
         if (processor_ == nullptr)
@@ -1243,64 +1268,6 @@ ContentCommitSnapshot PianoRollComponent::commitEditedContentNotesAndSegments(co
         requestContentRedraw();
     }
     return committedSnap;
-}
-
-ContentCommitSnapshot PianoRollComponent::commitEditedContentNotesAndSegments(
-    const EditableContentSnapshot& snapshot,
-    const std::vector<Note>& notes,
-    const std::vector<PitchCorrectionSegment>& segments,
-    F0FrameRange affectedRange,
-    std::vector<float> originalF0InRange,
-    std::optional<std::vector<F0FrameRange>> erasedRanges)
-{
-    const auto committed = contentCommands_->commitNotesAndSegmentsWithOriginalF0(
-        editedContentKey_, notes, segments,
-        ContentEditRangeFrames{ affectedRange.startFrame, affectedRange.endFrameExclusive },
-        std::move(originalF0InRange), std::move(erasedRanges));
-    if (committed == nullptr)
-        return {};
-
-    const auto extractRangesInRange = [](const std::vector<F0FrameRange>& ranges, int start, int end) {
-        std::vector<F0FrameRange> result;
-        for (const auto& range : ranges) {
-            const int clippedStart = std::max(start, range.startFrame);
-            const int clippedEnd = std::min(end, range.endFrameExclusive);
-            if (clippedStart < clippedEnd)
-                result.push_back({clippedStart, clippedEnd});
-        }
-        return result;
-    };
-    const auto beforeErasedRanges = extractRangesInRange(
-        snapshot.pitchCurve->getErasedRanges(), affectedRange.startFrame, affectedRange.endFrameExclusive);
-    const auto afterErasedRanges = extractRangesInRange(
-        committed->pitchCurve->getErasedRanges(), affectedRange.startFrame, affectedRange.endFrameExclusive);
-    const auto beforeOriginalF0 = std::vector<float>(
-        snapshot.pitchCurve->getOriginalF0().begin() + affectedRange.startFrame,
-        snapshot.pitchCurve->getOriginalF0().begin() + affectedRange.endFrameExclusive);
-    const auto afterOriginalF0 = std::vector<float>(
-        committed->pitchCurve->getOriginalF0().begin() + affectedRange.startFrame,
-        committed->pitchCurve->getOriginalF0().begin() + affectedRange.endFrameExclusive);
-    auto action = std::make_unique<PianoRollEditAction>(
-        contentCommands_, editedContentKey_, pendingUndoDescription_.isNotEmpty()
-            ? pendingUndoDescription_ : LOC(kEdit),
-        snapshot.notes, committed->notes,
-        snapshot.pitchCurve->getCorrectionSegments(), committed->pitchCurve->getCorrectionSegments(),
-        ContentEditRangeFrames{ affectedRange.startFrame, affectedRange.endFrameExclusive },
-        beforeOriginalF0, afterOriginalF0, beforeErasedRanges, afterErasedRanges);
-    if (erasedRanges.has_value())
-        action->setErasedRangePatch();
-    undoManager_.addAction(std::move(action));
-    pendingUndoDescription_ = {};
-
-    cachedNotes_ = committed->notes;
-    interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
-    if (committed->pitchCurve)
-        applyEditedContentCurve(committed->pitchCurve);
-    undoSnapshotCaptured_ = false;
-    lastKnownNotesRevision_ = committed->notesRevision;
-    lastKnownPitchRevision_ = committed->pitchRevision;
-    requestContentRedraw();
-    return committed;
 }
 
 std::vector<PitchCorrectionSegment> PianoRollComponent::getCurrentSegments() const

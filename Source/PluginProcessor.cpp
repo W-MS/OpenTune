@@ -5239,6 +5239,79 @@ ScissorsCommitResult OpenTuneAudioProcessor::applyScissorsNotes(
     return result;
 }
 
+EraserStrokeEditResult OpenTuneAudioProcessor::editEraserStroke(
+    ContentKey key,
+    F0FrameRange brushRange,
+    const std::vector<int>& noteIndices,
+    uint64_t expectedNotesRevision,
+    juce::String undoDescription)
+{
+    EraserStrokeEditResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    const F0Timeline timeline = snapshot->pitchCurve != nullptr
+        ? F0Timeline{ snapshot->pitchCurve->getHopSize(),
+                      snapshot->pitchCurve->getSampleRate(),
+                      static_cast<int>(snapshot->pitchCurve->size()) }
+        : F0Timeline{};
+    auto plan = planEraserStrokeEdit(
+        *snapshot, timeline, brushRange, noteIndices, expectedNotesRevision);
+    result.status = plan.status;
+    if (plan.status == EraserStrokeEditStatus::StaleRevision) {
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+    if (plan.status != EraserStrokeEditStatus::Ready)
+        return result;
+
+    result.beforeNotes = std::move(plan.beforeNotes);
+    result.affectedRange = plan.affectedRange;
+    result.contentSnapshot = contentCommands_->commitNotesAndSegmentsWithOriginalF0(
+        key,
+        plan.afterNotes,
+        plan.afterSegments,
+        ContentEditRangeFrames{ plan.affectedRange.startFrame,
+                                plan.affectedRange.endFrameExclusive },
+        plan.afterOriginalF0,
+        plan.afterErasedRanges);
+    if (result.contentSnapshot == nullptr) {
+        result.status = EraserStrokeEditStatus::Failed;
+        return result;
+    }
+
+    const auto& committedCurve = result.contentSnapshot->pitchCurve;
+    std::vector<float> afterOriginalF0(
+        committedCurve->getOriginalF0().begin() + plan.affectedRange.startFrame,
+        committedCurve->getOriginalF0().begin() + plan.affectedRange.endFrameExclusive);
+    std::vector<F0FrameRange> afterErasedRanges;
+    for (const auto& range : committedCurve->getErasedRanges()) {
+        const int overlapStart = std::max(range.startFrame, plan.affectedRange.startFrame);
+        const int overlapEnd = std::min(range.endFrameExclusive, plan.affectedRange.endFrameExclusive);
+        if (overlapStart < overlapEnd)
+            afterErasedRanges.push_back({ overlapStart, overlapEnd });
+    }
+
+    auto action = std::make_unique<PianoRollEditAction>(
+        contentCommands_, key, std::move(undoDescription),
+        result.beforeNotes, result.contentSnapshot->notes,
+        plan.beforeSegments, plan.afterSegments,
+        ContentEditRangeFrames{ plan.affectedRange.startFrame,
+                                plan.affectedRange.endFrameExclusive },
+        plan.beforeOriginalF0, std::move(afterOriginalF0),
+        plan.beforeErasedRanges, std::move(afterErasedRanges));
+    action->setErasedRangePatch();
+    undoManager_.addAction(std::move(action));
+    result.status = EraserStrokeEditStatus::Applied;
+    return result;
+}
+
 ContentCommitSnapshot OpenTuneAudioProcessor::commitContentNotesAndSegmentsInternal(
     ContentKey key,
     std::vector<Note> notesInRange,

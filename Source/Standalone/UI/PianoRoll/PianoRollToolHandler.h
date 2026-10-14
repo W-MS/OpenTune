@@ -24,6 +24,7 @@
 #include "../../../Content/EditableContentSnapshot.h"
 #include "../../../Utils/SelectedNoteDeleteEdit.h"
 #include "../../../Utils/VolumeEnvelopeRegionEdit.h"
+#include "../../../Utils/EraserStrokeEdit.h"
 #include <vector>
 #include <functional>
 #include <cstdint>
@@ -110,12 +111,6 @@ public:
         // 第三参 affectedRange 来自 ToolHandler 编辑时计算的精确范围，用于
         // undo/redo 时只重渲染该范围（而不是 segments 列表反推的并集 = 全长）。
         std::function<ContentCommitSnapshot(const std::vector<Note>&, const std::vector<PitchCorrectionSegment>&, F0FrameRange)> commitNotesAndSegments;
-        std::function<ContentCommitSnapshot(const std::vector<Note>&,
-                                             const std::vector<PitchCorrectionSegment>&,
-                                             F0FrameRange,
-                                             const std::vector<float>&,
-                                             const std::optional<std::vector<F0FrameRange>>&)> commitNotesAndSegmentsWithOriginalF0;
-
         // === OpenDyne（NotesPrimary）提交与配置回调 ===
         // Volume Envelope 事务：Processor 消息线程读 snapshot → planner 校验
         // expectedNotesRevision → commitVolumeEnvelope + undo（固定 ContentKey）。
@@ -135,6 +130,8 @@ public:
         std::function<uint64_t()> getNotesRevision;
         std::function<SelectedNoteDeleteResult(const std::vector<int>&, uint64_t, juce::String)>
             deleteSelectedPianoRollNotes;
+        std::function<EraserStrokeEditResult(F0FrameRange, const std::vector<int>&, uint64_t, juce::String)>
+            editEraserStroke;
 
         std::function<int()> getPianoKeyWidth;
         std::function<ContentTimelineProjection()> getContentProjection;
