@@ -757,6 +757,8 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/PitchShiftEditAction.h
         Source/Utils/TimeGrid.cpp
         Source/Utils/TimeGrid.h
+        Source/Utils/TimeGridEdit.cpp
+        Source/Utils/TimeGridEdit.h
         Source/Utils/TimeGridEditAction.cpp
         Source/Utils/TimeGridEditAction.h
         Source/Utils/SilentGapDetector.cpp
@@ -1679,6 +1681,21 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTuneNoteResizeEditTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME NoteResizeEditTests COMMAND OpenTuneNoteResizeEditTests)
+
+    add_executable(OpenTuneTimeGridEditTests
+        Tests/TimeGridEditTests.cpp
+    )
+    target_include_directories(OpenTuneTimeGridEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneTimeGridEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneTimeGridEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME TimeGridEditTests COMMAND OpenTuneTimeGridEditTests)
 
     # Scissors topology planner + undo action tests — pure planner, no plugin runtime
     add_executable(OpenTuneScissorsTopologyEditTests

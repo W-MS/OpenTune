@@ -35,6 +35,7 @@
 #include "Utils/PianoRollNotePatchAction.h"
 #include "Utils/ScissorsUndoAction.h"
 #include "Utils/PitchShiftEditAction.h"
+#include "Utils/TimeGridEditAction.h"
 #include "Render/Stage2TimeStretchRebuilder.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <algorithm>
@@ -5954,6 +5955,30 @@ bool OpenTuneAudioProcessor::setContentTimeGrid(ContentKey key,
             crs->republishPlaybackSource(key, std::move(snapshot));
     }
     return ok;
+}
+
+bool OpenTuneAudioProcessor::applyTimeGridEdit(
+    ContentKey key,
+    std::shared_ptr<const TimeGridSnapshot> before,
+    std::shared_ptr<const TimeGridSnapshot> after,
+    juce::String description)
+{
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return false;
+    if (!key.isValid() || before == nullptr || after == nullptr || contentCommands_ == nullptr)
+        return false;
+
+    auto action = std::make_unique<TimeGridEditAction>(
+        contentCommands_, key,
+        description.isNotEmpty() ? description : LOC_RAW("Edit time grid"),
+        std::move(before), after);
+    if (!setContentTimeGrid(key, after))
+        return false;
+
+    undoManager_.addAction(std::move(action));
+    return true;
 }
 
 bool OpenTuneAudioProcessor::setContentDetectedKey(ContentKey key, const DetectedKey& detectedKey)

@@ -7,7 +7,6 @@
 #include "../../Utils/PianoRollEditAction.h"
 #include "../../Utils/PianoRollNotePatchAction.h"
 #include "../../Utils/VolumeEnvelopeRegionEdit.h"
-#include "../../Utils/TimeGridEditAction.h"   // 閳库槄?vocal-time-stretch ?.7
 #include "../../Utils/CursorTheme.h"
 #include <algorithm>
 #include <cmath>
@@ -520,18 +519,13 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
     toolCtx.commitTimeGrid = [this](std::shared_ptr<const TimeGridSnapshot> newSnap,
                                      std::shared_ptr<const TimeGridSnapshot> oldSnap,
                                      juce::String description) -> bool {
-        if (contentCommands_ == nullptr || !editedContentKey_.isValid()) return false;
+        if (processor_ == nullptr || contentCommands_ == nullptr || !editedContentKey_.isValid())
+            return false;
         if (newSnap == nullptr || oldSnap == nullptr) return false;
 
-        auto action = std::make_unique<TimeGridEditAction>(
-            contentCommands_,
-            editedContentKey_,
-            description.isNotEmpty() ? description : LOC_RAW("Edit time grid"),
-            std::move(oldSnap),
-            newSnap);
-        const bool published = contentCommands_->setTimeGrid(editedContentKey_, newSnap);
-        if (!published) return false;
-        undoManager_.addAction(std::move(action));
+        if (!processor_->applyTimeGridEdit(
+                editedContentKey_, oldSnap, newSnap, std::move(description)))
+            return false;
 
         {
             auto snap = readEditedSnapshot();

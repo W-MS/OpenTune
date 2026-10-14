@@ -858,6 +858,10 @@ public:
     void republishPlaybackSource(ContentKey key);
     bool setContentTimeGrid(ContentKey key,
                             std::shared_ptr<const TimeGridSnapshot> grid);
+    bool applyTimeGridEdit(ContentKey key,
+                           std::shared_ptr<const TimeGridSnapshot> before,
+                           std::shared_ptr<const TimeGridSnapshot> after,
+                           juce::String description);
     bool setContentDetectedKey(ContentKey key, const DetectedKey& detectedKey);
     bool setContentOriginalF0State(ContentKey key, OriginalF0State state);
     bool setContentOriginalF0FailureReason(ContentKey key, std::string reason);

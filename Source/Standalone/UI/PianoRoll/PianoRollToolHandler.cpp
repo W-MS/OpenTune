@@ -6,6 +6,7 @@
 #include "../../../Utils/ScissorsTopologyEdit.h"
 #include "../../../Utils/PitchUtils.h"
 #include "../../../Utils/TimeCoordinate.h"
+#include "../../../Utils/TimeGridEdit.h"
 #include "../../../Utils/LocalizationManager.h"
 #include <algorithm>
 #include <cmath>
@@ -3052,78 +3053,19 @@ void PianoRollToolHandler::handleTimeToolMouseDrag(const juce::MouseEvent& e)
     const double newOutputTime = projection.projectTimelineTimeToContent(timelineTime);
     if (newOutputTime < 0.0) return;
 
-    const auto& origHandles = tt.dragOriginalSnapshot->handles();
-
-    // Locate the dragged handle's index.
-    int draggedIdx = -1;
-    for (int i = 0; i < static_cast<int>(origHandles.size()); ++i) {
-        if (origHandles[i].id == tt.draggedHandleId) { draggedIdx = i; break; }
-    }
-    if (draggedIdx <= 0 || draggedIdx >= static_cast<int>(origHandles.size()) - 1) {
-        return;   // endpoints can't be dragged
-    }
-
-    // 鈿★笍 搂8.4 锟?group-drag detection.
-    // If the user has multi-selected handles AND the dragged handle is part
-    // of that selection, every selected handle moves by the same delta
-    // (uniformDelta).  Otherwise only the dragged handle moves.
-    const bool isGroupDrag = (!tt.additionalSelectedIds.empty())
-                              && tt.isSelected(tt.draggedHandleId);
-
-    // Spacing rule between adjacent outputs.
-    // Alt held at drag start (`dragSnapDisabled`) bypasses the clamp for
-    // power-user nudging into tight regions.
-    const double kMinSpacingSec = tt.dragSnapDisabled ? 0.000 : TimeGridSnapshot::kMinOutputSpacingSeconds;
-    const double minOutput = origHandles[static_cast<size_t>(draggedIdx - 1)].output_seconds + kMinSpacingSec;
-    const double maxOutput = origHandles[static_cast<size_t>(draggedIdx + 1)].output_seconds - kMinSpacingSec;
-    const double clampedOutput = juce::jlimit(minOutput, maxOutput, newOutputTime);
-    const double uniformDelta = clampedOutput - tt.dragStartOutputSeconds;
-
-    // Build new handle vector.  For group drag we shift every selected,
-    // non-endpoint handle by uniformDelta and clamp each individually to its
-    // own neighbor bounds.  Non-selected handles keep their original output.
-    std::vector<TimeHandle> newHandles(origHandles.begin(), origHandles.end());
-
-    auto isHandleSelected = [&tt](uint64_t id) -> bool {
-        return tt.isSelected(id);
-    };
-
-    if (isGroupDrag) {
-        // First pass: tentative outputs by uniform delta.
-        std::vector<double> tentative(newHandles.size());
-        for (size_t i = 0; i < newHandles.size(); ++i) {
-            tentative[i] = newHandles[i].output_seconds;
-        }
-        for (size_t i = 1; i < newHandles.size() - 1; ++i) {
-            if (newHandles[i].isEndpoint()) continue;
-            if (isHandleSelected(newHandles[i].id)) {
-                tentative[i] = newHandles[i].output_seconds + uniformDelta;
-            }
-        }
-
-        // Second pass: clamp each tentative to its already-clamped neighbors
-        // (left-to-right sweep ensures monotonicity is preserved).
-        for (size_t i = 1; i < tentative.size() - 1; ++i) {
-            const double localMin = tentative[i - 1] + kMinSpacingSec;
-            const double localMax = tentative[i + 1] - kMinSpacingSec;
-            if (localMin > localMax) {
-                // Region too tight 锟?abort the drag step (keep last valid
-                // working snapshot).
-                return;
-            }
-            tentative[i] = juce::jlimit(localMin, localMax, tentative[i]);
-        }
-
-        for (size_t i = 0; i < newHandles.size(); ++i) {
-            newHandles[i].output_seconds = tentative[i];
-        }
-    } else {
-        newHandles[static_cast<size_t>(draggedIdx)].output_seconds = clampedOutput;
-    }
-
-    auto newSnap = TimeGridSnapshot::makeFromHandles(std::move(newHandles));
+    bool validationRejected = false;
+    auto newSnap = planTimeGridDrag(
+        tt.dragOriginalSnapshot,
+        tt.draggedHandleId,
+        tt.dragStartOutputSeconds,
+        newOutputTime,
+        tt.selectedHandleId,
+        tt.additionalSelectedIds,
+        tt.dragSnapDisabled,
+        validationRejected);
     if (newSnap == nullptr) {
-        AppLogger::warn("[TimeTool] makeFromHandles failed during drag (validation)");
+        if (validationRejected)
+            AppLogger::warn("[TimeTool] makeFromHandles failed during drag (validation)");
         return;
     }
 
@@ -3149,8 +3091,8 @@ void PianoRollToolHandler::handleTimeToolMouseUp(const juce::MouseEvent& /*e*/)
         && tt.dragWorkingSnapshot != tt.dragOriginalSnapshot
         && ctx_.commitTimeGrid) {
         ctx_.commitTimeGrid(tt.dragWorkingSnapshot,
-                             tt.dragOriginalSnapshot,
-                             LOC_RAW("Drag time handle"));
+                            tt.dragOriginalSnapshot,
+                            LOC_RAW("Drag time handle"));
     }
 
     tt.isDraggingHandle = false;
@@ -3178,73 +3120,35 @@ void PianoRollToolHandler::handleTimeToolMouseDoubleClick(const juce::MouseEvent
     const auto projection = ctx_.getContentProjection();
     if (!projection.isValid()) return;
     const double clickedTime = projection.projectTimelineTimeToContent(timelineTime);
-    if (clickedTime <= 0.0) return;
-
-    const auto& handles = snap->handles();
-    if (handles.size() < 2) return;
-
-    // Reject if too close to existing handle in output or source time.
-    //
-    // 搂8.4 bugfix: clickedTime is output/content time.
-    // Source spacing check must compare against source_seconds, so
-    // compute clickedOutput 锟?clickedSource via tauInverse.
-    // Identity grid 锟?tauInverse is identity 锟?same value.
-    const double clickedSourceSeconds = snap->tauInverse(clickedTime);
-    for (const auto& h : handles) {
-        if (std::abs(h.output_seconds - clickedTime) < TimeGridSnapshot::kMinOutputSpacingSeconds) {
-            AppLogger::log("[TimeTool] insert rejected: output spacing invariant");
-            return;
+    auto insert = planTimeGridInsert(snap, clickedTime);
+    if (insert.status != TimeGridInsertStatus::Inserted) {
+        switch (insert.status) {
+            case TimeGridInsertStatus::OutputSpacing:
+                AppLogger::log("[TimeTool] insert rejected: output spacing invariant");
+                break;
+            case TimeGridInsertStatus::SourceSpacing:
+                AppLogger::log("[TimeTool] insert rejected: source spacing invariant");
+                break;
+            case TimeGridInsertStatus::OutsideRange:
+                AppLogger::log("[TimeTool] insert rejected: click outside [ClipStart, ClipEnd] range");
+                break;
+            case TimeGridInsertStatus::ValidationRejected:
+                AppLogger::warn("[TimeTool] insert: makeFromHandles validation failed");
+                break;
+            case TimeGridInsertStatus::Inserted:
+            case TimeGridInsertStatus::InvalidTime:
+            case TimeGridInsertStatus::InvalidGrid:
+                break;
         }
-        const double previous = std::min(h.source_seconds, clickedSourceSeconds);
-        const double current = std::max(h.source_seconds, clickedSourceSeconds);
-        if (!TimeGridSnapshot::hasMinimumSourceSpacing(previous, current)) {
-            AppLogger::log("[TimeTool] insert rejected: source spacing invariant");
-            return;
-        }
-    }
-
-    // Find insertion index by output_seconds order.
-    int insertIdx = -1;
-    for (int i = 0; i < static_cast<int>(handles.size()) - 1; ++i) {
-        if (handles[static_cast<size_t>(i)].output_seconds < clickedTime
-            && clickedTime < handles[static_cast<size_t>(i + 1)].output_seconds) {
-            insertIdx = i + 1;
-            break;
-        }
-    }
-    if (insertIdx <= 0 || insertIdx >= static_cast<int>(handles.size())) {
-        AppLogger::log("[TimeTool] insert rejected: click outside [ClipStart, ClipEnd] range");
         return;
     }
 
-    // Build new handle vector with the inserted UserAdded handle.  Generate a
-    // fresh handle id by taking max-existing + 1 (matches TimeGrid's stable-id
-    // semantics; survives validation because it's monotonic w.r.t. existing).
-    std::vector<TimeHandle> newHandles(handles.begin(), handles.end());
-    uint64_t maxId = 0;
-    for (const auto& h : newHandles) maxId = std::max(maxId, h.id);
-
-    TimeHandle newHandle;
-    newHandle.id = maxId + 1;
-    // For non-identity TimeGrid, map output (display) time back to source
-    // time via tauInverse.  Identity grid 锟?tauInverse is identity.
-    newHandle.source_seconds = snap->tauInverse(clickedTime);
-    newHandle.output_seconds = clickedTime;
-    newHandle.kind = HandleKind::UserAdded;
-    newHandles.insert(newHandles.begin() + insertIdx, newHandle);
-
-    auto newSnap = TimeGridSnapshot::makeFromHandles(std::move(newHandles));
-    if (newSnap == nullptr) {
-        AppLogger::warn("[TimeTool] insert: makeFromHandles validation failed");
-        return;
-    }
-
-    ctx_.commitTimeGrid(newSnap, snap, LOC_RAW("Insert time handle"));
+    ctx_.commitTimeGrid(insert.snapshot, snap, LOC_RAW("Insert time handle"));
 
     // Auto-select the newly-inserted handle so user can immediately drag.
     // commitTimeGrid already triggers cache dirty internally.
     auto& tt = ctx_.getState().timeTool;
-    tt.selectedHandleId = newHandle.id;
+    tt.selectedHandleId = insert.insertedHandleId;
 }
 
 // ============================================================================
@@ -3263,35 +3167,17 @@ bool PianoRollToolHandler::handleTimeToolDeleteSelected()
     auto snap = ctx_.getActiveContentTimeGrid();
     if (snap == nullptr) return false;
 
-    const auto& handles = snap->handles();
-    int targetIdx = -1;
-    for (int i = 0; i < static_cast<int>(handles.size()); ++i) {
-        if (handles[static_cast<size_t>(i)].id == tt.selectedHandleId) {
-            targetIdx = i;
-            break;
-        }
-    }
-    if (targetIdx <= 0 || targetIdx >= static_cast<int>(handles.size()) - 1) {
-        // Endpoint or not found 锟?cannot delete
-        AppLogger::log("[TimeTool] delete rejected: cannot delete endpoint or unknown handle");
-        return false;
-    }
-    if (handles[static_cast<size_t>(targetIdx)].isEndpoint()) {
-        AppLogger::log("[TimeTool] delete rejected: handle is endpoint");
+    auto deletion = planTimeGridDelete(snap, tt.selectedHandleId);
+    if (deletion.status != TimeGridDeleteStatus::Deleted) {
+        if (deletion.status == TimeGridDeleteStatus::NotFound
+            || deletion.status == TimeGridDeleteStatus::Endpoint)
+            AppLogger::log("[TimeTool] delete rejected: cannot delete endpoint or unknown handle");
+        else if (deletion.status == TimeGridDeleteStatus::ValidationRejected)
+            AppLogger::warn("[TimeTool] delete: makeFromHandles validation failed");
         return false;
     }
 
-    // Build new handle vector without the target.
-    std::vector<TimeHandle> newHandles(handles.begin(), handles.end());
-    newHandles.erase(newHandles.begin() + targetIdx);
-
-    auto newSnap = TimeGridSnapshot::makeFromHandles(std::move(newHandles));
-    if (newSnap == nullptr) {
-        AppLogger::warn("[TimeTool] delete: makeFromHandles validation failed");
-        return false;
-    }
-
-    ctx_.commitTimeGrid(newSnap, snap, LOC_RAW("Delete time handle"));
+    ctx_.commitTimeGrid(deletion.snapshot, snap, LOC_RAW("Delete time handle"));
 
     tt.selectedHandleId = 0;
     tt.hoveredHandleId  = 0;
