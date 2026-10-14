@@ -32,6 +32,7 @@
 #include "Utils/ScaleUiMapping.h"
 #include "Utils/PianoRollEditAction.h"
 #include "Utils/PianoRollNotePatchAction.h"
+#include "Utils/ScissorsUndoAction.h"
 #include "Utils/PitchShiftEditAction.h"
 #include "Render/Stage2TimeStretchRebuilder.h"
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -4952,10 +4953,10 @@ bool OpenTuneAudioProcessor::replaceContentNotesForFullMutation(ContentKey key, 
     if (!ok)
         return false;
 
-    // 发布由调用方统一负责：Scissors 提交后调用 republishPlaybackSource；
-    // requestContentRefresh 经 onContentFullMutationCompleted → render 请求内
-    // requestRenderForLocalMutationRange 的 republishPlaybackSource 重建包络。
-    // 此处不再发布，避免同一变更两次 publish（不含包络的中间态双发布）。
+    // 发布由调用方统一负责：Scissors 提交事务（applyScissorsNotes）内
+    // republishPlaybackSource；requestContentRefresh 经 onContentFullMutationCompleted
+    // → render 请求内 requestRenderForLocalMutationRange 的 republishPlaybackSource
+    // 重建包络。此处不再发布，避免同一变更两次 publish（不含包络的中间态双发布）。
     return true;
 }
 
@@ -5191,6 +5192,49 @@ OpenTuneAudioProcessor::PasteNotesResult OpenTuneAudioProcessor::pasteNotesAt(
         contentCommands_, key, std::move(undoDescription),
         std::move(plan.beforePatch), std::move(plan.afterPatch)));
     result.status = PasteNotesStatus::Applied;
+    return result;
+}
+
+ScissorsCommitResult OpenTuneAudioProcessor::applyScissorsNotes(
+    ContentKey key,
+    const std::vector<Note>& afterNotes,
+    uint64_t expectedNotesRevision,
+    juce::String undoDescription)
+{
+    ScissorsCommitResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    // Planner 已在 UI 侧按同一 snapshot 的 revision 计算计划；stale check 只对
+    // 提交前的 snapshot revision，外部事务变化则拒绝，避免错内容提交。
+    if (snapshot->notesRevision != expectedNotesRevision) {
+        result.status = ScissorsCommitStatus::StaleRevision;
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+
+    if (!replaceContentNotesForFullMutation(key, afterNotes))
+        return result;
+
+    republishPlaybackSource(key);
+
+    // 提交成功后不与 expectedNotesRevision 比较（notesRevision 已推进）；
+    // postcommit snapshot 作为事务结果，其 notes（normalized data）作为 undo after。
+    const auto afterSnapshot = getContentSnapshot(key);
+    if (afterSnapshot == nullptr)
+        return result;
+
+    result.contentSnapshot = afterSnapshot;
+    undoManager_.addAction(std::make_unique<ScissorsUndoAction>(
+        contentCommands_, key, std::move(undoDescription),
+        snapshot->notes, afterSnapshot->notes));
+    result.status = ScissorsCommitStatus::Applied;
     return result;
 }
 

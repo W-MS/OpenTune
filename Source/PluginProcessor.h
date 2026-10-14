@@ -64,6 +64,7 @@
 #include "Utils/SelectedNoteEqEdit.h"
 #include "Utils/SelectedNoteDeleteEdit.h"
 #include "Utils/PasteTopologyEdit.h"
+#include "Utils/ScissorsTopologyEdit.h"
 #include "Render/ContentRenderService.h"
 #include "Runtime/ProcessRenderRuntime.h"
 #include <functional>
@@ -774,6 +775,15 @@ public:
         ContentKey key,
         const std::vector<Note>& clipboardNotes,
         double pasteStartTime,
+        uint64_t expectedNotesRevision,
+        juce::String undoDescription);
+    // Message-thread transaction for Scissors split/merge. The UI resolves the
+    // split time and tolerance (pixel-faithful) and computes the pure planner plan;
+    // stale check runs on the pre-commit snapshot revision only. Full note replace
+    // + republish + undo (postcommit snapshot as undo after), zero render.
+    ScissorsCommitResult applyScissorsNotes(
+        ContentKey key,
+        const std::vector<Note>& afterNotes,
         uint64_t expectedNotesRevision,
         juce::String undoDescription);
     ContentCommitSnapshot commitContentNoteTopologyPatch(ContentKey key, ContentNoteRangePatch patch);

@@ -17,7 +17,6 @@
 #include "../../../Utils/AutomationLane.h"
 #include "Utils/PitchCurve.h"
 #include "Utils/NoteGeneratorTypes.h"   // ScaleSnapConfig — OpenDyne Pitch 吸附
-#include "Utils/UndoManager.h"          // UndoAction — OpenDyne Scissors undo
 #include "UI/ToolIds.h"
 #include "InteractionState.h"
 #include "UI/ViewMapper.h"
@@ -120,15 +119,12 @@ public:
         // Volume Envelope 提交：整体替换 AutomationLane，推进 outputGain/content
         // revision，内部 republish，零 render。
         std::function<ContentCommitSnapshot(AutomationLane, AutomationLane)> commitVolumeEnvelope;
-        // 全量替换 notes（Scissors 分割）：只推进 notes/content revision，零 render。
-        std::function<bool(const std::vector<Note>&)> replaceContentNotesForFullMutation;
-        // 无渲染发布 playback source。
-        std::function<void()> republishPlaybackSource;
+        // Scissors 事务：Processor 读一次 snapshot 校验 revision → 全量替换 notes →
+        // republish + 记录 undo（固定 ContentKey）。失败/StaleRevision 返回 false（由 UI 刷新）。
+        std::function<bool(const std::vector<Note>& afterNotes, juce::String undoDescription)> commitScissorsNotes;
         // Pitch Tool 拖拽吸附配置；nullopt = 无配置（默认 Chromatic，即 round 半音）。
         std::function<std::optional<ScaleSnapConfig>()> getActiveScaleSnap;
         std::function<bool()> shouldSnapWholeNoteMoveToStandardPitch;
-        // 把 undo action 推入组件 UndoManager。
-        std::function<void(std::unique_ptr<UndoAction>)> pushUndoAction;
 
         std::function<std::shared_ptr<const EditableContentSnapshot>()> getEditableContentSnapshot;
         std::function<uint64_t()> getNotesRevision;
@@ -288,11 +284,6 @@ private:
     bool handleScissorsToolMerge(const juce::MouseEvent& e);
     // Scissors 切割/合并共用：加载 effective (corrected) F0 数组（不可用返回空）。
     std::vector<float> loadEffectiveF0() const;
-    // Scissors 切割/合并共用：区间 [tStart, tEnd) 内有效 F0 帧的算术平均，无有效帧返回 0。
-    float computeAvgF0InRange(const F0Timeline& f0tl,
-                              const std::vector<float>& effectiveF0,
-                              double tStart,
-                              double tEnd) const;
     
     // === EQ Tool ===
     void handleEqToolMouseDown(const juce::MouseEvent& e);

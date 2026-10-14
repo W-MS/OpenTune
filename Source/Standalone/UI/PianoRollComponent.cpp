@@ -162,16 +162,32 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
             listeners_.call([](Listener& listener) { listener.contentEdited(); });
         return committedSnap;
     };
-    toolCtx.replaceContentNotesForFullMutation = [this](const std::vector<Note>& notes) {
-        return contentCommands_->replaceContentNotesForFullMutation(editedContentKey_, notes);
-    };
-    toolCtx.republishPlaybackSource = [this]() {
-        if (contentCommands_ == nullptr || !editedContentKey_.isValid()) return;
-        contentCommands_->republishPlaybackSource(editedContentKey_);
-    };
-    toolCtx.pushUndoAction = [this](std::unique_ptr<UndoAction> action) {
-        if (action != nullptr)
-            undoManager_.addAction(std::move(action));
+    // Scissors 事务：Processor 校验 revision + 全量替换 + republish + undo（固定
+    // ContentKey）。失败/StaleRevision 时刷新 notes 缓存/revision，不推 undo。
+    toolCtx.commitScissorsNotes = [this](const std::vector<Note>& afterNotes, juce::String undoDescription) {
+        if (processor_ == nullptr || !editedContentKey_.isValid()) return false;
+        const auto result = processor_->applyScissorsNotes(
+            editedContentKey_, afterNotes, lastKnownNotesRevision_, std::move(undoDescription));
+        if (result.status == ScissorsCommitStatus::Applied) {
+            interactionState_.noteSelection.clear();
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            pendingUndoDescription_ = {};
+            undoSnapshotCaptured_ = false;
+            requestContentRedraw();
+            return true;
+        }
+        if (result.status == ScissorsCommitStatus::StaleRevision
+            && result.contentSnapshot != nullptr) {
+            // 旧 index 不再对应新 notes：关旧 EQ popup、清旧选区，避免旧 index 误编辑
+            closeEqPopup();
+            interactionState_.noteSelection.clear();
+            interactionState_.noteDraft.clear();
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            requestContentRedraw();
+        }
+        return false;
     };
     // Pitch 工具与 AUTO 同源的 scale snap：唯一映射入口 ScaleUiMapping
     toolCtx.getActiveScaleSnap = [this]() -> std::optional<ScaleSnapConfig> {

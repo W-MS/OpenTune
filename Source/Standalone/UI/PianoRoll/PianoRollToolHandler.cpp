@@ -3,7 +3,7 @@
 #include "../../../Utils/AudioEditingScheme.h"
 #include "../../../Utils/AppLogger.h"
 #include "../../../Utils/KeyShortcutConfig.h"
-#include "../../../Utils/ScissorsUndoAction.h"
+#include "../../../Utils/ScissorsTopologyEdit.h"
 #include "../../../Utils/PitchUtils.h"
 #include "../../../Utils/TimeCoordinate.h"
 #include "../../../Utils/LocalizationManager.h"
@@ -2631,101 +2631,37 @@ void PianoRollToolHandler::handleScissorsToolUp(const juce::MouseEvent& e)
         }
     }
 
-    // 切点时间竖线穿过的所有音符一律切割，与选中状态无关（Melodyne 行为）。
-    auto isCutBySplitTime = [&](const Note& note) {
-        return note.startTime < splitTime && splitTime < note.endTime;
-    };
-    size_t cutCount = 0;
-    for (const auto& note : beforeNotes) {
-        if (isCutBySplitTime(note))
-            ++cutCount;
-    }
+    // 获取 effective (corrected) F0 数据用于 pitch center 重算；
+    // F0 数据不可用时保持原 pitch（不重算）。
+    const auto effectiveF0 = loadEffectiveF0();
+    const auto f0tl = ctx_.getF0Timeline();
 
-    if (cutCount == 0) {
+    // 严格内部切割：切点时间竖线穿过的所有音符一律切割，与选中状态无关。
+    const auto plan = planScissorsSplit(beforeNotes, splitTime, effectiveF0, f0tl);
+    if (plan.cutCount == 0) {
         // 无音符可切割，记录本次点击供后续合并检测
         scissorsLastClickTime_ = now;
         scissorsLastClickPos_ = e.getPosition();
         return;
     }
 
-    // 获取 effective (corrected) F0 数据用于 pitch center 重算；
-    // F0 数据不可用时保持原 pitch（不重算）。
-    const auto effectiveF0 = loadEffectiveF0();
-    const bool hasF0 = !effectiveF0.empty();
-    const auto f0tl = ctx_.getF0Timeline();
-
-    // 构建新 notes 向量：每个待切割 note 生成左右两段，其余原样保留。
-    std::vector<Note> newNotes;
-    newNotes.reserve(beforeNotes.size() + cutCount);
-
-    for (size_t i = 0; i < beforeNotes.size(); ++i) {
-        const Note& original = beforeNotes[i];
-        if (!isCutBySplitTime(original)) {
-            newNotes.push_back(original);
-            continue;
-        }
-
-        Note left = original;
-        Note right = original;
-        left.endTime = splitTime;
-        left.dirty = true;
-        right.startTime = splitTime;
-        right.dirty = true;
-
-        // pitch center 重算：用 effective F0 在各自时间范围内的平均值，
-        // pitch 设为均值、pitchOffset=0，使 getAdjustedPitch() 直接返回该频率。
-        if (hasF0) {
-            const float leftAvgF0 = computeAvgF0InRange(f0tl, effectiveF0, original.startTime, splitTime);
-            if (leftAvgF0 > 0.0f) {
-                left.pitch = leftAvgF0;
-                left.pitchOffset = 0.0f;
-            }
-
-            const float rightAvgF0 = computeAvgF0InRange(f0tl, effectiveF0, splitTime, original.endTime);
-            if (rightAvgF0 > 0.0f) {
-                right.pitch = rightAvgF0;
-                right.pitchOffset = 0.0f;
-            }
-        }
-
-        newNotes.push_back(left);
-        newNotes.push_back(right);
-    }
-
-    if (!ctx_.replaceContentNotesForFullMutation || !ctx_.replaceContentNotesForFullMutation(newNotes)) {
+    // 提交事务：Processor 校验 revision、全量替换 notes 并记录 undo。
+    if (!ctx_.commitScissorsNotes(plan.afterNotes, LOC_RAW("Split note")))
         return;
-    }
+
     // 记录本次点击的时间和位置，用于自定义双击合并检测
     scissorsLastClickTime_ = now;
     scissorsLastClickPos_ = e.getPosition();
-    if (ctx_.republishPlaybackSource)
-        ctx_.republishPlaybackSource();
 
     // 选中切割后的右侧段（最后一个被切割 note 的右段），避免下次拖拽同时移动两侧。
-    int lastRightIdx = -1;
-    int newIdx = 0;
-    for (size_t i = 0; i < beforeNotes.size(); ++i) {
-        const bool isCut = isCutBySplitTime(beforeNotes[i]);
-        if (isCut)
-            lastRightIdx = newIdx + 1;
-        newIdx += isCut ? 2 : 1;
-    }
-    if (lastRightIdx >= 0 && lastRightIdx < static_cast<int>(newNotes.size())) {
-        state.noteSelection.setSingle(lastRightIdx, static_cast<int>(newNotes.size()));
+    if (plan.lastRightIndex >= 0
+        && plan.lastRightIndex < static_cast<int>(plan.afterNotes.size())) {
+        state.noteSelection.setSingle(plan.lastRightIndex,
+                                      static_cast<int>(plan.afterNotes.size()));
     }
     if (ctx_.invalidateSelectionFeedback) ctx_.invalidateSelectionFeedback();
 
     // 不切换工具 —— 保持 Scissors，与 Melodyne 一致。
-
-    if (ctx_.pushUndoAction) {
-        auto action = std::make_unique<ScissorsUndoAction>(
-            LOC_RAW("Split note"),
-            beforeNotes,
-            newNotes,
-            ctx_.replaceContentNotesForFullMutation,
-            ctx_.republishPlaybackSource);
-        ctx_.pushUndoAction(std::move(action));
-    }
 }
 
 std::vector<float> PianoRollToolHandler::loadEffectiveF0() const
@@ -2747,30 +2683,6 @@ std::vector<float> PianoRollToolHandler::loadEffectiveF0() const
             }
         });
     return effectiveF0;
-}
-
-float PianoRollToolHandler::computeAvgF0InRange(const F0Timeline& f0tl,
-                                                const std::vector<float>& effectiveF0,
-                                                double tStart,
-                                                double tEnd) const
-{
-    if (effectiveF0.empty())
-        return 0.0f;
-
-    const int startFrame = f0tl.frameAtOrBefore(tStart);
-    const int endFrame = f0tl.exclusiveFrameAt(tEnd);
-    float sum = 0.0f;
-    int count = 0;
-    for (int f = startFrame; f < endFrame; ++f) {
-        if (f < 0 || f >= static_cast<int>(effectiveF0.size()))
-            continue;
-        const float f0 = effectiveF0[static_cast<size_t>(f)];
-        if (f0 > 0.0f) {
-            sum += f0;
-            ++count;
-        }
-    }
-    return count > 0 ? sum / static_cast<float>(count) : 0.0f;
 }
 
 bool PianoRollToolHandler::handleScissorsToolMerge(const juce::MouseEvent& e)
@@ -2797,78 +2709,19 @@ bool PianoRollToolHandler::handleScissorsToolMerge(const juce::MouseEvent& e)
     // 按序配对（left 取其后第一个未消费的 right），分离线两侧多个音符
     // （不同 pitch 行）各自独立合并。始终以鼠标命中的分离线为准，与选择无关。
     const auto effectiveF0 = loadEffectiveF0();
-    const bool hasF0 = !effectiveF0.empty();
     const auto f0tl = ctx_.getF0Timeline();
 
-    std::vector<char> consumed(beforeNotes.size(), 0);
-    std::vector<Note> newNotes;
-    newNotes.reserve(beforeNotes.size());
-    size_t mergeCount = 0;
-
-    // 按 splitTime 合并分离线两侧音符
-    for (size_t i = 0; i < beforeNotes.size(); ++i) {
-        if (consumed[i] != 0)
-            continue;
-        const Note& left = beforeNotes[i];
-        if (std::abs(left.endTime - splitTime) >= tolerance) {
-            newNotes.push_back(left);
-            continue;
-        }
-
-        size_t rightIdx = std::numeric_limits<size_t>::max();
-        for (size_t j = i + 1; j < beforeNotes.size(); ++j) {
-            if (consumed[j] != 0)
-                continue;
-            if (beforeNotes[j].startTime > splitTime + tolerance)
-                break;
-            if (std::abs(beforeNotes[j].startTime - splitTime) < tolerance) {
-                rightIdx = j;
-                break;
-            }
-        }
-        if (rightIdx == std::numeric_limits<size_t>::max()) {
-            newNotes.push_back(left);
-            continue;
-        }
-
-        consumed[rightIdx] = 1;
-        const Note& right = beforeNotes[rightIdx];
-        Note merged = left;
-        merged.endTime = right.endTime;
-        merged.dirty = true;
-        if (hasF0) {
-            const float avgF0 = computeAvgF0InRange(f0tl, effectiveF0, left.startTime, right.endTime);
-            if (avgF0 > 0.0f) {
-                merged.pitch = avgF0;
-                merged.pitchOffset = 0.0f;
-            }
-        }
-        newNotes.push_back(merged);
-        ++mergeCount;
-    }
-
-    if (mergeCount == 0)
+    const auto plan = planScissorsMerge(beforeNotes, splitTime, tolerance, effectiveF0, f0tl);
+    if (plan.mergeCount == 0)
         return false;
 
-    if (!ctx_.replaceContentNotesForFullMutation || !ctx_.replaceContentNotesForFullMutation(newNotes)) {
+    // 提交事务：Processor 校验 revision、全量替换 notes 并记录 undo。
+    if (!ctx_.commitScissorsNotes(plan.afterNotes, LOC_RAW("Merge notes")))
         return false;
-    }
-    if (ctx_.republishPlaybackSource)
-        ctx_.republishPlaybackSource();
     if (ctx_.invalidateSelectionFeedback)
         ctx_.invalidateSelectionFeedback();
 
     // 合并后不自动选中（Melodyne 行为）。
-
-    if (ctx_.pushUndoAction) {
-        auto action = std::make_unique<ScissorsUndoAction>(
-            LOC_RAW("Merge notes"),
-            beforeNotes,
-            newNotes,
-            ctx_.replaceContentNotesForFullMutation,
-            ctx_.republishPlaybackSource);
-        ctx_.pushUndoAction(std::move(action));
-    }
     return true;
 }
 
