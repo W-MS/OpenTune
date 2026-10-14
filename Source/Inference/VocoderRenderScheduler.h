@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include "../Utils/Error.h"
+#include "../DSP/HybridAperiodicResidual.h"
 
 namespace OpenTune {
 
@@ -40,6 +41,7 @@ public:
         std::vector<float> f0;
         std::vector<float> uv;  // 1=voiced 显式浊音掩码；空则由 f0>0 推导
         std::vector<float> conditioning;
+        std::shared_ptr<const HybridRenderPayload> hybridPayload;
         std::function<void(JobResult, const juce::String&, const std::vector<float>&)> onComplete;
     };
 
@@ -51,7 +53,8 @@ public:
     static constexpr std::size_t kMaxJobPayloadBytes = 16 * 1024 * 1024;
     static bool isJobPayloadWithinLimit(std::size_t f0Capacity,
                                         std::size_t uvCapacity,
-                                        std::size_t conditioningCapacity) noexcept;
+                                        std::size_t conditioningCapacity,
+                                        std::size_t retainedBytes = 0) noexcept;
     static InferenceFailure classifyInferenceError(const Error& error);
     VocoderRenderScheduler();
     ~VocoderRenderScheduler();

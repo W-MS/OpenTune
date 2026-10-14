@@ -206,6 +206,7 @@ private:
         float fMax{16000.0f};
         MelFilterbankSpec melFilterbank;
         float melLogEps{1.0e-5f};
+        bool needsHighFrequencyOriginal{false};
     };
     bool acquireVocoderConfig(VocoderConfig& out);
 

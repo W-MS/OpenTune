@@ -107,6 +107,10 @@ public:
         return currentVocoder_ ? currentVocoder_->getMelLogEps() : 1.0e-5f;
     }
 
+    bool needsHighFrequencyOriginal() const {
+        return currentVocoder_ && currentVocoder_->needsHighFrequencyOriginal();
+    }
+
 private:
     std::shared_ptr<Ort::Env> env_;
     std::unique_ptr<VocoderInterface> currentVocoder_;
@@ -159,6 +163,10 @@ MelFilterbankSpec VocoderInferenceService::getMelFilterbankSpec() const {
 
 float VocoderInferenceService::getMelLogEps() const {
     return pImpl_->getMelLogEps();
+}
+
+bool VocoderInferenceService::needsHighFrequencyOriginal() const {
+    return pImpl_->needsHighFrequencyOriginal();
 }
 
 } // namespace OpenTune

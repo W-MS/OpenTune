@@ -62,6 +62,9 @@ public:
     // Keep the historical 1e-5 default for models without that metadata.
     virtual float getMelLogEps() const { return 1.0e-5f; }
     virtual void setMelLogEps(float) {}
+
+    virtual bool needsHighFrequencyOriginal() const { return false; }
+    virtual void setNeedsHighFrequencyOriginal(bool) {}
 };
 
 } // namespace OpenTune

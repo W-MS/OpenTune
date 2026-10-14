@@ -1,6 +1,7 @@
 #include "VocoderFactory.h"
 #include "PCNSFHifiGANVocoder.h"
 #include "OnnxRuntimeProviderCompat.h"
+#include "VocoderSidecarMetadata.h"
 #ifdef _WIN32
 #include "DmlVocoder.h"
 #endif
@@ -23,6 +24,7 @@ struct SidecarConfig
     std::optional<float> melFMax;
     std::optional<float> melClipVal;
     std::optional<MelFilterbankSpec> melFilterbank;
+    bool needsHighFrequencyOriginal{false};
 };
 
 std::string trimAscii(std::string value)
@@ -70,6 +72,7 @@ SidecarConfig loadSidecarConfig(const std::string& modelPath)
 
     const auto lines = juce::StringArray::fromLines(yamlFile.loadFileAsString());
     SidecarConfig result;
+    result.needsHighFrequencyOriginal = sidecarNeedsHighFrequencyOriginal(lines);
     MelFilterbankSpec filterbank;
     std::vector<float> currentRegion;
     bool inFilterbank = false;
@@ -170,6 +173,7 @@ SidecarConfig loadSidecarConfig(const std::string& modelPath)
 void applySidecarConfig(const std::string& modelPath, VocoderInterface& vocoder)
 {
     const auto config = loadSidecarConfig(modelPath);
+    vocoder.setNeedsHighFrequencyOriginal(config.needsHighFrequencyOriginal);
     if (config.melFMax.has_value()) {
         vocoder.setMelFMax(*config.melFMax);
         AppLogger::info("[VocoderFactory] Sidecar mel_fmax=" + juce::String(*config.melFMax)

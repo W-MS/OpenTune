@@ -7,6 +7,7 @@
 #include "../Utils/Error.h"
 #include "VocoderRenderScheduler.h"
 #include "VocoderInterface.h"
+#include "../DSP/HybridAperiodicResidual.h"
 
 namespace Ort { struct Env; }
 
@@ -20,6 +21,7 @@ public:
         std::vector<float> f0;
         std::vector<float> uv;  // 1=voiced 显式浊音掩码；空则由 f0>0 推导
         std::vector<float> conditioning;
+        std::shared_ptr<const HybridRenderPayload> hybridPayload;
         std::function<void(JobResult, const juce::String&, const std::vector<float>&)> onComplete;
     };
 
@@ -35,6 +37,7 @@ public:
     float getFMax() const;
     MelFilterbankSpec getMelFilterbankSpec() const;
     float getMelLogEps() const;
+    bool needsHighFrequencyOriginal() const;
 
 private:
     std::unique_ptr<VocoderInferenceService> inferenceService_;

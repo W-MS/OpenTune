@@ -96,7 +96,7 @@ private:
     static BackendSelection decodeSelection(uint64_t encoded) noexcept;
     BackendSelection detectSelection(bool forceCpu);
 
-    static constexpr uint64_t kUndetected = std::numeric_limits<uint64_t>::max();
+    static constexpr uint64_t kUndetected = (std::numeric_limits<uint64_t>::max)();
     std::atomic<uint64_t> selection_{kUndetected};
 };
 

@@ -42,6 +42,8 @@ public:
     void setMelFilterbankSpec(const MelFilterbankSpec& spec) override { melFilterbankSpec_ = spec; }
     float getMelLogEps() const override { return melLogEps_; }
     void setMelLogEps(float value) override { melLogEps_ = value; }
+    bool needsHighFrequencyOriginal() const override { return needsHighFrequencyOriginal_; }
+    void setNeedsHighFrequencyOriginal(bool value) override { needsHighFrequencyOriginal_ = value; }
 
 protected:
     void detectInputOutputNames();
@@ -72,6 +74,7 @@ protected:
     float fMax_ = 16000.0f;
     MelFilterbankSpec melFilterbankSpec_;
     float melLogEps_ = 1.0e-5f;
+    bool needsHighFrequencyOriginal_ = false;
     bool conditioningNeedsTranspose_ = false;
 };
 

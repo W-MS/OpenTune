@@ -36,6 +36,7 @@ public:
     float getFMax() const;
     MelFilterbankSpec getMelFilterbankSpec() const;
     float getMelLogEps() const;
+    bool needsHighFrequencyOriginal() const;
 
 private:
     class Impl;

@@ -11,14 +11,18 @@ VocoderRenderScheduler::~VocoderRenderScheduler() {
 }
 
 bool VocoderRenderScheduler::isJobPayloadWithinLimit(
-    std::size_t f0Capacity, std::size_t uvCapacity, std::size_t conditioningCapacity) noexcept {
+    std::size_t f0Capacity, std::size_t uvCapacity, std::size_t conditioningCapacity,
+    std::size_t retainedBytes) noexcept {
     constexpr auto maxFloats = kMaxJobPayloadBytes / sizeof(float);
     if (f0Capacity > maxFloats)
         return false;
     const auto remainingAfterF0 = maxFloats - f0Capacity;
     if (uvCapacity > remainingAfterF0)
         return false;
-    return conditioningCapacity <= remainingAfterF0 - uvCapacity;
+    const auto remainingAfterUv = remainingAfterF0 - uvCapacity;
+    if (conditioningCapacity > remainingAfterUv)
+        return false;
+    return retainedBytes <= (remainingAfterUv - conditioningCapacity) * sizeof(float);
 }
 
 VocoderRenderScheduler::InferenceFailure VocoderRenderScheduler::classifyInferenceError(
@@ -111,7 +115,10 @@ void VocoderRenderScheduler::shutdown() {
 }
 
 bool VocoderRenderScheduler::submit(Job job, std::string* rejectionReason) {
-    if (!isJobPayloadWithinLimit(job.f0.capacity(), job.uv.capacity(), job.conditioning.capacity())) {
+    const size_t retainedBytes = job.hybridPayload != nullptr
+        ? job.hybridPayload->retainedBytes() : 0;
+    if (!isJobPayloadWithinLimit(job.f0.capacity(), job.uv.capacity(),
+                                 job.conditioning.capacity(), retainedBytes)) {
         if (rejectionReason != nullptr)
             *rejectionReason = "Vocoder scheduler rejected the job because its payload exceeds the memory limit";
         return false;

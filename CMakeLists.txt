@@ -617,6 +617,8 @@ set(OPENTUNE_COMMON_SOURCES
         Source/DSP/ResamplingManager.h
         Source/DSP/MelSpectrogram.cpp
         Source/DSP/MelSpectrogram.h
+        Source/DSP/HybridAperiodicResidual.cpp
+        Source/DSP/HybridAperiodicResidual.h
         Source/DSP/F0KeyDetector.cpp
         Source/DSP/F0KeyDetector.h
         Source/DSP/AutoTunePitchShifter.cpp
@@ -1507,6 +1509,17 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTuneAutoTuneTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME AutoTunePitchShifterTests COMMAND OpenTuneAutoTuneTests)
+
+    add_executable(OpenTuneHybridAperiodicResidualTests
+        Tests/HybridAperiodicResidualTests.cpp
+        Source/DSP/HybridAperiodicResidual.cpp
+    )
+    target_include_directories(OpenTuneHybridAperiodicResidualTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    if(MSVC)
+        target_compile_options(OpenTuneHybridAperiodicResidualTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME HybridAperiodicResidualTests COMMAND OpenTuneHybridAperiodicResidualTests)
 
     # 真实 include 生产 Note/PitchControlConfig/PitchUtils/AudioEditingScheme 的契约测试（纯标准库）：字段/常量漂移即编译失败
     add_executable(OpenTunePitchParameterTests

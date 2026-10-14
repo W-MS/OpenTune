@@ -54,6 +54,7 @@ bool VocoderDomain::submit(Job job, std::string* rejectionReason) {
     schedulerJob.f0 = std::move(job.f0);
     schedulerJob.uv = std::move(job.uv);
     schedulerJob.conditioning = std::move(job.conditioning);
+    schedulerJob.hybridPayload = std::move(job.hybridPayload);
     schedulerJob.onComplete = std::move(job.onComplete);
     return scheduler_->submit(std::move(schedulerJob), rejectionReason);
 }
@@ -81,6 +82,10 @@ MelFilterbankSpec VocoderDomain::getMelFilterbankSpec() const {
 
 float VocoderDomain::getMelLogEps() const {
     return inferenceService_ ? inferenceService_->getMelLogEps() : 1.0e-5f;
+}
+
+bool VocoderDomain::needsHighFrequencyOriginal() const {
+    return inferenceService_ && inferenceService_->needsHighFrequencyOriginal();
 }
 
 } // namespace OpenTune

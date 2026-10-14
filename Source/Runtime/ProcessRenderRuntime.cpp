@@ -4,6 +4,7 @@
 #include "../DSP/AutoTunePitchShifter.h"
 #include "../Editor/ConfirmDialogContent.h"
 #include "../DSP/MelSpectrogram.h"
+#include "../DSP/HybridAperiodicResidual.h"
 #include "../DSP/NoteEqProcessor.h"
 #include "../Inference/ChunkRenderStrategy.h"
 #include "../Inference/VocoderDomain.h"
@@ -1114,8 +1115,10 @@ ProcessRenderRuntime::VocoderSubmitResult ProcessRenderRuntime::submitVocoderJob
         domain = vocoderDomain_.get();
     }
 
+    const size_t retainedBytes = job.hybridPayload != nullptr
+        ? job.hybridPayload->retainedBytes() : 0;
     if (!VocoderRenderScheduler::isJobPayloadWithinLimit(
-            job.f0.capacity(), job.uv.capacity(), job.conditioning.capacity()))
+            job.f0.capacity(), job.uv.capacity(), job.conditioning.capacity(), retainedBytes))
     {
         {
             std::lock_guard<std::mutex> lock(vocoderMutex_);
@@ -1164,6 +1167,7 @@ bool ProcessRenderRuntime::acquireVocoderConfig(VocoderConfig& out)
             out.fMax = vocoderDomain_->getFMax();
             out.melFilterbank = vocoderDomain_->getMelFilterbankSpec();
             out.melLogEps = vocoderDomain_->getMelLogEps();
+            out.needsHighFrequencyOriginal = vocoderDomain_->needsHighFrequencyOriginal();
             return true;
         }
 
@@ -1770,90 +1774,222 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
     conditioningConfig.logEps = vocoderCfg.melLogEps;
 
     const bool linearSpec = vocoderCfg.conditioningType == VocoderConditioningType::LogLinearSpec;
-    auto conditioningResult = linearSpec
-        ? computeLogLinearSpectrogram(monoAudio.data(),
-                                      static_cast<int>(monoAudio.size()),
-                                      numFrames,
-                                      conditioningConfig)
-        : computeLogMelSpectrogram(monoAudio.data(),
-                                   static_cast<int>(monoAudio.size()),
-                                   numFrames,
-                                   conditioningConfig);
-    if (!conditioningResult.ok() || conditioningResult.value().empty())
+    std::vector<float> conditioning;
+    int actualFrames = 0;
+    std::shared_ptr<const HybridRenderPayload> hybridPayload;
+    if (vocoderCfg.needsHighFrequencyOriginal)
     {
-        failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
-                  coreJob.targetRevision, coreJob.contentKey,
-                  !conditioningResult.ok()
-                      ? juce::String(conditioningResult.error().fullMessage())
-                      : juce::String("Mel conditioning calculation returned an empty result"));
-        return;
-    }
+        if (linearSpec)
+        {
+            failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
+                      coreJob.targetRevision, coreJob.contentKey,
+                      "High-frequency original rendering requires a LogMel vocoder");
+            return;
+        }
 
-    auto conditioning = std::move(conditioningResult).value();
-    const int actualFrames = static_cast<int>(conditioning.size() / conditioningConfig.nMels);
+        // Hybrid model, current-training-config estimate: ~14 mel-frame convolutional
+        // receptive-field radius (conv_pre + five upsampling ResBlock1 stages).
+        constexpr int hybridContextFrames = 15;
+        const auto& originalF0 = pitchCurve->getOriginalF0();
+        auto sourceF0Track = originalF0;
+        OpenTune::fillF0GapsForVocoder(sourceF0Track);
+        auto effectiveTrack = materializeEffectiveF0Range(
+            *contentSnap, 0, static_cast<int>(originalF0.size()));
+        OpenTune::fillF0GapsForVocoder(effectiveTrack, pitchCurve->getErasedRanges());
 
-    // Training applies interp_uv=True to the complete F0 timeline before the
-    // vocoder sees it.  Interpolating only this render chunk misses voiced
-    // frames on the other side of an all-unvoiced chunk.
-    const auto& originalF0 = pitchCurve->getOriginalF0();
-    auto vocoderSourceF0 = materializeEffectiveF0Range(
-        *contentSnap, 0, static_cast<int>(originalF0.size()));
-    // UV 必须在 gap-fill 之前采样：fillF0GapsForVocoder 按训练 interp_uv=True
-    // 语义填满所有 unvoiced 帧，填完后无法再区分浊音/清音。线性谱声码器需要
-    // 显式 UV 才能在清音段抑制谐波源。
-    const auto preFillF0 = vocoderSourceF0;
-    OpenTune::fillF0GapsForVocoder(vocoderSourceF0, pitchCurve->getErasedRanges());
-
-    vocoderF0.assign(static_cast<size_t>(actualFrames), 0.0f);
-    vocoderUv.assign(static_cast<size_t>(actualFrames), 0.0f);
-    for (int i = 0; i < actualFrames; ++i)
-    {
-        const double melTimeSec = trueStartSeconds + i * hopDuration;
-        const double srcPos = melTimeSec * f0FrameRate - static_cast<double>(f0StartFrame);
-        if (srcPos < 0.0)
-            continue;
-        const int srcIdx0 = static_cast<int>(srcPos);
-        if (srcIdx0 >= numF0Frames)
-            continue;
-        const int srcIdx1 = std::min(srcIdx0 + 1, numF0Frames - 1);
-        const double frac = srcPos - static_cast<double>(srcIdx0);
-        const int globalIdx0 = f0StartFrame + srcIdx0;
-        const int globalIdx1 = f0StartFrame + srcIdx1;
-        const auto isErased = [&](int frame) {
-            return std::any_of(pitchCurve->getErasedRanges().begin(), pitchCurve->getErasedRanges().end(),
-                [frame](const F0FrameRange& range) { return frame >= range.startFrame && frame < range.endFrameExclusive; });
+        const int64_t clipSamples = coreJob.audioBuffer->getNumSamples();
+        const int64_t clipFrames = (clipSamples + RenderChunkPlanner::kRenderHopSize - 1)
+            / RenderChunkPlanner::kRenderHopSize;
+        const int64_t contextStartFrame = std::max<int64_t>(0,
+            boundaries.trueStartSample / RenderChunkPlanner::kRenderHopSize - hybridContextFrames);
+        const int64_t contextEndFrame = std::min<int64_t>(clipFrames,
+            (boundaries.trueEndSample + RenderChunkPlanner::kRenderHopSize - 1)
+                / RenderChunkPlanner::kRenderHopSize + hybridContextFrames);
+        const int contextFrames = static_cast<int>(contextEndFrame - contextStartFrame);
+        const auto& erasedRanges = pitchCurve->getErasedRanges();
+        const auto isErased = [&erasedRanges](int frame) {
+            return std::any_of(erasedRanges.begin(), erasedRanges.end(),
+                [frame](const F0FrameRange& range) {
+                    return frame >= range.startFrame && frame < range.endFrameExclusive;
+                });
         };
-        const bool erased0 = isErased(globalIdx0);
-        const bool erased1 = isErased(globalIdx1);
-        const float f0_0 = erased0 ? 0.0f : (globalIdx0 >= 0
-            && globalIdx0 < static_cast<int>(vocoderSourceF0.size())
-            ? vocoderSourceF0[static_cast<size_t>(globalIdx0)] : 0.0f);
-        const float f0_1 = erased1 ? 0.0f : (globalIdx1 >= 0
-            && globalIdx1 < static_cast<int>(vocoderSourceF0.size())
-            ? vocoderSourceF0[static_cast<size_t>(globalIdx1)] : 0.0f);
-        if (erased0 || erased1)
-            vocoderF0[static_cast<size_t>(i)] = 0.0f;
-        else if (f0_0 > 0.0f && f0_1 > 0.0f)
-            vocoderF0[static_cast<size_t>(i)] =
-                static_cast<float>(std::exp(std::log(f0_0) * (1.0 - frac) + std::log(f0_1) * frac));
-        else if (f0_0 > 0.0f)
-            vocoderF0[static_cast<size_t>(i)] = f0_0;
-        else if (f0_1 > 0.0f)
-            vocoderF0[static_cast<size_t>(i)] = f0_1;
+        const auto interpolateTrack = [](const std::vector<float>& track, double position) {
+            if (position < 0.0)
+                return 0.0f;
+            const int first = static_cast<int>(position);
+            if (first >= static_cast<int>(track.size()))
+                return 0.0f;
+            const int second = std::min(first + 1, static_cast<int>(track.size()) - 1);
+            const float value0 = track[static_cast<size_t>(first)];
+            const float value1 = track[static_cast<size_t>(second)];
+            if (value0 > 0.0f && value1 > 0.0f)
+            {
+                const double fraction = position - first;
+                return static_cast<float>(std::exp(
+                    std::log(value0) * (1.0 - fraction) + std::log(value1) * fraction));
+            }
+            return value0 > 0.0f ? value0 : value1;
+        };
 
-        const bool voiced0 = globalIdx0 >= 0
-            && globalIdx0 < static_cast<int>(preFillF0.size())
-            && preFillF0[static_cast<size_t>(globalIdx0)] > 0.0f;
-        const bool voiced1 = globalIdx1 >= 0
-            && globalIdx1 < static_cast<int>(preFillF0.size())
-            && preFillF0[static_cast<size_t>(globalIdx1)] > 0.0f;
-        vocoderUv[static_cast<size_t>(i)] = (erased0 || erased1) ? 0.0f : ((voiced0 || voiced1) ? 1.0f : 0.0f);
+        const float* sourceAudio = coreJob.audioBuffer->getReadPointer(0);
+        const int64_t contextStartSample = contextStartFrame * RenderChunkPlanner::kRenderHopSize;
+
+        std::vector<float> sourceF0(static_cast<size_t>(contextFrames), 0.0f);
+        std::vector<uint8_t> voicedFrames(static_cast<size_t>(contextFrames), 0);
+        vocoderF0.assign(static_cast<size_t>(contextFrames), 0.0f);
+        vocoderUv.assign(static_cast<size_t>(contextFrames), 0.0f);
+        for (int i = 0; i < contextFrames; ++i)
+        {
+            const int64_t globalMelFrame = contextStartFrame + i;
+            const double framePosition = static_cast<double>(globalMelFrame)
+                * RenderChunkPlanner::kRenderHopSize / RenderCache::kSampleRate * f0FrameRate;
+            if (framePosition < 0.0)
+                continue;
+            const int first = static_cast<int>(framePosition);
+            if (first >= static_cast<int>(originalF0.size()))
+                continue;
+            const int second = std::min(first + 1, static_cast<int>(originalF0.size()) - 1);
+            const int nearest = static_cast<int>(std::nearbyint(framePosition));
+            const bool voiced = nearest >= 0 && nearest < static_cast<int>(originalF0.size())
+                && originalF0[static_cast<size_t>(nearest)] > 0.0f
+                && !isErased(nearest);
+            voicedFrames[static_cast<size_t>(i)] = voiced ? 1 : 0;
+            vocoderUv[static_cast<size_t>(i)] = voiced ? 1.0f : 0.0f;
+            sourceF0[static_cast<size_t>(i)] = interpolateTrack(sourceF0Track, framePosition);
+            const bool erasedFirst = isErased(first);
+            const bool erasedSecond = isErased(second);
+            if (erasedFirst || erasedSecond)
+                continue;
+
+            vocoderF0[static_cast<size_t>(i)] = interpolateTrack(effectiveTrack, framePosition);
+        }
+
+        auto extracted = extractAperiodicHigh(
+            sourceAudio, static_cast<size_t>(clipSamples), sourceF0, voicedFrames,
+            static_cast<size_t>(contextStartFrame), static_cast<size_t>(clipFrames));
+        std::vector<float> cleanAudio(extracted.alignedAudio.size());
+        for (size_t i = 0; i < cleanAudio.size(); ++i)
+            cleanAudio[i] = extracted.alignedAudio[i] - extracted.residual[i];
+        auto cleanConditioning = computeLogMelSpectrogram(
+            cleanAudio.data(), static_cast<int>(cleanAudio.size()), contextFrames,
+            conditioningConfig);
+        if (!cleanConditioning.ok() || cleanConditioning.value().empty())
+        {
+            failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
+                      coreJob.targetRevision, coreJob.contentKey,
+                      !cleanConditioning.ok()
+                          ? juce::String(cleanConditioning.error().fullMessage())
+                          : juce::String("Clean mel conditioning calculation returned an empty result"));
+            return;
+        }
+        conditioning = std::move(cleanConditioning).value();
+        actualFrames = static_cast<int>(conditioning.size() / conditioningConfig.nMels);
+
+        auto payload = std::make_shared<HybridRenderPayload>();
+        payload->sourceAudio = std::move(extracted.alignedAudio);
+        payload->residual = std::move(extracted.residual);
+        payload->voicedSamples.resize(payload->sourceAudio.size(), 0);
+        for (size_t i = 0; i < payload->voicedSamples.size(); ++i)
+        {
+            const int64_t globalSample = contextStartSample + static_cast<int64_t>(i);
+            const double framePosition = static_cast<double>(globalSample)
+                / RenderCache::kSampleRate * f0FrameRate;
+            const int nearest = static_cast<int>(std::nearbyint(framePosition));
+            const bool voiced = globalSample < clipSamples
+                && nearest >= 0 && nearest < static_cast<int>(originalF0.size())
+                && originalF0[static_cast<size_t>(nearest)] > 0.0f
+                && !isErased(nearest);
+            payload->voicedSamples[i] = voiced ? 1 : 0;
+        }
+        payload->globalSampleOffset = contextStartSample;
+        payload->synthesisOffsetSamples = static_cast<size_t>(
+            boundaries.trueStartSample - contextStartSample);
+        payload->publishSampleCount = static_cast<size_t>(boundaries.publishSampleCount);
+        hybridPayload = std::move(payload);
+    }
+    else
+    {
+        auto conditioningResult = linearSpec
+            ? computeLogLinearSpectrogram(monoAudio.data(),
+                                          static_cast<int>(monoAudio.size()),
+                                          numFrames,
+                                          conditioningConfig)
+            : computeLogMelSpectrogram(monoAudio.data(),
+                                       static_cast<int>(monoAudio.size()),
+                                       numFrames,
+                                       conditioningConfig);
+        if (!conditioningResult.ok() || conditioningResult.value().empty())
+        {
+            failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
+                      coreJob.targetRevision, coreJob.contentKey,
+                      !conditioningResult.ok()
+                          ? juce::String(conditioningResult.error().fullMessage())
+                          : juce::String("Mel conditioning calculation returned an empty result"));
+            return;
+        }
+
+        conditioning = std::move(conditioningResult).value();
+        actualFrames = static_cast<int>(conditioning.size() / conditioningConfig.nMels);
+
+        // Gap filling remains the ordinary vocoder's complete-timeline conditioning rule.
+        const auto& originalF0 = pitchCurve->getOriginalF0();
+        auto vocoderSourceF0 = materializeEffectiveF0Range(
+            *contentSnap, 0, static_cast<int>(originalF0.size()));
+        const auto preFillF0 = vocoderSourceF0;
+        OpenTune::fillF0GapsForVocoder(vocoderSourceF0, pitchCurve->getErasedRanges());
+
+        vocoderF0.assign(static_cast<size_t>(actualFrames), 0.0f);
+        vocoderUv.assign(static_cast<size_t>(actualFrames), 0.0f);
+        for (int i = 0; i < actualFrames; ++i)
+        {
+            const double melTimeSec = trueStartSeconds + i * hopDuration;
+            const double srcPos = melTimeSec * f0FrameRate - static_cast<double>(f0StartFrame);
+            if (srcPos < 0.0)
+                continue;
+            const int srcIdx0 = static_cast<int>(srcPos);
+            if (srcIdx0 >= numF0Frames)
+                continue;
+            const int srcIdx1 = std::min(srcIdx0 + 1, numF0Frames - 1);
+            const double frac = srcPos - static_cast<double>(srcIdx0);
+            const int globalIdx0 = f0StartFrame + srcIdx0;
+            const int globalIdx1 = f0StartFrame + srcIdx1;
+            const auto isErased = [&](int frame) {
+                return std::any_of(pitchCurve->getErasedRanges().begin(), pitchCurve->getErasedRanges().end(),
+                    [frame](const F0FrameRange& range) { return frame >= range.startFrame && frame < range.endFrameExclusive; });
+            };
+            const bool erased0 = isErased(globalIdx0);
+            const bool erased1 = isErased(globalIdx1);
+            const float f0_0 = erased0 ? 0.0f : (globalIdx0 >= 0
+                && globalIdx0 < static_cast<int>(vocoderSourceF0.size())
+                ? vocoderSourceF0[static_cast<size_t>(globalIdx0)] : 0.0f);
+            const float f0_1 = erased1 ? 0.0f : (globalIdx1 >= 0
+                && globalIdx1 < static_cast<int>(vocoderSourceF0.size())
+                ? vocoderSourceF0[static_cast<size_t>(globalIdx1)] : 0.0f);
+            if (erased0 || erased1)
+                vocoderF0[static_cast<size_t>(i)] = 0.0f;
+            else if (f0_0 > 0.0f && f0_1 > 0.0f)
+                vocoderF0[static_cast<size_t>(i)] =
+                    static_cast<float>(std::exp(std::log(f0_0) * (1.0 - frac) + std::log(f0_1) * frac));
+            else if (f0_0 > 0.0f)
+                vocoderF0[static_cast<size_t>(i)] = f0_0;
+            else if (f0_1 > 0.0f)
+                vocoderF0[static_cast<size_t>(i)] = f0_1;
+
+            const bool voiced0 = globalIdx0 >= 0
+                && globalIdx0 < static_cast<int>(preFillF0.size())
+                && preFillF0[static_cast<size_t>(globalIdx0)] > 0.0f;
+            const bool voiced1 = globalIdx1 >= 0
+                && globalIdx1 < static_cast<int>(preFillF0.size())
+                && preFillF0[static_cast<size_t>(globalIdx1)] > 0.0f;
+            vocoderUv[static_cast<size_t>(i)] = (erased0 || erased1) ? 0.0f : ((voiced0 || voiced1) ? 1.0f : 0.0f);
+        }
     }
 
     VocoderDomain::Job vocoderJob;
     vocoderJob.f0 = std::move(vocoderF0);
     vocoderJob.uv = std::move(vocoderUv);
     vocoderJob.conditioning = std::move(conditioning);
+    vocoderJob.hybridPayload = hybridPayload;
 
     auto renderCache = coreJob.renderCache;
     auto targetRevision = coreJob.targetRevision;
@@ -1873,9 +2009,10 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
     vocoderJob.onComplete = [this, weakCrs = std::weak_ptr<ContentRenderService>(crs),
                               asyncCounter, renderCache, targetRevision,
                              requeueAudioBuffer, requeueAudioSampleRate,
-                             captureContentKey, chunkObjId,
-                             jobStartSample, frozenBoundaries, contentSnap,
-                             completion](
+                              captureContentKey, chunkObjId,
+                              jobStartSample, frozenBoundaries, contentSnap,
+                              hybridPayload,
+                              completion](
                                  VocoderRenderScheduler::JobResult result,
                                  const juce::String& error,
                                  const std::vector<float>& audio)
@@ -1898,14 +2035,21 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
         if (result == VocoderRenderScheduler::JobResult::Succeeded)
         {
             std::vector<float> publishedAudio;
-            if (!preparePublishedAudioFromSynthesis(boundaries, audio, publishedAudio))
+            const bool prepared = hybridPayload != nullptr
+                ? ((publishedAudio = mixHybridRender(audio, *hybridPayload)),
+                   publishedAudio.size() == static_cast<size_t>(boundaries.publishSampleCount))
+                : preparePublishedAudioFromSynthesis(boundaries, audio, publishedAudio);
+            if (!prepared)
             {
                 AppLogger::error("ChunkRender: synthesis length mismatch for RenderCache publish objId="
                     + juce::String(static_cast<juce::int64>(chunkObjId)));
                 failChunk(completion, renderCache.get(), jobStartSample,
                           targetRevision, captureContentKey,
-                          "Vocoder synthesis output length mismatch (expected="
-                            + juce::String(boundaries.synthSampleCount)
+                          (hybridPayload != nullptr
+                            ? juce::String("Hybrid vocoder synthesis context or crop length mismatch (expectedSamples=")
+                            : juce::String("Vocoder synthesis output length mismatch (expected="))
+                            + juce::String(hybridPayload != nullptr
+                                ? boundaries.publishSampleCount : boundaries.synthSampleCount)
                             + ", actual=" + juce::String(static_cast<juce::int64>(audio.size())) + ")");
                 return;
             }
@@ -1988,6 +2132,8 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
     const auto f0Capacity = vocoderJob.f0.capacity();
     const auto uvCapacity = vocoderJob.uv.capacity();
     const auto conditioningCapacity = vocoderJob.conditioning.capacity();
+    const size_t hybridPayloadBytes = vocoderJob.hybridPayload != nullptr
+        ? vocoderJob.hybridPayload->retainedBytes() : 0;
     juce::String submissionError;
     const auto submitResult = submitVocoderJob(
         std::move(vocoderJob), vocoderCfg.generation, submissionError);
@@ -1997,7 +2143,8 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
             failFrozen("Vocoder submission payload exceeded the scheduler memory limit (F0="
                 + juce::String(static_cast<juce::int64>(f0Capacity)) + ", UV="
                 + juce::String(static_cast<juce::int64>(uvCapacity)) + ", conditioning="
-                + juce::String(static_cast<juce::int64>(conditioningCapacity)) + " floats)");
+                + juce::String(static_cast<juce::int64>(conditioningCapacity)) + " floats, hybrid="
+                + juce::String(static_cast<juce::int64>(hybridPayloadBytes)) + " bytes)");
         else
             deferOrRequeue(crs, std::move(coreJob), completion,
                 submissionError.isNotEmpty()

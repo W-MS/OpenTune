@@ -1,6 +1,8 @@
 #include "../Source/Render/ContentRenderService.h"
 #include "../Source/Inference/VocoderInferenceService.h"
+#include "../Source/Inference/VocoderInterface.h"
 #include "../Source/Inference/VocoderRenderScheduler.h"
+#include "../Source/Inference/VocoderSidecarMetadata.h"
 #include "../Source/Runtime/ProcessRenderRuntime.h"
 #include "LifecycleTestTrace.h"
 #include "LifecycleWatchdog.h"
@@ -12,6 +14,22 @@
 
 namespace
 {
+class DefaultVocoderCapability final : public OpenTune::VocoderInterface
+{
+public:
+    std::vector<float> synthesize(const std::vector<float>&,
+                                  const std::vector<float>&,
+                                  const float*,
+                                  size_t,
+                                  Ort::RunOptions&) override
+    {
+        return {};
+    }
+
+    float getFMax() const override { return 16000.0f; }
+    void setMelFMax(float) override {}
+};
+
 bool checkRenderContract(bool value, const char* reason)
 {
     if (! value)
@@ -76,6 +94,28 @@ bool runRenderCacheCompletionContract()
         return false;
 
     return checkRenderContract(cache.isCanonicalSettled(), "completion_contract_not_settled");
+}
+
+bool runHighFrequencyMetadataContract()
+{
+    DefaultVocoderCapability defaultVocoder;
+    juce::StringArray absent;
+    absent.add("mel_fmax: 16000");
+    juce::StringArray disabled;
+    disabled.add("needs_high_frequency_original: false");
+    juce::StringArray enabled;
+    enabled.add("needs_high_frequency_original: true");
+    juce::StringArray nested;
+    nested.add("model:");
+    nested.add("  needs_high_frequency_original: true");
+
+    return checkRenderContract(
+        !defaultVocoder.needsHighFrequencyOriginal()
+            && !OpenTune::sidecarNeedsHighFrequencyOriginal(absent)
+            && !OpenTune::sidecarNeedsHighFrequencyOriginal(disabled)
+            && OpenTune::sidecarNeedsHighFrequencyOriginal(enabled)
+            && !OpenTune::sidecarNeedsHighFrequencyOriginal(nested),
+        "high_frequency_original_metadata_contract_regressed");
 }
 
 bool runVocoderErrorContract()
@@ -350,11 +390,17 @@ int runChild(int argc, char** argv)
     constexpr std::size_t payloadFloats =
         OpenTune::VocoderRenderScheduler::kMaxJobPayloadBytes / sizeof(float);
     if (!OpenTune::VocoderRenderScheduler::isJobPayloadWithinLimit(payloadFloats, 0, 0)
-        || OpenTune::VocoderRenderScheduler::isJobPayloadWithinLimit(payloadFloats + 1, 0, 0))
+        || OpenTune::VocoderRenderScheduler::isJobPayloadWithinLimit(payloadFloats + 1, 0, 0)
+        || !OpenTune::VocoderRenderScheduler::isJobPayloadWithinLimit(0, 0, 0,
+            OpenTune::VocoderRenderScheduler::kMaxJobPayloadBytes)
+        || OpenTune::VocoderRenderScheduler::isJobPayloadWithinLimit(0, 0, 0,
+            OpenTune::VocoderRenderScheduler::kMaxJobPayloadBytes + 1))
     {
         std::fprintf(stderr, "{\"event\":\"vocoder_payload_capacity\",\"result\":\"failure\"}\n");
         return 1;
     }
+    if (!runHighFrequencyMetadataContract())
+        return 1;
     if (!runRenderCacheCapacityContract())
     {
         std::fprintf(stderr, "{\"event\":\"render_cache_capacity\",\"result\":\"failure\"}\n");
