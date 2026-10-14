@@ -67,6 +67,7 @@
 #include "Utils/ScissorsTopologyEdit.h"
 #include "Utils/VolumeEnvelopeRegionEdit.h"
 #include "Utils/EraserStrokeEdit.h"
+#include "Utils/ManualCorrectionEdit.h"
 #include "Render/ContentRenderService.h"
 #include "Runtime/ProcessRenderRuntime.h"
 #include <functional>
@@ -793,6 +794,12 @@ public:
         F0FrameRange brushRange,
         const std::vector<int>& noteIndices,
         uint64_t expectedNotesRevision,
+        juce::String undoDescription);
+    ManualCorrectionEditResult applyManualCorrection(
+        ContentKey key,
+        const std::vector<ManualCorrectionOp>& ops,
+        int dirtyStartFrame,
+        int dirtyEndFrame,
         juce::String undoDescription);
     ContentCommitSnapshot commitContentNoteTopologyPatch(ContentKey key, ContentNoteRangePatch patch);
     // 一次替换整个 VolumeEnvelope，推进 notesRevision（owner 的 applyVolumeEnvelope

@@ -5312,6 +5312,79 @@ EraserStrokeEditResult OpenTuneAudioProcessor::editEraserStroke(
     return result;
 }
 
+ManualCorrectionEditResult OpenTuneAudioProcessor::applyManualCorrection(
+    ContentKey key,
+    const std::vector<ManualCorrectionOp>& ops,
+    int dirtyStartFrame,
+    int dirtyEndFrame,
+    juce::String undoDescription)
+{
+    ManualCorrectionEditResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || snapshot->pitchCurve == nullptr
+        || contentCommands_ == nullptr || ops.empty() || dirtyEndFrame < dirtyStartFrame)
+        return result;
+
+    auto scratchCurve = PitchCurve::fromSnapshot(snapshot->pitchCurve);
+    for (const auto& op : ops) {
+        if (op.endFrameExclusive <= op.startFrame)
+            continue;
+        scratchCurve->setManualCorrectionRange(
+            op.startFrame,
+            op.endFrameExclusive,
+            op.f0Data,
+            op.source,
+            op.parameterSnapshot);
+    }
+
+    const ContentEditRangeFrames affectedRange{ dirtyStartFrame, dirtyEndFrame + 1 };
+    const auto curveSnapshot = scratchCurve->getSnapshot();
+    const F0Timeline timeline{ curveSnapshot->getHopSize(), curveSnapshot->getSampleRate(),
+                               static_cast<int>(curveSnapshot->size()) };
+    const double rangeStartSeconds = timeline.isEmpty()
+        ? 0.0
+        : timeline.timeAtFrame(affectedRange.startFrame);
+    const double rangeEndSeconds = timeline.isEmpty()
+        ? 0.0
+        : timeline.timeAtFrame(affectedRange.endFrameExclusive);
+
+    auto scopedNotes = filterNotesToRange(snapshot->notes, rangeStartSeconds, rangeEndSeconds);
+    auto beforeNotes = scopedNotes;
+    auto beforeSegments = clipSegmentsToFrameRange(
+        snapshot->pitchCurve->getCorrectionSegments(),
+        affectedRange.startFrame,
+        affectedRange.endFrameExclusive);
+    auto committedSnapshot = contentCommands_->commitNotesAndSegments(
+        key,
+        std::move(scopedNotes),
+        clipSegmentsToFrameRange(curveSnapshot->getCorrectionSegments(),
+                                 affectedRange.startFrame,
+                                 affectedRange.endFrameExclusive),
+        affectedRange);
+    if (committedSnapshot == nullptr)
+        return result;
+
+    auto afterNotes = filterNotesToRange(
+        committedSnapshot->notes, rangeStartSeconds, rangeEndSeconds);
+    auto afterSegments = clipSegmentsToFrameRange(
+        committedSnapshot->pitchCurve->getCorrectionSegments(),
+        affectedRange.startFrame,
+        affectedRange.endFrameExclusive);
+    undoManager_.addAction(std::make_unique<PianoRollEditAction>(
+        contentCommands_, key, std::move(undoDescription),
+        std::move(beforeNotes), std::move(afterNotes),
+        std::move(beforeSegments), std::move(afterSegments), affectedRange));
+
+    result.status = ManualCorrectionEditStatus::Applied;
+    result.contentSnapshot = std::move(committedSnapshot);
+    return result;
+}
+
 ContentCommitSnapshot OpenTuneAudioProcessor::commitContentNotesAndSegmentsInternal(
     ContentKey key,
     std::vector<Note> notesInRange,

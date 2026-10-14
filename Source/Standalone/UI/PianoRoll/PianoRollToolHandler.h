@@ -25,6 +25,7 @@
 #include "../../../Utils/SelectedNoteDeleteEdit.h"
 #include "../../../Utils/VolumeEnvelopeRegionEdit.h"
 #include "../../../Utils/EraserStrokeEdit.h"
+#include "../../../Utils/ManualCorrectionEdit.h"
 #include <vector>
 #include <functional>
 #include <cstdint>
@@ -80,15 +81,7 @@ struct SourceEditRange
 class PianoRollToolHandler
 {
 public:
-    // 手动修正操作描述：帧范围 + F0 数据 + 来源类型
-    struct ManualCorrectionOp
-    {
-        int startFrame = 0;
-        int endFrameExclusive = 0;
-        std::vector<float> f0Data;
-        PitchCorrectionSegment::Source source = PitchCorrectionSegment::Source::HandDraw;
-        PitchCorrectionSegment::ParameterSnapshot parameterSnapshot;
-    };
+    using ManualCorrectionOp = OpenTune::ManualCorrectionOp;
 
     // PianoRoll 组件提供的回调上下文。
     // 所有数据读写均通过这些 std::function 回调完成，
@@ -190,7 +183,8 @@ public:
         // EQ 工具专属光标（组件侧构造一次，值拷贝共享 handle）。
         juce::MouseCursor eqCursor;
 
-        std::function<bool(std::vector<ManualCorrectionOp>, int, int, bool)> applyManualCorrection;
+        std::function<ManualCorrectionEditResult(
+            std::vector<ManualCorrectionOp>, int, int, juce::String)> editManualCorrection;
         std::function<bool(int, int)> selectNotesOverlappingFrames;
         std::function<std::vector<float>()> getOriginalF0;
         std::function<F0Timeline()> getF0Timeline;

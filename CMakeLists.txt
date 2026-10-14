@@ -734,6 +734,8 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/PasteTopologyEdit.h
         Source/Utils/ScissorsTopologyEdit.cpp
         Source/Utils/ScissorsTopologyEdit.h
+        Source/Utils/ManualCorrectionEdit.cpp
+        Source/Utils/ManualCorrectionEdit.h
         Source/Utils/PianoRollNotePatchAction.cpp
         Source/Utils/PianoRollNotePatchAction.h
         Source/Utils/AutomationLane.cpp
@@ -1659,6 +1661,21 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTuneScissorsTopologyEditTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME ScissorsTopologyEditTests COMMAND OpenTuneScissorsTopologyEditTests)
+
+    add_executable(OpenTuneManualCorrectionEditTests
+        Tests/ManualCorrectionEditTests.cpp
+    )
+    target_include_directories(OpenTuneManualCorrectionEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneManualCorrectionEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneManualCorrectionEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME ManualCorrectionEditTests COMMAND OpenTuneManualCorrectionEditTests)
 
     # PitchLaneVisualPolicy tests — pure standard library, no JUCE linkage
     add_executable(OpenTunePitchLaneVisualPolicyTests

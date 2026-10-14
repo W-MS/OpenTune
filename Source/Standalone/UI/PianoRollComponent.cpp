@@ -381,8 +381,26 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
         listeners_.call([s, e](Listener& l) { l.pitchCurveEdited(s, e); });
     };
 
-    toolCtx.applyManualCorrection = [this](std::vector<PianoRollToolHandler::ManualCorrectionOp> ops, int s, int e, bool render) {
-        return applyManualCorrectionPatch(ops, s, e, render);
+    toolCtx.editManualCorrection = [this](std::vector<ManualCorrectionOp> ops,
+                                           int dirtyStartFrame,
+                                           int dirtyEndFrame,
+                                           juce::String description) {
+        if (processor_ == nullptr || !editedContentKey_.isValid())
+            return ManualCorrectionEditResult{};
+
+        auto result = processor_->applyManualCorrection(
+            editedContentKey_, ops, dirtyStartFrame, dirtyEndFrame, std::move(description));
+        if (result.status == ManualCorrectionEditStatus::Applied) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            lastKnownPitchRevision_ = result.contentSnapshot->pitchRevision;
+            applyEditedContentCurve(result.contentSnapshot->pitchCurve);
+            pendingUndoDescription_ = {};
+            undoSnapshotCaptured_ = false;
+            requestContentRedraw();
+        }
+        return result;
     };
     toolCtx.selectNotesOverlappingFrames = [this](int startFrame, int endFrameExclusive) {
         return selectNotesOverlappingFrames(startFrame, endFrameExclusive);
@@ -1147,18 +1165,6 @@ bool PianoRollComponent::removeEqFromSelection()
     return true;
 }
 
-ContentCommitSnapshot PianoRollComponent::commitEditedContentPitchCorrectionSegments(const std::vector<PitchCorrectionSegment>& segments,
-                                                                         F0FrameRange affectedRange)
-{
-    // Delegate to the range-scoped merge path.  setPitchCorrectionSegments does
-    // full replacement which would discard segments outside affectedRange.
-    // commitEditedContentNotesAndSegments 锟?commitContentNotesAndSegments
-    // performs range-scoped merge (keptBefore + incoming + keptAfter).
-    const auto snap = readEditedSnapshot();
-    if (snap == nullptr) return {};
-    return commitEditedContentNotesAndSegments(*snap, cachedNotes_, segments, affectedRange);
-}
-
 ContentCommitSnapshot PianoRollComponent::commitEditedContentNotesAndSegments(const EditableContentSnapshot& snapshot,
                                                                const std::vector<Note>& notes,
                                                                const std::vector<PitchCorrectionSegment>& segments,
@@ -1555,47 +1561,6 @@ void PianoRollComponent::invalidateSelectionFeedback()
 void PianoRollComponent::invalidateInteractionPreview(const juce::Rectangle<int>& bounds)
 {
     overlay_->repaint(bounds);
-}
-
-bool PianoRollComponent::applyManualCorrectionPatch(const std::vector<PianoRollToolHandler::ManualCorrectionOp>& ops,
-                                                     int dirtyStartFrame,
-                                                     int dirtyEndFrame,
-                                                     bool triggerRenderEvent)
-{
-    if (!currentCurve_ || ops.empty()) {
-        return false;
-    }
-
-    auto scratchCurve = PitchCurve::fromSnapshot(currentCurve_);
-    auto curveSnapshot = currentCurve_;
-    for (const auto& op : ops) {
-        if (op.endFrameExclusive <= op.startFrame) {
-            continue;
-        }
-
-        curveSnapshot = scratchCurve->setManualCorrectionRange(
-            op.startFrame,
-            op.endFrameExclusive,
-            op.f0Data,
-            op.source,
-            op.parameterSnapshot);
-    }
-
-    // dirtyStartFrame/dirtyEndFrame 是所有 manual ops 的 dirty 帧并集（含端点）。
-    const F0FrameRange affectedRange{dirtyStartFrame,
-                                      dirtyEndFrame >= dirtyStartFrame ? dirtyEndFrame + 1 : dirtyStartFrame};
-    if (!commitEditedContentPitchCorrectionSegments(
-            curveSnapshot->getCorrectionSegments(), affectedRange)) {
-        return false;
-    }
-
-    if (triggerRenderEvent && dirtyEndFrame >= dirtyStartFrame) {
-        listeners_.call([dirtyStartFrame, dirtyEndFrame](Listener& l) {
-            l.pitchCurveEdited(dirtyStartFrame, dirtyEndFrame);
-        });
-    }
-
-    return true;
 }
 
 // ============================================================================

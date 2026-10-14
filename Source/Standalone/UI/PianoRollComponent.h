@@ -404,11 +404,6 @@ private:
 
     bool tryConsumeInitialF0View(ContentKey contentKey);
 
-    bool applyManualCorrectionPatch(const std::vector<PianoRollToolHandler::ManualCorrectionOp>& ops,
-                                    int dirtyStartFrame,
-                                    int dirtyEndFrame,
-                                    bool triggerRenderEvent);
-
     enum class VibratoParam { Depth, Rate };
 
     juce::ScrollBar verticalScrollBar_{ true };
@@ -509,8 +504,6 @@ private:
                                              F0FrameRange affectedRange);
     AutoTuneApplyResult applyAutoSnapToAllNotes(const std::shared_ptr<const EditableContentSnapshot>& contentSnapshot,
                                                 const F0Timeline& f0tl);
-    ContentCommitSnapshot commitEditedContentPitchCorrectionSegments(const std::vector<PitchCorrectionSegment>& segments,
-                                                       F0FrameRange affectedRange);
     bool selectNotesOverlappingFrames(int startFrame, int endFrameExclusive);
     juce::Rectangle<int> getNoteBounds(const Note& note) const;
     juce::Rectangle<int> getNotesBounds(const std::vector<Note>& notes) const;
