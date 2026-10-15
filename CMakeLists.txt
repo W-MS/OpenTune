@@ -1786,6 +1786,16 @@ if(OPENTUNE_BUILD_TESTS)
     endif()
     add_test(NAME Vst3ProcessorStateCodecTests COMMAND OpenTuneVst3StateCodecTests)
 
+    add_executable(OpenTuneVisibleTrackCountTests
+        Tests/VisibleTrackCountTests.cpp
+    )
+    target_include_directories(OpenTuneVisibleTrackCountTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    if(MSVC)
+        target_compile_options(OpenTuneVisibleTrackCountTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME VisibleTrackCountTests COMMAND OpenTuneVisibleTrackCountTests)
+
     # Standalone processor settings codec (OTSS v3 / legacy v2) tests.
     add_executable(OpenTuneStandaloneStateCodecTests
         Tests/StandaloneProcessorStateCodecTests.cpp

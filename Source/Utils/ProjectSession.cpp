@@ -11,6 +11,7 @@
 #include "ProjectPersistence.h"
 #include "LocalizationManager.h"
 #include "TimeCoordinate.h"
+#include "VisibleTrackCount.h"
 #include <set>
 
 namespace OpenTune {
@@ -247,6 +248,7 @@ ProjectSnapshot ProjectSession::captureSnapshot() const
 
     // Selected track/placement for session state
     snap.settings.selectedTrackId = arrangement->getActiveTrackId();
+    snap.settings.visibleTrackCount = arrangement->getVisibleTrackCount();
 
     // Reference bindings
     for (int trackId = 0; trackId < numTracks; ++trackId) {
@@ -637,6 +639,22 @@ Result<void> ProjectSession::commitPreparedOpen(PreparedOpen&& preparedOpen)
     }
 
     arrangement->setActiveTrack(snapshot.settings.selectedTrackId);
+
+    std::vector<LoadedTrackVisibilityHint> visibilityHints;
+    visibilityHints.reserve(snapshot.tracks.size());
+    for (const auto& trackEntry : snapshot.tracks) {
+        LoadedTrackVisibilityHint hint;
+        hint.trackId = trackEntry.trackId;
+        hint.hasPlacements = !trackEntry.placements.empty();
+        hint.mute = trackEntry.mute;
+        hint.solo = trackEntry.solo;
+        hint.gain = trackEntry.gain;
+        visibilityHints.push_back(hint);
+    }
+    arrangement->setVisibleTrackCount(resolveLoadedVisibleTrackCount(
+        snapshot.settings.visibleTrackCount,
+        snapshot.settings.selectedTrackId,
+        visibilityHints));
 
     // Restore reference bindings (不触发analysis)
     bool anyBindingLost = false;

@@ -3263,6 +3263,12 @@ void OpenTuneAudioProcessorEditor::trackHeightChanged(int newHeight)
 void OpenTuneAudioProcessorEditor::visibleTrackCountChanged(int newCount)
 {
     arrangementView_.setVisibleTrackCount(newCount);
+    if (auto* arrangement = processorRef_.getStandaloneArrangement()) {
+        const int previousCount = arrangement->getVisibleTrackCount();
+        arrangement->setVisibleTrackCount(newCount);
+        if (!applyingLoadedProjectUi_ && previousCount != arrangement->getVisibleTrackCount())
+            projectSession_.markDirty();
+    }
 }
 
 void OpenTuneAudioProcessorEditor::trackColorChangeRequested(int trackId)
@@ -3782,6 +3788,8 @@ void OpenTuneAudioProcessorEditor::syncRecentProjectsToMenu()
 
 void OpenTuneAudioProcessorEditor::refreshAllUIFromProject()
 {
+    juce::ScopedValueSetter<bool> applyingProjectUi(applyingLoadedProjectUi_, true);
+
     // Sync track panel with restored arrangement
     syncTrackColorsToPanel();
     for (int i = 0; i < OpenTuneAudioProcessor::MAX_TRACKS; ++i) {
@@ -3789,11 +3797,14 @@ void OpenTuneAudioProcessorEditor::refreshAllUIFromProject()
         trackPanel_.setTrackSolo(i, getStandaloneTrackSolo(processorRef_, i));
         trackPanel_.setTrackVolume(i, getStandaloneTrackVolume(processorRef_, i));
     }
-    const int visibleCount = trackPanel_.getVisibleTrackCount();
-    trackPanel_.setVisibleTrackCount(visibleCount);
 
-    // Sync arrangement view
+    // 轨道头数量存在编曲模型里：新工程按保存值恢复，旧工程按占用轨道推断。
+    int visibleCount = trackPanel_.getVisibleTrackCount();
+    if (auto* arrangement = processorRef_.getStandaloneArrangement())
+        visibleCount = arrangement->getVisibleTrackCount();
+    trackPanel_.setVisibleTrackCount(visibleCount);
     arrangementView_.setVisibleTrackCount(visibleCount);
+    trackPanel_.setActiveTrack(getStandaloneActiveTrack(processorRef_));
 
     // Sync piano roll to current selection
     const int activeTrack = getStandaloneActiveTrack(processorRef_);

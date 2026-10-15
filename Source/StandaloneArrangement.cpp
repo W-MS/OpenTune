@@ -343,6 +343,7 @@ void StandaloneArrangement::clear()
 {
     const juce::ScopedWriteLock lock(stateLock_);
     activeTrackId_ = 0;
+    visibleTrackCount_ = kDefaultVisibleTracks;
     nextPlacementId_ = 1;
 
     for (int trackId = 0; trackId < kTrackCount; ++trackId) {
@@ -1032,6 +1033,19 @@ bool StandaloneArrangement::removeTrackAndShift(int trackId, int visibleCount)
 
     publishPlaybackSnapshotLocked();
     return true;
+}
+
+void StandaloneArrangement::setVisibleTrackCount(int count)
+{
+    const int clamped = juce::jlimit(1, kTrackCount, count);
+    const juce::ScopedWriteLock lock(stateLock_);
+    visibleTrackCount_ = clamped;
+}
+
+int StandaloneArrangement::getVisibleTrackCount() const
+{
+    const juce::ScopedReadLock lock(stateLock_);
+    return visibleTrackCount_;
 }
 
 bool StandaloneArrangement::setTrackColour(int trackId, juce::Colour colour)
