@@ -52,6 +52,8 @@ struct ProjectSettings {
     int timeSignatureDenominator{4};
     int selectedTrackId{0};
     uint64_t selectedPlacementId{0};
+    // 0 = 旧工程未记录可见轨道头数量，加载时按占用轨道推断。
+    int visibleTrackCount{0};
     int activeTrackId{0};
     double scrollX{0.0};
     double scrollY{0.0};

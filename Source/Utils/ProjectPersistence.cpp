@@ -310,6 +310,7 @@ juce::ValueTree ProjectPersistence::settingsToValueTree(const ProjectSettings& s
     tree.setProperty("zoomLevel", settings.zoomLevel, nullptr);
     tree.setProperty("verticalZoom", settings.verticalZoom, nullptr);
     tree.setProperty("timelineOriginSeconds", settings.timelineOriginSeconds, nullptr);
+    tree.setProperty("visibleTrackCount", settings.visibleTrackCount, nullptr);
     return tree;
 }
 
@@ -328,6 +329,7 @@ ProjectSettings ProjectPersistence::settingsFromValueTree(const juce::ValueTree&
     s.zoomLevel = tree.getProperty("zoomLevel", 1.0);
     s.verticalZoom = tree.getProperty("verticalZoom", 1.0);
     s.timelineOriginSeconds = tree.getProperty("timelineOriginSeconds", 0.0);
+    s.visibleTrackCount = static_cast<int>(tree.getProperty("visibleTrackCount", 0));
     return s;
 }
 

@@ -23,7 +23,7 @@ namespace OpenTune {
 // 轨道面板常量
 static constexpr int TRACK_PANEL_WIDTH = 120; // 紧凑模式宽度
 static constexpr int MAX_TRACKS = MaxTracks;    // 最大轨道数量
-static constexpr int DEFAULT_VISIBLE_TRACKS = 2; // 默认显示轨道数量
+static constexpr int DEFAULT_VISIBLE_TRACKS = kDefaultVisibleTracks; // 默认显示轨道数量
 
     // 环形LED电平表 - 包裹在音量旋钮外圈
     class CircularLevelMeter : public juce::Component, private juce::Timer

@@ -127,6 +127,10 @@ public:
 
     bool setTrackColour(int trackId, juce::Colour colour);
     juce::Colour getTrackColour(int trackId) const;
+
+    // 当前会话里用户可见的轨道头数量。播放不消费该值，只用于工程恢复。
+    void setVisibleTrackCount(int count);
+    int getVisibleTrackCount() const;
     float getTrackRmsDb(int trackId) const;
     bool setTrackRmsDb(int trackId, float rmsDb);
 
@@ -204,6 +208,7 @@ private:
     std::array<Track, kTrackCount> tracks_;
     Language language_ = Language::Chinese;
     int activeTrackId_{0};
+    int visibleTrackCount_{kDefaultVisibleTracks};
     uint64_t nextPlaybackEpoch_{1};
     uint64_t nextPlacementId_{1};
 

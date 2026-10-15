@@ -350,6 +350,8 @@ private:
     juce::ThreadPool projectWorkerPool_{1};
     // Message-thread only; includes the posted completion and direct continuation.
     bool projectOperationBusy_{false};
+    // 加载工程回写轨道头时，避免把恢复动作记成新的未保存修改。
+    bool applyingLoadedProjectUi_{false};
     // Export worker thread management (independent: export may be long-running)
     std::thread exportWorker_;
     // Export running flag. NOT derivable from exportWorker_.joinable(): a

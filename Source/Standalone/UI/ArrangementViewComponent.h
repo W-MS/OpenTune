@@ -28,6 +28,7 @@
 #include "../Utils/ZoomSensitivityConfig.h"
 #include "../Utils/KeyShortcutConfig.h"
 #include "../../Utils/TimelineDisplayMode.h"
+#include "../../Utils/TrackConstants.h"
 
 namespace OpenTune {
 
@@ -273,7 +274,7 @@ private:
 
     juce::Colour playheadColour_{UIColors::playhead};
     int verticalScrollOffset_{0};
-    int visibleTrackCount_{2};  // synced from TrackPanel via PluginEditor
+    int visibleTrackCount_{kDefaultVisibleTracks};  // synced from TrackPanel via PluginEditor
 
     struct ContentMetrics {
         uint64_t revision = 0;
