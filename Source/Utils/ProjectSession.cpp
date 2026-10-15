@@ -737,7 +737,8 @@ ProjectSession::SaveTask ProjectSession::prepareSave(const juce::File& targetFil
     task.snapshot = captureSnapshot();
     task.snapshot.header.projectName = targetFile.getFileNameWithoutExtension();
     task.targetFile = targetFile;
-    task.mediaDirectory = targetFile.getParentDirectory().getChildFile(kMediaDirectoryName);
+    task.mediaDirectory = targetFile.getParentDirectory().getChildFile(
+        targetFile.getFileNameWithoutExtension() + "_Media");
     task.language = LocalizationManager::getInstance().resolveLanguage();
     return task;
 }
@@ -816,8 +817,13 @@ Result<void> ProjectSession::copyMediaToProjectDirectory(ProjectSnapshot& snapsh
         const auto destFileName = generateMediaFileName(srcEntry);
         const auto destFile = mediaDir.getChildFile(destFileName);
 
-        if (!destFile.existsAsFile() || sourceFile.getLastModificationTime() > destFile.getLastModificationTime()) {
-            if (!sourceFile.copyFileTo(destFile)) {
+        if (sourceFile != destFile) {
+            juce::TemporaryFile temporaryFile(destFile);
+            const auto& tempFile = temporaryFile.getFile();
+            const auto copied = sourceFile.copyFileTo(tempFile);
+            const auto replaced = copied && temporaryFile.overwriteTargetFileWithTemporary();
+
+            if (!replaced) {
                 return Result<void>::failure(
                     Error::fromCode(ErrorCode::UnknownError,
                         Loc::format(Loc::get(language, Loc::Keys::kProjectMediaCopyFailed),
@@ -826,7 +832,7 @@ Result<void> ProjectSession::copyMediaToProjectDirectory(ProjectSnapshot& snapsh
             }
         }
 
-        srcEntry.relativeMediaPath = juce::String(kMediaDirectoryName) + "/" + destFileName;
+        srcEntry.relativeMediaPath = mediaDir.getFileName() + "/" + destFileName;
         srcEntry.fileSizeBytes = destFile.getSize();
     }
 
