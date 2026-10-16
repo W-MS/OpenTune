@@ -110,6 +110,9 @@ OpenTuneDocumentController::~OpenTuneDocumentController()
     }
     playbackRenderers_.clear();
 
+    if (contentRenderService_)
+        contentRenderService_->clearAll();
+
     ProcessRenderRuntime::getInstance().releaseOwner();
 }
 

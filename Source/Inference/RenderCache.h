@@ -18,7 +18,7 @@ namespace OpenTune {
 
 class RenderCache {
 public:
-    static constexpr size_t kDefaultRenderCachePcmLimitBytes = static_cast<size_t>(256) * 1024 * 1024;
+    static constexpr size_t kDefaultRenderCachePcmLimitBytes = static_cast<size_t>(6) * 1024 * 1024 * 1024;
     static constexpr double kSampleRate = TimeCoordinate::kRenderSampleRate;
 
     struct Chunk {
@@ -38,7 +38,8 @@ public:
         uint64_t desiredRevision{0};    // 目标版本（用户最新编辑产生）
         uint64_t runningRevision{0};   // 当前正在运行的 revision（在 Pending→Running 时记录）
         uint64_t publishedRevision{0};  // 已成功发布的版本
-        uint64_t lastRequestedContentRevision{0}; // 上次 reconcile 时的内容版本，用于去重
+        uint64_t lastRequestedContentRevision{0}; // 当前 snapshot 可见的内容版本
+        uint64_t audioRevision{0}; // 此 chunk PCM 的内容版本
     };
 
     // 调度状态管理 API
@@ -158,7 +159,8 @@ private:
         int64_t startSample{0};
         int64_t endSampleExclusive{0};
         std::shared_ptr<const std::vector<float>> audio;
-        uint64_t contentRevision{0};    // 生成该 chunk 音频时的 snapshot contentRevision（唯一复用/覆盖版本键）
+        uint64_t contentRevision{0}; // 当前 snapshot 可见版本
+        uint64_t audioRevision{0};   // 该 chunk PCM 的稳定版本
     };
 
     struct PublishedRenderSnapshot {
@@ -172,7 +174,8 @@ private:
         int64_t startSample{0};
         int64_t endSampleExclusive{0};
         std::shared_ptr<const std::vector<float>> audio;
-        uint64_t sourceRevision{0};  // 该 prepared 结果所基于的 canonical contentRevision
+        uint64_t audioRevision{0};
+        uint64_t sourceRevision{0};  // 当前 canonical chunk 可见的 contentRevision
     };
 
     struct PublishedPreparedSnapshot {
@@ -183,6 +186,7 @@ private:
     mutable juce::SpinLock lock_;
     std::map<int64_t, Chunk> chunks_;
     std::set<int64_t> pendingChunks_;
+    uint64_t audioRevisionCounter_{0};
     uint64_t notifiedFailureContentRevision_{0};
     bool hasNotifiedFailureContentRevision_{false};
 

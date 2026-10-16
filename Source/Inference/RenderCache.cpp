@@ -174,6 +174,7 @@ void RenderCache::publishLocked(
         pc.endSampleExclusive = chunk.endSampleExclusive;
         pc.audio = chunk.audio;
         pc.contentRevision = chunk.lastRequestedContentRevision;
+        pc.audioRevision = chunk.audioRevision;
         snapshot->chunks.push_back(pc);
     }
     auto oldSnapshot = std::atomic_load(&publishedSnapshot_);
@@ -241,23 +242,25 @@ bool RenderCache::rebuildPrepared(double requestedSampleRate)
             pc.startSample = prepStart;
             pc.endSampleExclusive = prepEnd;
 
-            // 增量复用：canonical 内容未变（同 span、同 contentRevision）时直接共享
+            // 增量复用：canonical PCM 未变（同 span、同 audioRevision）时直接共享
             // 旧 prepared PCM，跳过 r8brain 重采样。条件从严：任何不匹配都重采样，
             // 宁可重做不可复用过期音频。
             auto prevIt = previous.find(prepStart);
             if (!aliasCanonical
                 && prevIt != previous.end()
                 && prevIt->second->endSampleExclusive == prepEnd
-                && prevIt->second->sourceRevision == chunk.contentRevision)
+                && prevIt->second->audioRevision == chunk.audioRevision)
             {
                 pc.audio = prevIt->second->audio;
-                pc.sourceRevision = prevIt->second->sourceRevision;
+                pc.audioRevision = chunk.audioRevision;
+                pc.sourceRevision = chunk.contentRevision;
                 prepSnap->chunks.push_back(std::move(pc));
                 continue;
             }
 
             if (aliasCanonical) {
                 pc.audio = chunk.audio;
+                pc.audioRevision = chunk.audioRevision;
                 pc.sourceRevision = chunk.contentRevision;
             } else {
                 const int outputLength = static_cast<int>(prepEnd - prepStart);
@@ -283,6 +286,7 @@ bool RenderCache::rebuildPrepared(double requestedSampleRate)
                 pc.audio = makeTrackedPcm(std::move(resampled), reservedBytes);
                 if (!pc.audio)
                     return false;
+                pc.audioRevision = chunk.audioRevision;
                 pc.sourceRevision = chunk.contentRevision;
             }
 
@@ -630,6 +634,7 @@ RenderCache::ReconcileResult RenderCache::reconcileFullPlanAndRequest(
                     {
                         ++newChunk.desiredRevision;
                         newChunk.lastRequestedContentRevision = contentRevision;
+                        newChunk.audioRevision = ++audioRevisionCounter_;
                         if (newChunk.status == Chunk::Status::Pending)
                         {
                             newPendingChunks.insert(planned.startSample);
@@ -667,6 +672,7 @@ RenderCache::ReconcileResult RenderCache::reconcileFullPlanAndRequest(
                 newChunk.publishedRevision = 0;
                 newChunk.audio = nullptr;
                 newChunk.lastRequestedContentRevision = contentRevision;
+                newChunk.audioRevision = ++audioRevisionCounter_;
                 newPendingChunks.insert(planned.startSample);
                 result.stateChanged = true;
             }

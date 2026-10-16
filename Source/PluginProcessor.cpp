@@ -1052,7 +1052,10 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
         bindings.retireSegment = [this](ContentKey segmentContentKey) {
             // CaptureSegmentContent owns content; CRS cache is derived.
             if (contentRenderService_) {
+                contentRenderService_->removePlaybackSource(segmentContentKey);
                 contentRenderService_->removeRenderCache(segmentContentKey);
+                contentRenderService_->removeStretcher(segmentContentKey);
+                contentRenderService_->getTimeStretchCache().invalidate(segmentContentKey);
             }
         };
 
