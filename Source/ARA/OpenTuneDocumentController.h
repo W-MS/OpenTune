@@ -13,6 +13,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <string>
 
 #include "AudioModification.h"
 #include "AudioSource.h"
@@ -20,6 +21,7 @@
 #include "../Runtime/ProcessRenderRuntime.h"
 #include "../Services/F0ExtractionService.h"
 #include "../Content/ContentKey.h"
+#include "../Content/OriginalF0FailureEvent.h"
 #include "../Utils/PlayHeadState.h"
 #include "PlaybackRegion.h"
 
@@ -82,6 +84,8 @@ public:
 
     /** 读取 OriginalF0 状态 */
     OriginalF0State readOriginalF0State(ContentKey key) const;
+    std::string readOriginalF0FailureReason(ContentKey key) const;
+    std::deque<OriginalF0FailureEvent> takeOriginalF0FailureEvents();
 
     /** 读取调性检测结果 */
     DetectedKey readDetectedKey(ContentKey key) const;
@@ -222,6 +226,7 @@ private:
         std::deque<F0CompletionRecord> pending;
     };
     std::shared_ptr<CompletionGate> completionGate_{std::make_shared<CompletionGate>()};
+    std::deque<OriginalF0FailureEvent> pendingF0FailureEvents_;
     std::shared_ptr<ProcessRenderRuntime::CompletionGate> renderCompletionGate_{
         std::make_shared<ProcessRenderRuntime::CompletionGate>()};
     uint64_t nextWrapperGeneration_{1};
@@ -270,6 +275,7 @@ public:
     bool applyDetectedKeyToModification(const ContentKey& key, const DetectedKey& detectedKey);
     bool applyReferenceFeaturesToModification(const ContentKey& key, const ReferenceFeatureSet& features);
     bool applyOriginalF0StateToModification(const ContentKey& key, const OriginalF0State& state);
+    bool applyOriginalF0FailureReasonToModification(const ContentKey& key, std::string reason);
 
 private:
     PlaybackRegion* findPlaybackRegion(juce::ARAPlaybackRegion* playbackRegion);

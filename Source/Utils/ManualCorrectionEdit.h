@@ -1,0 +1,62 @@
+#pragma once
+
+#include "AudioEditingScheme.h"
+#include "Content/ContentEditCommands.h"
+#include <functional>
+#include <vector>
+
+namespace OpenTune {
+
+struct ManualCorrectionOp
+{
+    int startFrame = 0;
+    int endFrameExclusive = 0;
+    std::vector<float> f0Data;
+    PitchCorrectionSegment::Source source = PitchCorrectionSegment::Source::HandDraw;
+    PitchCorrectionSegment::ParameterSnapshot parameterSnapshot;
+};
+
+using ManualCorrectionFrameQuery = std::function<float(int)>;
+
+struct ManualCorrectionLogLineFit
+{
+    float intercept = 0.0f;
+    float slope = 0.0f;
+};
+
+enum class ManualCorrectionEditStatus
+{
+    Applied,
+    Failed
+};
+
+struct ManualCorrectionEditResult
+{
+    ManualCorrectionEditStatus status = ManualCorrectionEditStatus::Failed;
+    ContentCommitSnapshot contentSnapshot;
+};
+
+std::vector<ManualCorrectionOp> planManualCorrectionOps(
+    AudioEditingScheme::Scheme scheme,
+    const std::vector<float>& originalF0,
+    AudioEditingScheme::FrameRange requestedRange,
+    const ManualCorrectionFrameQuery& valueForFrame,
+    PitchCorrectionSegment::Source source,
+    PitchCorrectionSegment::ParameterSnapshot parameterSnapshot = {});
+
+float interpolateLogF0(float leftF0, float rightF0, float t);
+
+ManualCorrectionLogLineFit fitOriginalF0LogTrend(const std::vector<float>& originalF0,
+                                                int startFrame,
+                                                int endFrameExclusive);
+
+float lineAnchorF0WithSourceShape(const std::vector<float>& originalF0,
+                                  int frame,
+                                  int startFrame,
+                                  int endFrameExclusive,
+                                  float leftTargetF0,
+                                  float rightTargetF0,
+                                  float retuneSpeed,
+                                  ManualCorrectionLogLineFit sourceTrend);
+
+} // namespace OpenTune

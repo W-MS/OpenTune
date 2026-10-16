@@ -2,31 +2,34 @@
 
 namespace OpenTune {
 
-ScissorsUndoAction::ScissorsUndoAction(juce::String description,
+ScissorsUndoAction::ScissorsUndoAction(std::shared_ptr<ContentEditCommands> commands,
+                                       ContentKey key,
+                                       juce::String description,
                                        std::vector<Note> beforeNotes,
-                                       std::vector<Note> afterNotes,
-                                       std::function<bool(const std::vector<Note>&)> applyNotes,
-                                       std::function<void()> republishPlaybackSource)
-    : description_(std::move(description))
+                                       std::vector<Note> afterNotes)
+    : commands_(std::move(commands))
+    , contentKey_(key)
+    , description_(std::move(description))
     , beforeNotes_(std::move(beforeNotes))
     , afterNotes_(std::move(afterNotes))
-    , applyNotes_(std::move(applyNotes))
-    , republishPlaybackSource_(std::move(republishPlaybackSource))
 {
+}
+
+void ScissorsUndoAction::applyNotes(const std::vector<Note>& notes)
+{
+    if (!commands_->replaceContentNotesForFullMutation(contentKey_, notes))
+        return;
+    commands_->republishPlaybackSource(contentKey_);
 }
 
 void ScissorsUndoAction::undo()
 {
-    applyNotes_(beforeNotes_);
-    if (republishPlaybackSource_)
-        republishPlaybackSource_();
+    applyNotes(beforeNotes_);
 }
 
 void ScissorsUndoAction::redo()
 {
-    applyNotes_(afterNotes_);
-    if (republishPlaybackSource_)
-        republishPlaybackSource_();
+    applyNotes(afterNotes_);
 }
 
 } // namespace OpenTune

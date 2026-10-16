@@ -11,6 +11,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <string>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -167,7 +168,8 @@ public:
      *  transitions segment lifecycle to Failed (content preserved, not deleted). */
     bool commitSegmentF0Result(ContentKey segmentContentKey,
                                std::shared_ptr<PitchCurve> pitchCurve,
-                               OriginalF0State state);
+                               OriginalF0State state,
+                               std::string failureReason = {});
     bool applyAutoTuneGeneratedNotes(ContentKey segmentContentKey,
                                      std::vector<Note> notes,
                                      std::shared_ptr<PitchCurve> pitchCurve);

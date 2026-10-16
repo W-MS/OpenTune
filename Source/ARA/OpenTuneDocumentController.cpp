@@ -110,6 +110,9 @@ OpenTuneDocumentController::~OpenTuneDocumentController()
     }
     playbackRenderers_.clear();
 
+    if (contentRenderService_)
+        contentRenderService_->clearAll();
+
     ProcessRenderRuntime::getInstance().releaseOwner();
 }
 
@@ -954,6 +957,7 @@ OpenTuneDocumentController::getFocusedEditorPlaybackRegionProjection() const
 int OpenTuneDocumentController::requestReadAudioForPlaybackRegion(
     juce::ARAPlaybackRegion* playbackRegion)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     if (playbackRegion == nullptr)
         return -1;
 
@@ -968,8 +972,24 @@ int OpenTuneDocumentController::requestReadAudioForPlaybackRegion(
     auto* source = findAudioSource(modification->audioModification != nullptr
                                        ? modification->audioModification->getAudioSource()
                                        : nullptr);
+    if (source == nullptr || !source->getShape().isValid())
+    {
+        if (modification->hasContentState())
+        {
+            const auto reason = source == nullptr
+                ? std::string("ARA Read could not resolve its audio source")
+                : "ARA Read audio source shape is invalid (channels="
+                    + std::to_string(source->getShape().numChannels) + ", samples="
+                    + std::to_string(source->getShape().numSamples) + ", sampleRate="
+                    + std::to_string(source->getShape().sourceSampleRate) + ")";
+            modification->birthState = AudioModificationBirthState::Failed;
+            modification->applyOriginalF0State(OriginalF0State::Failed);
+            applyOriginalF0FailureReasonToModification(modification->contentKey(), reason);
+        }
+        return -1;
+    }
     const auto currentStamp = makeF0InputStamp(
-        source != nullptr ? *source : AudioSource{},
+        *source,
         *modification);
 
     const bool hasValidF0 = modification->hasContentState()
@@ -1063,6 +1083,7 @@ void OpenTuneDocumentController::requestReadAudioForPlaybackRegionAsync(
     juce::ARAPlaybackRegion* playbackRegion,
     std::function<void(int)> completionCallback)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     // ARA SDK requires DocumentController operations on main thread.
     // This method now executes synchronously to comply with ARA thread constraints.
     // Callers should display a loading overlay before calling if UI responsiveness is needed.
@@ -1074,6 +1095,7 @@ void OpenTuneDocumentController::requestReadAudioForPlaybackRegionAsync(
 void OpenTuneDocumentController::setEditorViewSelectionPlaybackRegions(
     std::vector<juce::ARAPlaybackRegion*> playbackRegions)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     editorSelectionPlaybackRegions_ = std::move(playbackRegions);
     reconcileEditorSelectionPlaybackRegions();
 }
@@ -1189,6 +1211,7 @@ void OpenTuneDocumentController::didAddAudioSourceToDocument(juce::ARADocument* 
 
 void OpenTuneDocumentController::didUpdateAudioSourceProperties(juce::ARAAudioSource* audioSource)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto& source = ensureAudioSource(audioSource);
     source.updateFrom(audioSource);
     for (auto& modification : audioModifications_)
@@ -1201,6 +1224,7 @@ void OpenTuneDocumentController::didUpdateAudioSourceProperties(juce::ARAAudioSo
 void OpenTuneDocumentController::doUpdateAudioSourceContent(juce::ARAAudioSource* audioSource,
                                                             juce::ARAContentUpdateScopes scopeFlags)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     if (auto* source = findAudioSource(audioSource))
     {
         // Per ARA2 spec (ARAInterface.h:1145-1151):
@@ -1238,12 +1262,14 @@ void OpenTuneDocumentController::doUpdateAudioSourceContent(juce::ARAAudioSource
 void OpenTuneDocumentController::willEnableAudioSourceSamplesAccess(juce::ARAAudioSource* audioSource,
                                                                     bool enable)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     ensureAudioSource(audioSource).setSampleAccessEnabled(enable);
 }
 
 void OpenTuneDocumentController::didEnableAudioSourceSamplesAccess(juce::ARAAudioSource* audioSource,
                                                                      bool enable)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto& source = ensureAudioSource(audioSource);
     source.setSampleAccessEnabled(enable);
     // ARA Audio Source Management callback 内建立 HostAudioReader lease；
@@ -1808,6 +1834,7 @@ bool OpenTuneDocumentController::publishPlaybackReadSourceForModification(
     AudioModification& modification,
     std::shared_ptr<const juce::AudioBuffer<float>> audioBuffer)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     if (contentRenderService_ == nullptr)
         return false;
 
@@ -1833,6 +1860,7 @@ bool OpenTuneDocumentController::publishPlaybackReadSourceForModification(
 
 void OpenTuneDocumentController::readRestoredAudio(const AudioSource* enabledSource)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     // archive 恢复且已有有效 OriginalF0 的内容：自动重建 PCM，用户无需 Read。
     // WaitingForSource 由现有生命周期保证 content 存在，直接读 *mod.content。
     // 新插入插件无有效 F0，自动扫描自然跳过。
@@ -1879,6 +1907,7 @@ void OpenTuneDocumentController::readRestoredAudio(const AudioSource* enabledSou
 
 OriginalF0InputStamp OpenTuneDocumentController::makeF0InputStamp(const AudioSource& source, const AudioModification& modification)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     OriginalF0InputStamp stamp;
     stamp.sourcePersistentId = source.getIdentity().persistentId;
     stamp.sourceSampleGeneration = source.getSampleContentGeneration();
@@ -1895,6 +1924,7 @@ OriginalF0InputStamp OpenTuneDocumentController::makeF0InputStamp(const AudioSou
 
 bool OpenTuneDocumentController::birthContentForModification(AudioModification& modification)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     // F0 #B.4: 每次 birth 开始前取消该 content 的旧 F0 request
     contentF0ExtractionService_->cancel(F0RequestKey{modification.contentKey()});
 
@@ -1904,8 +1934,20 @@ bool OpenTuneDocumentController::birthContentForModification(AudioModification& 
         return false;
 
     auto& content = *modification.content;
-    if (content.sourceWindow.sourcePersistentId.isEmpty() || !content.sourceWindow.isValid())
+    ++modification.birthRevision;
+    const auto failBirth = [this, &modification](std::string reason) {
+        modification.birthState = AudioModificationBirthState::Failed;
+        modification.applyOriginalF0State(OriginalF0State::Failed);
+        applyOriginalF0FailureReasonToModification(
+            modification.contentKey(), std::move(reason));
         return false;
+    };
+
+    if (content.sourceWindow.sourcePersistentId.isEmpty() || !content.sourceWindow.isValid())
+        return failBirth("ARA source window is invalid (persistentId="
+            + content.sourceWindow.sourcePersistentId.toStdString()
+            + ", startSeconds=" + std::to_string(content.sourceWindow.sourceStartSeconds)
+            + ", endSeconds=" + std::to_string(content.sourceWindow.sourceEndSeconds) + ")");
 
     auto* source = findAudioSource(content.sourceWindow.sourcePersistentId);
     if (source == nullptr)
@@ -1914,15 +1956,25 @@ bool OpenTuneDocumentController::birthContentForModification(AudioModification& 
         return false;
     }
 
-    // reader lease 由 didEnableAudioSourceSamplesAccess（ARA Audio Source Management
-    // callback）建立，这里只消费，不在非实时路径创建。
-    if (!source->canReadSamples())
+    const auto& sourceShape = source->getShape();
+    if (!sourceShape.isValid())
+    {
+        return failBirth("ARA audio source shape is invalid (channels="
+            + std::to_string(sourceShape.numChannels) + ", samples="
+            + std::to_string(sourceShape.numSamples) + ", sampleRate="
+            + std::to_string(sourceShape.sourceSampleRate) + ")");
+    }
+
+    if (!source->hasSampleAccess())
     {
         modification.birthState = AudioModificationBirthState::WaitingForSource;
         return false;
     }
 
-    ++modification.birthRevision;
+    // Reader lease is created by didEnableAudioSourceSamplesAccess.
+    auto readerLease = source->shareReaderLease();
+    if (readerLease == nullptr)
+        return failBirth("ARA host audio reader is unavailable while sample access is enabled");
 
     // 若已有 valid F0（恢复路径），跳过重复提取，避免新旧重叠。
     // 验证 pitchCurve 实际包含 F0 数据，防止空 pitchCurve 误判为已提取。
@@ -1936,14 +1988,6 @@ bool OpenTuneDocumentController::birthContentForModification(AudioModification& 
         && content.analysis.pitchCurve->hasOriginalF0Data();
 
     // 1. Determine source window from AudioSource
-    auto readerLease = source->shareReaderLease();
-    if (readerLease == nullptr || source->getShape().numChannels <= 0
-        || source->getShape().numSamples <= 0 || source->getShape().sourceSampleRate <= 0.0)
-    {
-        modification.birthState = AudioModificationBirthState::Failed;
-        return false;
-    }
-
     const auto sourceWindow = content.sourceWindow;
 
     const double sourceSampleRate = source->getShape().sourceSampleRate;
@@ -1961,8 +2005,10 @@ bool OpenTuneDocumentController::birthContentForModification(AudioModification& 
 
     if (windowSamples <= 0)
     {
-        modification.birthState = AudioModificationBirthState::Failed;
-        return false;
+        return failBirth("ARA source window has no readable samples (startSample="
+            + std::to_string(sourceStartSample) + ", endSample="
+            + std::to_string(sourceEndSample) + ", samples="
+            + std::to_string(windowSamples) + ")");
     }
 
     juce::AudioBuffer<float> playableAccum(numChannels, static_cast<int>(windowSamples));
@@ -1984,11 +2030,13 @@ bool OpenTuneDocumentController::birthContentForModification(AudioModification& 
                 channelPointers[static_cast<size_t>(ch)] = playableAccum.getWritePointer(ch, accumOffset);
 
             if (!readerLease->readAudioSamples(readOffset,
-                                                  static_cast<int>(chunkSamples),
-                                                  channelPointers.data()))
+                                                   static_cast<int>(chunkSamples),
+                                                   channelPointers.data()))
             {
-                modification.birthState = AudioModificationBirthState::Failed;
-                return false;
+                return failBirth("ARA host audio reader failed (startSample="
+                    + std::to_string(readOffset) + ", samples="
+                    + std::to_string(chunkSamples) + ", channels="
+                    + std::to_string(numChannels) + ")");
             }
 
             readOffset += chunkSamples;
@@ -2049,8 +2097,8 @@ bool OpenTuneDocumentController::birthContentForModification(AudioModification& 
     // not source audio truth. Original PCM remains in AudioSource.
     if (!publishPlaybackReadSourceForModification(modification, storedAudioBuffer))
     {
-        modification.birthState = AudioModificationBirthState::Failed;
-        return false;
+        return failBirth("ARA playback read source publication failed for contentKey="
+            + std::to_string(modification.contentKey().objectId));
     }
 
     // 8. Set modification state and notify ARA host
@@ -2108,7 +2156,7 @@ bool OpenTuneDocumentController::scheduleAsyncF0Extraction(
     jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
 
     // Pre-check failures: mark matching content Failed so Extracting is not permanent
-    auto markFailedIfCurrentBirth = [&](uint64_t birth) {
+    auto markFailedIfCurrentBirth = [&](uint64_t birth, const std::string& reason) {
         if (auto* m = findAudioModificationByContentKey(key))
         {
             if (m->birthRevision == birth
@@ -2116,9 +2164,7 @@ bool OpenTuneDocumentController::scheduleAsyncF0Extraction(
                 && m->persistentId == persistentId)
             {
                 m->applyOriginalF0State(OriginalF0State::Failed);
-                if (m->audioModification != nullptr)
-                    m->audioModification->notifyContentChanged(
-                        juce::ARAContentUpdateScopes::tuningIsAffected(), true);
+                applyOriginalF0FailureReasonToModification(key, reason);
             }
         }
     };
@@ -2130,13 +2176,13 @@ bool OpenTuneDocumentController::scheduleAsyncF0Extraction(
 
     if (!contentF0ExtractionService_)
     {
-        markFailedIfCurrentBirth(birthRevision);
+        markFailedIfCurrentBirth(birthRevision, "ARA F0 extraction service is unavailable");
         return false;
     }
 
     if (contentRenderService_ == nullptr)
     {
-        markFailedIfCurrentBirth(birthRevision);
+        markFailedIfCurrentBirth(birthRevision, "ARA content render service is unavailable for F0 extraction");
         return false;
     }
 
@@ -2145,29 +2191,44 @@ bool OpenTuneDocumentController::scheduleAsyncF0Extraction(
         [data = std::move(channel0Data), sourceSampleRate, birthRevision](const std::shared_ptr<F0RunOwnerState>& runOwnerState) mutable
         {
             if (data.empty())
-                return F0ExtractionService::Result{};
+            {
+                F0ExtractionService::Result failed;
+                failed.errorMessage = "F0 extraction input audio is empty";
+                return failed;
+            }
 
             // Lazy-initialize ProcessF0Runtime and resolve F0 service inside the worker
             // thread (same pattern as PluginProcessor capture/requestContentRefresh).
             auto& f0Runtime = ProcessF0Runtime::getInstance();
+            std::string initializationError;
             if (!f0Runtime.isReady())
-                f0Runtime.initialize(ModelPathResolver::getModelsDirectory());
+                f0Runtime.initialize(ModelPathResolver::getModelsDirectory(), &initializationError);
             auto f0Svc = f0Runtime.getF0Service();
             if (!f0Svc)
             {
                 AppLogger::error("ARA-F0: worker lazy-init model Failed — F0 service unavailable (birthRev="
                     + juce::String(static_cast<juce::int64>(birthRevision)) + ")");
                 F0ExtractionService::Result failed;
-                failed.errorMessage = "ara_no_f0_service";
+                failed.errorMessage = initializationError.empty()
+                    ? "F0 runtime has no inference service after initialization"
+                    : initializationError;
                 return failed;
             }
 
             auto extraction = f0Svc->extractF0(data.data(), data.size(),
                                                 static_cast<int>(sourceSampleRate), runOwnerState);
 
-            if (!extraction.ok() || extraction.value().empty())
+            if (!extraction.ok())
             {
-                return F0ExtractionService::Result{};
+                F0ExtractionService::Result failed;
+                failed.errorMessage = extraction.error().fullMessage();
+                return failed;
+            }
+            if (extraction.value().empty())
+            {
+                F0ExtractionService::Result failed;
+                failed.errorMessage = "F0 inference returned an empty result";
+                return failed;
             }
 
             const auto& f0Data = extraction.value();
@@ -2212,7 +2273,14 @@ bool OpenTuneDocumentController::scheduleAsyncF0Extraction(
     // Non-Accepted: set Failed if current modification still matches this submission
     if (submitResult != F0ExtractionService::SubmitResult::Accepted)
     {
-        markFailedIfCurrentBirth(birthRevision);
+        if (submitResult == F0ExtractionService::SubmitResult::AlreadyInProgress)
+            return true;
+        if (submitResult == F0ExtractionService::SubmitResult::ShuttingDown)
+            return false;
+        const char* reason = submitResult == F0ExtractionService::SubmitResult::QueueFull
+            ? "F0 extraction queue is full"
+            : "F0 extraction submission was rejected: invalid task";
+        markFailedIfCurrentBirth(birthRevision, reason);
         return false;
     }
 
@@ -2254,14 +2322,15 @@ void OpenTuneDocumentController::commitF0Completion(F0CompletionRecord record)
     auto* hostModificationToNotify = mod->audioModification;
     if (!record.result.success || record.result.f0.empty())
     {
+        const std::string reason = !record.result.errorMessage.empty()
+            ? record.result.errorMessage
+            : record.result.f0.empty()
+                ? "F0 extraction completed without any frames"
+                : "F0 extraction failed without an error detail";
         mod->applyOriginalF0State(OriginalF0State::Failed);
+        applyOriginalF0FailureReasonToModification(record.key, reason);
         AppLogger::error("ARA-F0: extraction failed reason="
-            + (record.result.errorMessage.empty()
-                ? juce::String("no_data_or_unvoiced")
-                : juce::String(record.result.errorMessage)));
-        if (hostModificationToNotify != nullptr)
-            hostModificationToNotify->notifyContentChanged(
-                juce::ARAContentUpdateScopes::tuningIsAffected(), true);
+            + juce::String(reason));
         return;
     }
 
@@ -2311,6 +2380,11 @@ void OpenTuneDocumentController::installDocumentRenderExecution()
             OpenTuneDocumentController::processDocumentRenderJob(
                 std::move(contentRenderService), job, renderGate);
     };
+    lease.renderFailureCallback = [renderGate](const RenderJob& job, const juce::String& reason) {
+        ProcessRenderRuntime::notifyApplicationRenderFailure(
+            job.contentKey, job.contentRevision, job.targetRevision,
+            reason, job.renderCache, renderGate);
+    };
 
     contentRenderService_->attachExecutionLease(std::move(lease));
 }
@@ -2323,6 +2397,9 @@ void OpenTuneDocumentController::processDocumentRenderJob(
     if (job.renderCache == nullptr)
     {
         AppLogger::error("ARA-DIAG: render job dropped without cache");
+        ProcessRenderRuntime::notifyApplicationRenderFailure(
+            job.contentKey, job.contentRevision, job.targetRevision,
+            "ARA render job has no RenderCache", {}, completionGate);
         return;
     }
 
@@ -2331,15 +2408,19 @@ void OpenTuneDocumentController::processDocumentRenderJob(
         AppLogger::error("ARA-DIAG: render job failed without content snapshot");
         if (job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision))
             ProcessRenderRuntime::notifyApplicationRenderFailure(
-                job.contentKey, job.targetRevision, "Render job has no content snapshot");
+                job.contentKey, job.contentRevision, job.targetRevision,
+                "Render job has no content snapshot",
+                job.renderCache, completionGate);
         return;
     }
 
     ProcessRenderRuntime::CompletionContext completion;
     completion.gate = std::move(completionGate);
-    completion.applicationFailure = [](ContentKey key, uint64_t revision,
-                                       const juce::String& reason) {
-        ProcessRenderRuntime::notifyApplicationRenderFailure(key, revision, reason);
+    completion.applicationFailure = [gate = completion.gate](
+        ContentKey key, uint64_t contentRevision, uint64_t targetRevision,
+        const juce::String& reason, std::shared_ptr<RenderCache> renderCache) {
+        ProcessRenderRuntime::notifyApplicationRenderFailure(
+            key, contentRevision, targetRevision, reason, std::move(renderCache), gate);
     };
     ProcessRenderRuntime::getInstance().processChunkRenderJob(
         std::move(contentRenderService), job,
@@ -2348,6 +2429,7 @@ void OpenTuneDocumentController::processDocumentRenderJob(
 
 std::shared_ptr<const EditableContentSnapshot> OpenTuneDocumentController::snapshotAudioModification(ContentKey key) const
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState())
         return nullptr;
@@ -2410,6 +2492,7 @@ void OpenTuneDocumentController::requestModificationRenderSamples(
     job.endSampleExclusive = endSampleExclusive;
     job.renderCache = contentRenderService_->getOrCreateRenderCache(key);
     job.contentSnapshot = std::move(snapshot);
+    job.contentRevision = job.contentSnapshot->contentRevision;
 
     contentRenderService_->enqueueRender(std::move(job));
 }
@@ -2699,6 +2782,7 @@ std::shared_ptr<const juce::AudioBuffer<float>> OpenTuneDocumentController::read
 
 std::shared_ptr<const PitchCurveSnapshot> OpenTuneDocumentController::readPitchCurve(ContentKey key) const
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     const auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return nullptr;
     return mod->content->analysis.pitchCurve != nullptr
@@ -2708,6 +2792,7 @@ std::shared_ptr<const PitchCurveSnapshot> OpenTuneDocumentController::readPitchC
 
 OriginalF0State OpenTuneDocumentController::readOriginalF0State(ContentKey key) const
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     const auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return OriginalF0State::NotRequested;
     return mod->content->analysis.originalF0State;
@@ -2715,6 +2800,7 @@ OriginalF0State OpenTuneDocumentController::readOriginalF0State(ContentKey key) 
 
 DetectedKey OpenTuneDocumentController::readDetectedKey(ContentKey key) const
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     const auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return {};
     return mod->content->analysis.detectedKey;
@@ -2722,6 +2808,7 @@ DetectedKey OpenTuneDocumentController::readDetectedKey(ContentKey key) const
 
 PitchShiftSettings OpenTuneDocumentController::readPitchShift(ContentKey key) const
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     const auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return {};
     return mod->content->pitchShiftSettings;
@@ -2730,6 +2817,7 @@ PitchShiftSettings OpenTuneDocumentController::readPitchShift(ContentKey key) co
 std::shared_ptr<const EditableContentSnapshot>
 OpenTuneDocumentController::readContentSnapshot(ContentKey key) const
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     const auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return nullptr;
     return mod->snapshotContent();
@@ -2739,6 +2827,7 @@ OpenTuneDocumentController::readContentSnapshot(ContentKey key) const
 
 bool OpenTuneDocumentController::applyNotesToModification(const ContentKey& key, std::vector<Note> notes)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return false;
     mod->applyNotes(std::move(notes));
@@ -2757,6 +2846,7 @@ bool OpenTuneDocumentController::applyNotesToModification(const ContentKey& key,
 bool OpenTuneDocumentController::applyVolumeEnvelopeToModification(const ContentKey& key,
                                                                    AutomationLane envelope)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return false;
     mod->applyVolumeEnvelope(envelope);
@@ -2772,6 +2862,7 @@ bool OpenTuneDocumentController::applyVolumeEnvelopeToModification(const Content
 
 void OpenTuneDocumentController::republishPlaybackSourceForModification(ContentKey key)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState())
         return;
@@ -2781,8 +2872,27 @@ void OpenTuneDocumentController::republishPlaybackSourceForModification(ContentK
     contentRenderService_->republishPlaybackSource(key, mod->snapshotContent());
 }
 
+std::string OpenTuneDocumentController::readOriginalF0FailureReason(ContentKey key) const
+{
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
+    const auto* mod = findAudioModificationByContentKey(key);
+    if (mod == nullptr || !mod->hasContentState())
+        return {};
+    return mod->content->analysis.originalF0FailureReason;
+}
+
+std::deque<OriginalF0FailureEvent>
+OpenTuneDocumentController::takeOriginalF0FailureEvents()
+{
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
+    std::deque<OriginalF0FailureEvent> events;
+    events.swap(pendingF0FailureEvents_);
+    return events;
+}
+
 bool OpenTuneDocumentController::applyPitchCurveToModification(const ContentKey& key, std::shared_ptr<PitchCurve> curve)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return false;
     mod->applyPitchCurve(std::move(curve));
@@ -2803,6 +2913,7 @@ bool OpenTuneDocumentController::applyNotesAndPitchCurveToModification(
     std::vector<Note> notes,
     std::shared_ptr<PitchCurve> curve)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState() || curve == nullptr)
         return false;
@@ -2823,6 +2934,7 @@ bool OpenTuneDocumentController::applyNotesAndPitchCurveToModification(
 
 bool OpenTuneDocumentController::applyOriginalF0ToModification(const ContentKey& key, std::shared_ptr<PitchCurve> curve)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return false;
     mod->applyOriginalF0(std::move(curve));
@@ -2838,6 +2950,7 @@ bool OpenTuneDocumentController::applyOriginalF0ToModification(const ContentKey&
 
 bool OpenTuneDocumentController::applyTimeGridToModification(const ContentKey& key, std::shared_ptr<const TimeGridSnapshot> grid)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState() || grid == nullptr || !grid->isIdentity()) return false;
     if (!mod->applyTimeGrid(std::move(grid)))
@@ -2857,6 +2970,7 @@ bool OpenTuneDocumentController::applyTimeGridToModification(const ContentKey& k
 bool OpenTuneDocumentController::applyPitchShiftStateToModification(const ContentKey& key,
                                                                      const PitchShiftEditState& state)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return false;
     if (!mod->applyPitchShiftState(state)) return false;
@@ -2875,6 +2989,7 @@ bool OpenTuneDocumentController::applyPitchShiftStateToModification(const Conten
 
 bool OpenTuneDocumentController::applyDetectedKeyToModification(const ContentKey& key, const DetectedKey& detectedKey)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return false;
     mod->applyDetectedKey(detectedKey);
@@ -2890,6 +3005,7 @@ bool OpenTuneDocumentController::applyDetectedKeyToModification(const ContentKey
 
 bool OpenTuneDocumentController::applyReferenceFeaturesToModification(const ContentKey& key, const ReferenceFeatureSet& features)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return false;
     mod->applyReferenceFeatures(features);
@@ -2907,6 +3023,7 @@ bool OpenTuneDocumentController::applyReferenceFeaturesToModification(const Cont
 
 bool OpenTuneDocumentController::applyOriginalF0StateToModification(const ContentKey& key, const OriginalF0State& state)
 {
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
     auto* mod = findAudioModificationByContentKey(key);
     if (mod == nullptr || !mod->hasContentState()) return false;
     mod->applyOriginalF0State(state);
@@ -2916,6 +3033,22 @@ bool OpenTuneDocumentController::applyOriginalF0StateToModification(const Conten
         mod->audioModification->notifyContentChanged(
             juce::ARAContentUpdateScopes::tuningIsAffected(), true);
     
+    refreshRegisteredRenderers(publishModelChange());
+    return true;
+}
+
+bool OpenTuneDocumentController::applyOriginalF0FailureReasonToModification(
+    const ContentKey& key, std::string reason)
+{
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
+    auto* mod = findAudioModificationByContentKey(key);
+    if (mod == nullptr || !mod->hasContentState()) return false;
+    mod->applyOriginalF0FailureReason(std::move(reason));
+    pendingF0FailureEvents_.push_back({key,
+        juce::String(mod->content->analysis.originalF0FailureReason)});
+    if (mod->audioModification != nullptr)
+        mod->audioModification->notifyContentChanged(
+            juce::ARAContentUpdateScopes::tuningIsAffected(), true);
     refreshRegisteredRenderers(publishModelChange());
     return true;
 }

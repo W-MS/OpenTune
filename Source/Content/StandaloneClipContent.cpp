@@ -154,6 +154,11 @@ void StandaloneClipContent::applyOriginalF0State(OriginalF0State state)
     content_.analysis.setOriginalF0State(state);
 }
 
+void StandaloneClipContent::applyOriginalF0FailureReason(std::string reason)
+{
+    content_.analysis.originalF0FailureReason = std::move(reason);
+}
+
 void StandaloneClipContent::applyAudioBuffer(std::shared_ptr<const juce::AudioBuffer<float>> buffer, double sampleRate)
 {
     const double durationSeconds = static_cast<double>(buffer->getNumSamples()) / sampleRate;

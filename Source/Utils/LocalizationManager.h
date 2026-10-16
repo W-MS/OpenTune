@@ -250,8 +250,8 @@ constexpr const char* kEditing = "Editing";
 constexpr const char* kMouse = "Mouse";
 constexpr const char* kShortcuts = "Shortcuts";
 constexpr const char* kShortcutGeneral = "General";
-constexpr const char* kShortcutOpenTuneMode = "OpenTune Mode";
-constexpr const char* kShortcutOpenDyneMode = "OpenDyne Mode";
+constexpr const char* kShortcutOpenTuneMode = "OpenTune Mode Shortcuts";
+constexpr const char* kShortcutOpenDyneMode = "OpenDyne Mode Shortcuts";
 constexpr const char* kLanguage = "Language";
 constexpr const char* kLanguageLabel = "Interface Language";
 constexpr const char* kAudioEditingScheme = "Audio Editing Scheme";
@@ -308,6 +308,14 @@ constexpr const char* kDuplicateClip = "Duplicate Clip";
 constexpr const char* kNudgeLeft = "Nudge Left";
 constexpr const char* kNudgeRight = "Nudge Right";
 constexpr const char* kToggleSnap = "Toggle Snap";
+constexpr const char* kScrollHorizontalLeft = "Horizontal Scroll Left";
+constexpr const char* kScrollHorizontalRight = "Horizontal Scroll Right";
+constexpr const char* kZoomHorizontalIn = "Horizontal Zoom In";
+constexpr const char* kZoomHorizontalOut = "Horizontal Zoom Out";
+constexpr const char* kZoomVerticalIn = "Vertical Zoom In";
+constexpr const char* kZoomVerticalOut = "Vertical Zoom Out";
+constexpr const char* kFitSelectedNotes = "Fit Selected Notes";
+constexpr const char* kFitAllNotes = "Fit All Notes";
 
 constexpr const char* kToolDrawNote = "Tool: Draw Note";
 constexpr const char* kToolSelect = "Tool: Select";
@@ -413,6 +421,9 @@ constexpr const char* kOriginalF0 = "OriginalF0";
 constexpr const char* kOriginalF0NotReady = "OriginalF0 is not ready.";
 constexpr const char* kOriginalF0Extracting = "OriginalF0 is being extracted. Please retry in a moment.";
 constexpr const char* kOriginalF0ExtractionFailed = "OriginalF0 extraction failed for this clip. Re-import the audio to regenerate OriginalF0.";
+constexpr const char* kOriginalF0FailureTitle = "Original Pitch Analysis Failed";
+constexpr const char* kOriginalF0FailureDetail = "Analysis failed for content {0} in domain {1}.\nReason: {2}";
+constexpr const char* kOriginalF0FailureReasonUnavailable = "Failure reason is unavailable.";
 constexpr const char* kOriginalF0NotReadyForClip = "OriginalF0 is not ready for this clip.";
 constexpr const char* kAutoQueued = "AUTO has been queued.";
 constexpr const char* kAutoNeedsPitchCurve = "AUTO needs an active pitch curve. Run audio analysis first.";
@@ -586,8 +597,8 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kMouse, "Mouse", "鼠标", "マウス", "Мышь", "Ratón" },
         { Keys::kShortcuts, "Shortcuts", "快捷键", "ショートカット", "Сочетания клавиш", "Atajos de teclado" },
         { Keys::kShortcutGeneral, "General", "通用", "一般", "Общие", "General" },
-        { Keys::kShortcutOpenTuneMode, "OpenTune Mode", "OpenTune 模式", "OpenTune モード", "Режим OpenTune", "Modo OpenTune" },
-        { Keys::kShortcutOpenDyneMode, "OpenDyne Mode", "OpenDyne 模式", "OpenDyne モード", "Режим OpenDyne", "Modo OpenDyne" },
+        { Keys::kShortcutOpenTuneMode, "OpenTune Mode Shortcuts", "OpenTune 模式快捷键", "OpenTune モードのショートカット", "Сочетания OpenTune", "Atajos del modo OpenTune" },
+        { Keys::kShortcutOpenDyneMode, "OpenDyne Mode Shortcuts", "OpenDyne 模式快捷键", "OpenDyne モードのショートカット", "Сочетания OpenDyne", "Atajos del modo OpenDyne" },
         { Keys::kLanguage, "Language", "语言", "言語", "Язык", "Idioma" },
         { Keys::kLanguageLabel, "Interface Language", "界面语言", "インターフェース言語", "Язык", "Idioma" },
         { Keys::kAudioEditingScheme, "Audio Editing Scheme", "音频编辑方案", "音声編集方式", "Схема аудиоредактирования", "Esquema de edicion de audio" },
@@ -613,7 +624,7 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kVocoderWeight, "Vocoder Model", "声码器模型", "ボコーダーモデル", "Модель вокодера", "Modelo de vocoder" },
 
         { Keys::kSetShortcut, "Set Shortcut", "设置快捷键", "ショートカットを設定", "Назначить сочетание", "Atajo" },
-        { Keys::kPressNewKeyCombination, "Press the new key combination", "按下新的组合键", "新しいキーの組み合わせを押してください", "Нажмите сочетание", "Pulse combinación" },
+        { Keys::kPressNewKeyCombination, "Press a key, wheel, middle or side button", "按下按键、滚动滚轮或点击鼠标中键/侧键", "キー、ホイール、中央またはサイドボタンを操作してください", "Нажмите клавишу, прокрутите колесо или нажмите среднюю/боковую кнопку", "Pulse una tecla, la rueda o un botón central/lateral" },
         { Keys::kCurrent, "Current", "当前", "現在", "Текущий", "Actual" },
         { Keys::kCancel, "Cancel", "取消", "キャンセル", "Отмена", "Cancelar" },
         { Keys::kOK, "OK", "确定", "OK", "ОК", "Aceptar" },
@@ -623,8 +634,8 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kNo, "No", "否", "いいえ", "Нет", "No" },
         { Keys::kResetAllToDefaults, "Reset All to Defaults", "全部恢复默认", "すべてデフォルトに戻す", "Сбросить все", "Restablecer todo" },
         
-        { Keys::kShortcutCaptureClickHint, "Click here, then press a key", "点击此处后按下快捷键", "ここをクリックしてキーを押してください", "Нажмите здесь и нажмите клавишу", "Haga clic aquí y pulse una tecla" },
-        { Keys::kShortcutCapturePressKey, "Press a key...", "请按下快捷键...", "キーを押してください...", "Нажмите клавишу...", "Pulse una tecla..." },
+        { Keys::kShortcutCaptureClickHint, "Click here, then use a key or mouse input", "点击此处后按下按键或使用鼠标输入", "ここをクリックしてキーまたはマウスを操作してください", "Нажмите здесь, затем используйте клавишу или мышь", "Haga clic aquí y use una tecla o el ratón" },
+        { Keys::kShortcutCapturePressKey, "Press a key, wheel, middle or side button...", "请按下按键、滚动滚轮或点击鼠标中键/侧键...", "キー、ホイール、中央またはサイドボタンを操作してください...", "Нажмите клавишу, прокрутите колесо или нажмите среднюю/боковую кнопку...", "Pulse una tecla, la rueda o un botón central/lateral..." },
         { Keys::kShortcutCaptureCancelHint, "Click Cancel to abort", "点击取消按钮取消", "キャンセルをクリックして中止", "Нажмите Отмена для отмены", "Pulse Cancelar para abortar" },
         { Keys::kDiagnosticLogTail, "(Only the last 256 KiB are retained)", "(仅保留最后 256 KiB)", "(最後の 256 KiB のみ保持)", "(Сохранены только последние 256 КиБ)", "(Solo se conservan los últimos 256 KiB)" },
 
@@ -642,6 +653,14 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kNudgeLeft, "Nudge Left", "左移", "左に微調整", "Сдвинуть влево", "Desplazar izq." },
         { Keys::kNudgeRight, "Nudge Right", "右移", "右に微調整", "Сдвинуть вправо", "Desplazar der." },
         { Keys::kToggleSnap, "Toggle Snap", "切换吸附", "スナップ切替", "Перекл. привязку", "Activar ajuste" },
+        { Keys::kScrollHorizontalLeft, "Horizontal Scroll Left", "水平左滚", "水平左スクロール", "Горизонтальная прокрутка влево", "Desplazamiento horizontal izquierda" },
+        { Keys::kScrollHorizontalRight, "Horizontal Scroll Right", "水平右滚", "水平右スクロール", "Горизонтальная прокрутка вправо", "Desplazamiento horizontal derecha" },
+        { Keys::kZoomHorizontalIn, "Horizontal Zoom In", "水平放大", "水平ズームイン", "Увеличить по горизонтали", "Ampliar horizontalmente" },
+        { Keys::kZoomHorizontalOut, "Horizontal Zoom Out", "水平缩小", "水平ズームアウト", "Уменьшить по горизонтали", "Reducir horizontalmente" },
+        { Keys::kZoomVerticalIn, "Vertical Zoom In", "垂直放大", "垂直ズームイン", "Увеличить по вертикали", "Ampliar verticalmente" },
+        { Keys::kZoomVerticalOut, "Vertical Zoom Out", "垂直缩小", "垂直ズームアウト", "Уменьшить по вертикали", "Reducir verticalmente" },
+        { Keys::kFitSelectedNotes, "Fit Selected Notes", "适合所选音符", "選択したノートに合わせる", "По выбранным нотам", "Ajustar a notas seleccionadas" },
+        { Keys::kFitAllNotes, "Fit All Notes", "适合全部音符", "すべてのノートに合わせる", "По всем нотам", "Ajustar a todas las notas" },
         { Keys::kToolDrawNote, "Tool: Draw Note", "工具：绘制音符", "ツール：ノート描画", "Инструмент: рисование нот", "Herram: dibujar nota" },
         { Keys::kToolSelect, "Tool: Select", "工具：选择", "ツール：選択", "Инструмент: выбор", "Herram: seleccionar" },
         { Keys::kToolLineAnchor, "Tool: Line Anchor", "工具：锚点", "ツール：ラインアンカー", "Инструмент: якорь", "Herram: ancla línea" },
@@ -724,6 +743,9 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kOriginalF0, "Original Pitch", "原始音高", "元のピッチ", "Исходная высота тона", "Tono original" },
         { Keys::kOriginalF0Extracting, "Original Pitch is being extracted. Please retry in a moment.", "正在提取原始音高，请稍后重试。", "元のピッチを抽出中です。しばらくしてからもう一度お試しください。", "Выполняется извлечение исходной высоты тона. Повторите попытку через некоторое время.", "Se está extrayendo el tono original. Inténtalo de nuevo en un momento." },
         { Keys::kOriginalF0ExtractionFailed, "Original Pitch extraction failed for this clip. Re-import the audio to regenerate the original pitch.", "此片段的原始音高提取失败。请重新导入音频以重新生成原始音高。", "このクリップの元のピッチの抽出に失敗しました。元のピッチを再生成するにはオーディオを再インポートしてください。", "Не удалось извлечь исходную высоту тона для этого клипа. Импортируйте аудио заново, чтобы восстановить исходную высоту тона.", "Falló la extracción del tono original para este clip. Vuelve a importar el audio para regenerar el tono original." },
+        { Keys::kOriginalF0FailureTitle, "Original Pitch Analysis Failed", "原始音高分析失败", "元のピッチの解析に失敗しました", "Не удалось проанализировать исходную высоту тона", "Falló el análisis del tono original" },
+        { Keys::kOriginalF0FailureDetail, "Analysis failed for content {0} in domain {1}.\nReason: {2}", "内容 {0}（域 {1}）的分析失败。\n原因：{2}", "ドメイン {1} のコンテンツ {0} の解析に失敗しました。\n理由：{2}", "Не удалось проанализировать объект {0} в домене {1}.\nПричина: {2}", "Falló el análisis del contenido {0} en el dominio {1}.\nMotivo: {2}" },
+        { Keys::kOriginalF0FailureReasonUnavailable, "Failure reason is unavailable.", "失败原因不可用。", "失敗理由を取得できません。", "Причина ошибки недоступна.", "El motivo del fallo no está disponible." },
         { Keys::kOriginalF0NotReadyForClip, "Original Pitch is not ready for this clip.", "此片段的原始音高尚未就绪。", "このクリップの元のピッチはまだ準備できていません。", "Исходная высота тона для этого клипа не готова.", "El tono original no está listo para este clip." },
         { Keys::kAutoQueued, "AUTO has been queued.", "AUTO 已加入队列。", "AUTOをキューに追加しました。", "AUTO добавлен в очередь.", "AUTO se ha añadido a la cola." },
         { Keys::kAutoNeedsPitchCurve, "AUTO needs an active pitch curve. Run audio analysis first.", "AUTO 需要活动的音高曲线。请先运行音频分析。", "AUTOにはアクティブなピッチカーブが必要です。先にオーディオ解析を実行してください。", "Для AUTO нужна активная кривая высоты тона. Сначала выполните анализ аудио.", "AUTO necesita una curva de tono activa. Primero ejecuta el análisis de audio." },
@@ -879,7 +901,7 @@ inline juce::String get(Language lang, const char* key)
         { "Failed to start OriginalF0 analysis.", "Failed to start Original Pitch analysis.", "未能启动原始音高分析。", "元のピッチの解析を開始できませんでした。", "Не удалось запустить анализ исходной высоты тона.", "No se pudo iniciar el análisis del tono original." },
         { Keys::kRenderFailure, "Render Failure", "渲染失败", "レンダリング失敗", "Ошибка рендеринга", "Error de renderizado" },
         { Keys::kRenderFailed, "Render failed", "渲染失败", "レンダリングに失敗しました", "Ошибка рендеринга", "Falló el renderizado" },
-        { Keys::kRenderFailureDetail, "Render failed; dry audio may be used. Reason: {0}", "渲染失败，可能回退干声。原因：{0}", "レンダリングに失敗しました。ドライ音声に切り替わる場合があります。原因：{0}", "Ошибка рендеринга; может использоваться необработанный звук. Причина: {0}", "Falló el renderizado; puede usarse el audio sin procesar. Motivo: {0}" },
+        { Keys::kRenderFailureDetail, "Render failed for content {0} in domain {1}; dry audio may be used. Reason: {2}", "内容 {0}（域 {1}）渲染失败，可能使用干声。原因：{2}", "ドメイン {1} のコンテンツ {0} のレンダリングに失敗しました。ドライ音声が使用される場合があります。理由：{2}", "Не удалось отрендерить объект {0} в домене {1}; может использоваться необработанный звук. Причина: {2}", "Falló el renderizado del contenido {0} en el dominio {1}; puede usarse audio sin procesar. Motivo: {2}" },
         { "Reference Clip AUTO aligns pitch and timing to the reference.", "Reference Clip AUTO aligns pitch and timing to the reference.", "按参考 Clip 自动修音并对齐节奏", "リファレンスClipに合わせてピッチとタイミングを自動調整", "AUTO по референсному Clip корректирует высоту тона и выравнивает ритм.", "AUTO con Clip de referencia ajusta el tono y alinea el ritmo." },
         { "A reference is bound, but GAME backend/models are unavailable; standard AUTO will run.", "A reference is bound, but GAME backend/models are unavailable; standard AUTO will run.", "已绑定参考源，但当前缺少 GAME backend / models，本次执行普通 AUTO。", "リファレンスは設定されていますが、GAME backend/modelsがないため通常のAUTOを実行します。", "Референс привязан, но GAME backend/models недоступны; будет выполнен обычный AUTO.", "Hay una referencia vinculada, pero no están disponibles GAME backend/models; se ejecutará AUTO estándar." },
         { "AUTO corrects pitch by snapping to nearby scale notes.", "AUTO corrects pitch by snapping to nearby scale notes.", "自动修音（吸附到临近音阶）", "AUTOで近くの音階にスナップしてピッチを補正", "AUTO корректирует высоту тона, привязывая её к ближайшим ступеням гаммы.", "AUTO corrige el tono ajustándolo a las notas cercanas de la escala." },

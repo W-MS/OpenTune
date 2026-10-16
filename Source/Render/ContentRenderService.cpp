@@ -32,6 +32,7 @@ bool ContentRenderService::enqueueStage2RebuildWhenCanonicalSettled(
     job.kind = RenderJob::Kind::Stage2Rebuild;
     job.contentKey = contentKey;
     job.contentSnapshot = std::move(contentSnapshot);
+    job.contentRevision = job.contentSnapshot->contentRevision;
     job.audioBuffer = std::move(audioBuffer);
     job.audioSampleRate = audioSampleRate;
     return renderWorker_.enqueue(std::move(job));
@@ -118,6 +119,8 @@ void ContentRenderService::enqueueRender(RenderJob job)
         || job.endSampleExclusive <= job.startSample)
         return;
 
+    job.contentRevision = job.contentSnapshot->contentRevision;
+
     // 即时提取 active-EQ Note 的样本保护范围（只保留 start/end，不复制
     // EqSettings），仅本调用栈内读取，不存储。用现有 TimeCoordinate floor/ceil
     // 表达 Note 覆盖范围，无新取整策略。Stage1 输入已固定 44.1kHz（CRS 播放源
@@ -171,7 +174,7 @@ void ContentRenderService::enqueueRender(RenderJob job)
     });
 }
 
-bool ContentRenderService::requeueRenderChunk(const RenderJob& job)
+RenderWorker::RequeueResult ContentRenderService::requeueRenderChunk(const RenderJob& job)
 {
     jassert(job.kind == RenderJob::Kind::Stage1Render && job.renderCache != nullptr);
 

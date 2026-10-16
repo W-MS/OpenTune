@@ -31,7 +31,7 @@ endif()
 # ==============================================================================
 # Project Definition
 # ==============================================================================
-project(OpenTune VERSION 1.8.1 LANGUAGES CXX C)
+project(OpenTune VERSION 1.8.2 LANGUAGES CXX C)
 
 # 为 clangd/LSP 导出编译数据库（compile_commands.json）
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -617,6 +617,8 @@ set(OPENTUNE_COMMON_SOURCES
         Source/DSP/ResamplingManager.h
         Source/DSP/MelSpectrogram.cpp
         Source/DSP/MelSpectrogram.h
+        Source/DSP/HybridAperiodicResidual.cpp
+        Source/DSP/HybridAperiodicResidual.h
         Source/DSP/F0KeyDetector.cpp
         Source/DSP/F0KeyDetector.h
         Source/DSP/AutoTunePitchShifter.cpp
@@ -707,6 +709,8 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/DetectedKey.h
         Source/Utils/Note.h
         Source/Utils/NoteEqSettings.h
+        Source/Utils/EqFilterEditOps.h
+        Source/Utils/EqFilterEditOps.cpp
         Source/Utils/SpectrumDisplayData.h
         Source/Utils/OnnxRuntimeDelayLoadHook.cpp
         Source/Utils/ModelPathResolver.h
@@ -720,12 +724,32 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/UndoManager.h
         Source/Utils/PianoRollEditAction.cpp
         Source/Utils/PianoRollEditAction.h
+        Source/Utils/SelectedNoteParameterEdit.cpp
+        Source/Utils/SelectedNoteParameterEdit.h
+        Source/Utils/SelectedNoteEqEdit.cpp
+        Source/Utils/SelectedNoteEqEdit.h
+        Source/Utils/SelectedNoteDeleteEdit.cpp
+        Source/Utils/SelectedNoteDeleteEdit.h
+        Source/Utils/PasteTopologyEdit.cpp
+        Source/Utils/PasteTopologyEdit.h
+        Source/Utils/ScissorsTopologyEdit.cpp
+        Source/Utils/ScissorsTopologyEdit.h
+        Source/Utils/ManualCorrectionEdit.cpp
+        Source/Utils/ManualCorrectionEdit.h
         Source/Utils/PianoRollNotePatchAction.cpp
         Source/Utils/PianoRollNotePatchAction.h
+        Source/Utils/DrawNoteEdit.cpp
+        Source/Utils/DrawNoteEdit.h
+        Source/Utils/NoteResizeEdit.cpp
+        Source/Utils/NoteResizeEdit.h
         Source/Utils/AutomationLane.cpp
         Source/Utils/AutomationLane.h
         Source/Utils/VolumeEnvelopeEditAction.cpp
         Source/Utils/VolumeEnvelopeEditAction.h
+        Source/Utils/VolumeEnvelopeRegionEdit.cpp
+        Source/Utils/VolumeEnvelopeRegionEdit.h
+        Source/Utils/EraserStrokeEdit.cpp
+        Source/Utils/EraserStrokeEdit.h
         Source/Utils/ScissorsUndoAction.cpp
         Source/Utils/ScissorsUndoAction.h
         Source/Utils/PitchShiftSettings.h
@@ -733,6 +757,8 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/PitchShiftEditAction.h
         Source/Utils/TimeGrid.cpp
         Source/Utils/TimeGrid.h
+        Source/Utils/TimeGridEdit.cpp
+        Source/Utils/TimeGridEdit.h
         Source/Utils/TimeGridEditAction.cpp
         Source/Utils/TimeGridEditAction.h
         Source/Utils/SilentGapDetector.cpp
@@ -1333,9 +1359,7 @@ if(APPLE AND TARGET OpenTuneAU_AU)
     )
 
     # JUCE emits only "ARA", while the ARA SDK AUv2 example lists both
-    # "Effect" and "ARA". Also advance only AudioComponents.version, so Logic
-    # refreshes cached channel layouts without changing other formats' versions
-    # or the ARA factory ID. Apply metadata before packaging signs the AU.
+    # "Effect" and "ARA". Apply the required tags before packaging signs the AU.
     add_custom_command(TARGET OpenTuneAU_AU POST_BUILD
         COMMAND ${CMAKE_COMMAND}
             "-DAU_INFO_PLIST=$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Info.plist"
@@ -1513,6 +1537,17 @@ if(OPENTUNE_BUILD_TESTS)
     endif()
     add_test(NAME AutoTunePitchShifterTests COMMAND OpenTuneAutoTuneTests)
 
+    add_executable(OpenTuneHybridAperiodicResidualTests
+        Tests/HybridAperiodicResidualTests.cpp
+        Source/DSP/HybridAperiodicResidual.cpp
+    )
+    target_include_directories(OpenTuneHybridAperiodicResidualTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    if(MSVC)
+        target_compile_options(OpenTuneHybridAperiodicResidualTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME HybridAperiodicResidualTests COMMAND OpenTuneHybridAperiodicResidualTests)
+
     # 真实 include 生产 Note/PitchControlConfig/PitchUtils/AudioEditingScheme 的契约测试（纯标准库）：字段/常量漂移即编译失败
     add_executable(OpenTunePitchParameterTests
         Tests/PitchParameterContractTests.cpp
@@ -1523,6 +1558,184 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTunePitchParameterTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME PitchParameterContractTests COMMAND OpenTunePitchParameterTests)
+
+    add_executable(OpenTuneSelectedNoteParameterEditTests
+        Tests/SelectedNoteParameterEditTests.cpp
+    )
+    target_include_directories(OpenTuneSelectedNoteParameterEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneSelectedNoteParameterEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneSelectedNoteParameterEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME SelectedNoteParameterEditTests COMMAND OpenTuneSelectedNoteParameterEditTests)
+
+    add_executable(OpenTuneSelectedNoteEqEditTests
+        Tests/SelectedNoteEqEditTests.cpp
+    )
+    target_include_directories(OpenTuneSelectedNoteEqEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneSelectedNoteEqEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneSelectedNoteEqEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME SelectedNoteEqEditTests COMMAND OpenTuneSelectedNoteEqEditTests)
+
+    add_executable(OpenTuneEqFilterEditOpsTests
+        Tests/EqFilterEditOpsTests.cpp
+        Source/Utils/EqFilterEditOps.cpp
+    )
+    target_include_directories(OpenTuneEqFilterEditOpsTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    if(MSVC)
+        target_compile_options(OpenTuneEqFilterEditOpsTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME EqFilterEditOpsTests COMMAND OpenTuneEqFilterEditOpsTests)
+
+    # VolumeEnvelope region-gain planner + undo action tests — pure planner, no plugin runtime
+    add_executable(OpenTuneVolumeEnvelopeRegionEditTests
+        Tests/VolumeEnvelopeRegionEditTests.cpp
+    )
+    target_include_directories(OpenTuneVolumeEnvelopeRegionEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneVolumeEnvelopeRegionEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneVolumeEnvelopeRegionEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME VolumeEnvelopeRegionEditTests COMMAND OpenTuneVolumeEnvelopeRegionEditTests)
+
+    add_executable(OpenTuneEraserStrokeEditTests
+        Tests/EraserStrokeEditTests.cpp
+    )
+    target_include_directories(OpenTuneEraserStrokeEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneEraserStrokeEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneEraserStrokeEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME EraserStrokeEditTests COMMAND OpenTuneEraserStrokeEditTests)
+
+    add_executable(OpenTuneSelectedNoteDeleteEditTests
+        Tests/SelectedNoteDeleteEditTests.cpp
+    )
+    target_include_directories(OpenTuneSelectedNoteDeleteEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneSelectedNoteDeleteEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneSelectedNoteDeleteEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME SelectedNoteDeleteEditTests COMMAND OpenTuneSelectedNoteDeleteEditTests)
+
+    add_executable(OpenTunePasteTopologyEditTests
+        Tests/PasteTopologyEditTests.cpp
+    )
+    target_include_directories(OpenTunePasteTopologyEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTunePasteTopologyEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTunePasteTopologyEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME PasteTopologyEditTests COMMAND OpenTunePasteTopologyEditTests)
+
+    add_executable(OpenTuneDrawNoteEditTests
+        Tests/DrawNoteEditTests.cpp
+    )
+    target_include_directories(OpenTuneDrawNoteEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneDrawNoteEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneDrawNoteEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME DrawNoteEditTests COMMAND OpenTuneDrawNoteEditTests)
+
+    add_executable(OpenTuneNoteResizeEditTests
+        Tests/NoteResizeEditTests.cpp
+    )
+    target_include_directories(OpenTuneNoteResizeEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneNoteResizeEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneNoteResizeEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME NoteResizeEditTests COMMAND OpenTuneNoteResizeEditTests)
+
+    add_executable(OpenTuneTimeGridEditTests
+        Tests/TimeGridEditTests.cpp
+    )
+    target_include_directories(OpenTuneTimeGridEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneTimeGridEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneTimeGridEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME TimeGridEditTests COMMAND OpenTuneTimeGridEditTests)
+
+    # Scissors topology planner + undo action tests — pure planner, no plugin runtime
+    add_executable(OpenTuneScissorsTopologyEditTests
+        Tests/ScissorsTopologyEditTests.cpp
+    )
+    target_include_directories(OpenTuneScissorsTopologyEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneScissorsTopologyEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneScissorsTopologyEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME ScissorsTopologyEditTests COMMAND OpenTuneScissorsTopologyEditTests)
+
+    add_executable(OpenTuneManualCorrectionEditTests
+        Tests/ManualCorrectionEditTests.cpp
+    )
+    target_include_directories(OpenTuneManualCorrectionEditTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneManualCorrectionEditTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneManualCorrectionEditTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME ManualCorrectionEditTests COMMAND OpenTuneManualCorrectionEditTests)
 
     # PitchLaneVisualPolicy tests — pure standard library, no JUCE linkage
     add_executable(OpenTunePitchLaneVisualPolicyTests
@@ -1582,6 +1795,16 @@ if(OPENTUNE_BUILD_TESTS)
     endif()
     add_test(NAME Vst3ProcessorStateCodecTests COMMAND OpenTuneVst3StateCodecTests)
 
+    add_executable(OpenTuneVisibleTrackCountTests
+        Tests/VisibleTrackCountTests.cpp
+    )
+    target_include_directories(OpenTuneVisibleTrackCountTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    if(MSVC)
+        target_compile_options(OpenTuneVisibleTrackCountTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME VisibleTrackCountTests COMMAND OpenTuneVisibleTrackCountTests)
+
     # Standalone processor settings codec (OTSS v3 / legacy v2) tests.
     add_executable(OpenTuneStandaloneStateCodecTests
         Tests/StandaloneProcessorStateCodecTests.cpp
@@ -1594,6 +1817,21 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTuneStandaloneStateCodecTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME StandaloneProcessorStateCodecTests COMMAND OpenTuneStandaloneStateCodecTests)
+
+    # Shared VST3 editor size preference survives stale per-instance preference saves.
+    add_executable(OpenTuneAppPreferencesEditorSizeTests
+        Tests/AppPreferencesEditorSizeTests.cpp
+    )
+    target_include_directories(OpenTuneAppPreferencesEditorSizeTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    target_link_libraries(OpenTuneAppPreferencesEditorSizeTests PRIVATE
+        OpenTune
+        OpenTuneResources
+        juce::juce_core)
+    if(MSVC)
+        target_compile_options(OpenTuneAppPreferencesEditorSizeTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME AppPreferencesEditorSizeTests COMMAND OpenTuneAppPreferencesEditorSizeTests)
 
     # Regression: a structurally valid CAPz archive may contain zero segments.
     add_executable(OpenTuneCapturePersistenceTests

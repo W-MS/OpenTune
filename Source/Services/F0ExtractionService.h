@@ -76,7 +76,8 @@ public:
         Accepted,
         AlreadyInProgress,
         QueueFull,
-        InvalidTask
+        InvalidTask,
+        ShuttingDown
     };
 
     F0ExtractionService(int workerCount, size_t maxQueueSize,
@@ -92,7 +93,8 @@ public:
     void shutdown();
 
     SubmitResult submit(F0RequestKey requestKey, ExecuteFn execute, CommitFn commit,
-                        CommitFn dispatcherFailure = {});
+                        CommitFn dispatcherFailure = {},
+                        uint64_t* acceptedRequestToken = nullptr);
 
     bool isActive(F0RequestKey requestKey) const;
     void cancel(F0RequestKey requestKey);

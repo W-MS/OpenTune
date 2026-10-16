@@ -57,6 +57,7 @@ namespace OpenTune {
 
 class PianoKeyAudition;
 class AppPreferences;
+class OpenTuneAudioProcessor;
 struct PlayHeadState;
 
 struct PianoRollComponentTestProbe;
@@ -106,6 +107,7 @@ public:
         virtual void escapeKeyPressed() {}
         virtual void undoRequested() {}
         virtual void redoRequested() {}
+        virtual bool pointerShortcutRequested(KeyShortcutConfig::ShortcutId /*id*/) { return false; }
         virtual void currentToolChanged(ToolId tool) { (void)tool; }
         virtual void timelineDisplayModeChanged(TimelineDisplayMode mode) { (void)mode; }
     };
@@ -157,6 +159,7 @@ public:
     void setReadContentSnapshot(ReadContentSnapshotFn fn) { readContentSnapshot_ = std::move(fn); }
 
     void setContentCommands(std::shared_ptr<ContentEditCommands> commands);
+    void setProcessor(OpenTuneAudioProcessor* processor) noexcept { processor_ = processor; }
 
     ContentKey editedContentKey() const { return editedContentKey_; }
     ContentTimelineProjection activeContentProjection() const noexcept;
@@ -320,6 +323,7 @@ public:
 
     void scrollBarMoved(juce::ScrollBar* scrollBar, double newRangeStart) override;
     void updateScrollBars();
+    bool handleViewportShortcut(const juce::KeyPress& key);
 
 private:
     friend struct PianoRollComponentTestProbe;
@@ -379,28 +383,26 @@ private:
 
     // ── 缩放事务 ──────────────────────────────────────────────
     void beginZoomPreview(const juce::MouseEvent& e, float deltaY);
+    void beginZoomPreviewAt(int anchorViewportX, double zoomFactor);
     void updateZoomPreview(float deltaY);
     void endZoomPreview();
+    void handleVerticalZoomAt(float zoomFactor, float contentY);
 
     // ── 内容构建（供 rasterize + overlay 共用） ────────────────
     std::vector<PianoRollRenderer::ContentRenderItem> buildContentRenderItems() const;
 
     // ── EQ popup ──────────────────────────────────────────────
     void closeEqPopup();
-    /** 选中组统一写入同一 EqSettings：严格复用 beginNoteDraft → workingNotes →
-     *  contentDirty → pendingUndoDescription → commitNoteDraft，一次原子提交。 */
+    void invalidateEqPopup();
+    /** 将选中组统一写入同一 EqSettings，作为单次消息线程事务提交。 */
     void applyEqSettingsToSelection(const EqSettings& settings);
-    /** 清除选中组全部 Note.eq（nullopt），走同一 draft 提交链。 */
-    void removeEqFromSelection();
+    /** 清除选中组全部 Note.eq（nullopt），作为单次消息线程事务提交。 */
+    bool removeEqFromSelection();
+    void handleVolumeEnvelopeRegionEditResult(const VolumeEnvelopeRegionEditResult& result);
     /** 预览尺寸 180x80 契约，在当前组件范围内靠近选择区放置。 */
     juce::Rectangle<int> placeEqPopupBounds(const juce::Rectangle<int>& anchor) const;
 
     bool tryConsumeInitialF0View(ContentKey contentKey);
-
-    bool applyManualCorrectionPatch(const std::vector<PianoRollToolHandler::ManualCorrectionOp>& ops,
-                                    int dirtyStartFrame,
-                                    int dirtyEndFrame,
-                                    bool triggerRenderEvent);
 
     enum class VibratoParam { Depth, Rate };
 
@@ -417,14 +419,17 @@ private:
 public:
     bool keyPressed(const juce::KeyPress& key) override;
 
-    /// Re-read notes from the content store and update the cache.
-    void refreshEditedContentNotes();
+    /// Re-read notes from the content store, update the cache, and return the snapshot used.
+    std::shared_ptr<const EditableContentSnapshot> refreshEditedContentNotes();
 
     /// Timeline viewport geometry in local coordinates.
     /// Shared with the Standalone PluginEditor for the overview strip layout.
     juce::Rectangle<int> getTimelineViewportBounds() const;
 
 private:
+    bool matchesShortcut(KeyShortcutConfig::ShortcutId id, const juce::KeyPress& key) const;
+    bool handlePointerShortcut(const KeyShortcutConfig::KeyBinding& binding);
+
     void onScrollVBlankCallback(double timestampSec);
     int getTimelineContentViewportWidth() const;
     int getTimelineContentViewportHeight() const;
@@ -458,9 +463,7 @@ private:
     void handleVerticalScrollWheel(float deltaY);
     void handleHorizontalZoomWheel(const juce::MouseEvent& e, float deltaY);
 
-    // OpenDyne Melodyne-style navigation
-    void handleOpenDyneHorizontalScrollWheel(float deltaX, float deltaY);
-    void handleOpenDyneZoomAtMouse(const juce::MouseEvent& e, float deltaY);
+    // OpenDyne drag zoom/pan
     void beginOpenDyneZoomPan(const juce::MouseEvent& e);
     void updateOpenDyneZoomPan(const juce::MouseEvent& e);
     void endOpenDyneZoomPan();
@@ -495,21 +498,12 @@ private:
     void beginNoteDraft();
     bool commitNoteDraft();
     void clearNoteDraft();
-    ContentCommitSnapshot commitEditedContentNotesAndSegments(
-        const EditableContentSnapshot& snapshot,
-        const std::vector<Note>& notes,
-        const std::vector<PitchCorrectionSegment>& segments,
-        F0FrameRange affectedRange,
-        std::vector<float> originalF0InRange,
-        std::optional<std::vector<F0FrameRange>> erasedRanges = std::nullopt);
     ContentCommitSnapshot commitEditedContentNotesAndSegments(const EditableContentSnapshot& snapshot,
                                              const std::vector<Note>& notes,
                                              const std::vector<PitchCorrectionSegment>& segments,
                                              F0FrameRange affectedRange);
     AutoTuneApplyResult applyAutoSnapToAllNotes(const std::shared_ptr<const EditableContentSnapshot>& contentSnapshot,
                                                 const F0Timeline& f0tl);
-    ContentCommitSnapshot commitEditedContentPitchCorrectionSegments(const std::vector<PitchCorrectionSegment>& segments,
-                                                       F0FrameRange affectedRange);
     bool selectNotesOverlappingFrames(int startFrame, int endFrameExclusive);
     juce::Rectangle<int> getNoteBounds(const Note& note) const;
     juce::Rectangle<int> getNotesBounds(const std::vector<Note>& notes) const;
@@ -550,6 +544,7 @@ private:
     ZoomSensitivityConfig::ZoomSensitivitySettings zoomSensitivity_ = ZoomSensitivityConfig::ZoomSensitivitySettings::getDefault();
     AudioEditingScheme::Scheme audioEditingScheme_ = AudioEditingScheme::Scheme::CorrectedF0Primary;
     KeyShortcutConfig::KeyShortcutSettings shortcutSettings_ = KeyShortcutConfig::KeyShortcutSettings::getDefault();
+    const KeyShortcutConfig::KeyBinding* pointerShortcutBinding_ = nullptr;
     juce::Colour trackDisplayColour_{0xFF4A90D9};
 
     int scaleRootNote_ = 0;
@@ -585,8 +580,6 @@ private:
 
     float dragStartVerticalScrollOffset_ = 0.0f;
     double dragStartVisibleStartSeconds_ = 0.0;
-
-    float calculateEffectivePIP(Note& note);
 
 private:
 
@@ -627,6 +620,7 @@ private:
 
     ReadContentSnapshotFn readContentSnapshot_;
     std::shared_ptr<ContentEditCommands> contentCommands_;
+    OpenTuneAudioProcessor* processor_ = nullptr;
 
     std::shared_ptr<const EditableContentSnapshot> readSnapshotFor(ContentKey key) const {
         return readContentSnapshot_ ? readContentSnapshot_(key) : nullptr;
@@ -687,6 +681,7 @@ private:
     // per-note EQ 预览弹窗：PianoRollComponent 唯一持有，不经过任何中间转发层
     std::unique_ptr<EqPopupComponent> eqPopup_;
     std::vector<int> eqEditTargetIndices_; // EQ 弹窗绑定的目标音符索引快照
+    uint64_t eqEditRevision_ = 0;
 
     // EQ 工具 cursor：构造函数初始化列表中从 ToolbarIcons::createEqIconImage 构造一次并 resolveCursor。
     juce::MouseCursor eqCursor_;

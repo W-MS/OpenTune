@@ -18,7 +18,7 @@ public:
     VocoderInferenceService(std::shared_ptr<Ort::Env> env);
     ~VocoderInferenceService();
 
-    bool initialize(const std::string& modelPath);
+    bool initialize(const std::string& modelPath, std::string* errorMessage = nullptr);
     void shutdown();
 
     Result<std::vector<float>> synthesize(
@@ -36,6 +36,7 @@ public:
     float getFMax() const;
     MelFilterbankSpec getMelFilterbankSpec() const;
     float getMelLogEps() const;
+    bool needsHighFrequencyOriginal() const;
 
 private:
     class Impl;

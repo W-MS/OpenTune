@@ -39,21 +39,23 @@ void initialiseSlider(juce::Slider& slider)
     slider.setColour(juce::Slider::thumbColourId, UIColors::textPrimary);
 }
 
-bool tryBuildCapturedBinding(const juce::KeyPress& key, KeyShortcutConfig::KeyBinding& outBinding)
+bool tryBuildCapturedBinding(const KeyShortcutConfig::KeyBinding& captured,
+                             KeyShortcutConfig::KeyBinding& outBinding)
 {
-    int keyCode = key.getKeyCode();
-    if (keyCode <= 0) {
+    if (!captured.isValid()) {
         return false;
     }
 
-    if (keyCode >= 'a' && keyCode <= 'z') {
-        keyCode = keyCode - ('a' - 'A');
-    }
-
     juce::ModifierKeys modifiers;
-    const auto keyModifiers = key.getModifiers();
-    if (keyModifiers.isCtrlDown() || keyModifiers.isCommandDown()) {
-        modifiers = modifiers.withFlags(juce::ModifierKeys::commandModifier);
+    const auto keyModifiers = captured.modifiers;
+    if (captured.type == KeyShortcutConfig::BindingType::Keyboard) {
+        if (keyModifiers.isCtrlDown() || keyModifiers.isCommandDown())
+            modifiers = modifiers.withFlags(juce::ModifierKeys::commandModifier);
+    } else {
+        if (keyModifiers.isCtrlDown())
+            modifiers = modifiers.withFlags(juce::ModifierKeys::ctrlModifier);
+        if (keyModifiers.isCommandDown())
+            modifiers = modifiers.withFlags(juce::ModifierKeys::commandModifier);
     }
     if (keyModifiers.isShiftDown()) {
         modifiers = modifiers.withFlags(juce::ModifierKeys::shiftModifier);
@@ -62,7 +64,14 @@ bool tryBuildCapturedBinding(const juce::KeyPress& key, KeyShortcutConfig::KeyBi
         modifiers = modifiers.withFlags(juce::ModifierKeys::altModifier);
     }
 
-    outBinding = KeyShortcutConfig::KeyBinding(keyCode, modifiers);
+    if (captured.type == KeyShortcutConfig::BindingType::Keyboard) {
+        int keyCode = captured.keyCode;
+        if (keyCode >= 'a' && keyCode <= 'z')
+            keyCode -= ('a' - 'A');
+        outBinding = KeyShortcutConfig::KeyBinding(keyCode, modifiers);
+    } else {
+        outBinding = KeyShortcutConfig::KeyBinding(captured.type, modifiers);
+    }
     return true;
 }
 
@@ -933,10 +942,14 @@ public:
         // 三段式布局：通用 → OpenTune 专属 → OpenDyne 参考
         // 通用: PlayPause, Stop, PlayFromStart, Undo, Redo, Cut, Copy, Paste, SelectAll,
         //        Delete, SplitClip, MergeClips, DuplicateClip, NudgeLeft, NudgeRight,
-        //        ToggleSnap, ToolAutoTune, ToolTimeTool, CancelSelection, Eq
+        //        Viewport navigation/zoom, ToggleSnap, ToolAutoTune, ToolTimeTool, CancelSelection, Eq
         if (isVst3Plugin) {
             generalIds_ = {
                 KeyShortcutConfig::ShortcutId::PlayPause, KeyShortcutConfig::ShortcutId::Stop,
+                KeyShortcutConfig::ShortcutId::ScrollHorizontalLeft, KeyShortcutConfig::ShortcutId::ScrollHorizontalRight,
+                KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, KeyShortcutConfig::ShortcutId::ZoomHorizontalOut,
+                KeyShortcutConfig::ShortcutId::ZoomVerticalIn, KeyShortcutConfig::ShortcutId::ZoomVerticalOut,
+                KeyShortcutConfig::ShortcutId::FitSelectedNotes, KeyShortcutConfig::ShortcutId::FitAllNotes,
                 KeyShortcutConfig::ShortcutId::Undo, KeyShortcutConfig::ShortcutId::Redo,
                 KeyShortcutConfig::ShortcutId::Cut, KeyShortcutConfig::ShortcutId::Copy,
                 KeyShortcutConfig::ShortcutId::Paste, KeyShortcutConfig::ShortcutId::SelectAll,
@@ -950,6 +963,10 @@ public:
             generalIds_ = {
                 KeyShortcutConfig::ShortcutId::PlayPause, KeyShortcutConfig::ShortcutId::Stop,
                 KeyShortcutConfig::ShortcutId::PlayFromStart,
+                KeyShortcutConfig::ShortcutId::ScrollHorizontalLeft, KeyShortcutConfig::ShortcutId::ScrollHorizontalRight,
+                KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, KeyShortcutConfig::ShortcutId::ZoomHorizontalOut,
+                KeyShortcutConfig::ShortcutId::ZoomVerticalIn, KeyShortcutConfig::ShortcutId::ZoomVerticalOut,
+                KeyShortcutConfig::ShortcutId::FitSelectedNotes, KeyShortcutConfig::ShortcutId::FitAllNotes,
                 KeyShortcutConfig::ShortcutId::Undo, KeyShortcutConfig::ShortcutId::Redo,
                 KeyShortcutConfig::ShortcutId::Cut, KeyShortcutConfig::ShortcutId::Copy,
                 KeyShortcutConfig::ShortcutId::Paste, KeyShortcutConfig::ShortcutId::SelectAll,
@@ -1122,7 +1139,7 @@ private:
         ShortcutCaptureDialogContent::launch(this,
                                              LOC(kSetShortcut),
                                              message,
-                                             [safeThis](const juce::KeyPress& key) {
+                                             [safeThis](const KeyShortcutConfig::KeyBinding& key) {
                                                  if (safeThis == nullptr) {
                                                      return;
                                                  }

@@ -195,4 +195,9 @@ void AudioModification::applyOriginalF0State(OriginalF0State state)
     content->analysis.setOriginalF0State(state);
 }
 
+void AudioModification::applyOriginalF0FailureReason(std::string reason)
+{
+    content->analysis.originalF0FailureReason = std::move(reason);
+}
+
 } // namespace OpenTune

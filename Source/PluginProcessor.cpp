@@ -4,6 +4,7 @@
 #include "StandaloneArrangement.h"
 #endif
 #include "Editor/EditorFactory.h"
+#include "Editor/ConfirmDialogContent.h"
 #include "Standalone/UI/UIColors.h"
 #include "DSP/ResamplingManager.h"
 #include "DSP/MelSpectrogram.h"
@@ -30,7 +31,11 @@
 #include "Utils/PitchControlConfig.h"
 #include "Utils/ScaleUiMapping.h"
 #include "Utils/PianoRollEditAction.h"
+#include "Utils/VolumeEnvelopeEditAction.h"
+#include "Utils/PianoRollNotePatchAction.h"
+#include "Utils/ScissorsUndoAction.h"
 #include "Utils/PitchShiftEditAction.h"
+#include "Utils/TimeGridEditAction.h"
 #include "Render/Stage2TimeStretchRebuilder.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <algorithm>
@@ -830,8 +835,12 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
                 return;
             }
 
-            if (job.renderCache == nullptr)
+            if (job.renderCache == nullptr) {
+                ProcessRenderRuntime::notifyApplicationRenderFailure(
+                    job.contentKey, job.contentRevision, job.targetRevision,
+                    "Render job has no RenderCache", {}, completionGate_);
                 return;
+            }
 
             auto contentSnap = job.contentSnapshot;
             if (!contentSnap) {
@@ -839,7 +848,8 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
                 {
                     const auto failureReason = juce::String("Render job has no content snapshot");
                     ProcessRenderRuntime::notifyApplicationRenderFailure(
-                        job.contentKey, job.targetRevision, failureReason);
+                        job.contentKey, job.contentRevision, job.targetRevision,
+                        failureReason, job.renderCache, completionGate_);
 #if !JucePlugin_Build_Standalone
                     auto gate = completionGate_;
                     const auto failedKey = job.contentKey;
@@ -862,9 +872,11 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
             }
             ProcessRenderRuntime::CompletionContext completion;
             completion.gate = completionGate_;
-            completion.applicationFailure = [](ContentKey key, uint64_t revision,
-                                               const juce::String& reason) {
-                ProcessRenderRuntime::notifyApplicationRenderFailure(key, revision, reason);
+            completion.applicationFailure = [gate = completionGate_](
+                ContentKey key, uint64_t contentRevision, uint64_t targetRevision,
+                const juce::String& reason, std::shared_ptr<RenderCache> renderCache) {
+                ProcessRenderRuntime::notifyApplicationRenderFailure(
+                    key, contentRevision, targetRevision, reason, std::move(renderCache), gate);
             };
             completion.chunkSettled = [this](ContentKey key,
                                              std::shared_ptr<const EditableContentSnapshot> snapshot,
@@ -892,6 +904,25 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
             ProcessRenderRuntime::getInstance().processChunkRenderJob(
                 contentRenderService_, job,
                 lightPitchEnabled, std::move(completion));
+        };
+        const auto renderFailureGate = completionGate_;
+        lease.renderFailureCallback = [this, renderFailureGate](
+            const RenderJob& job, const juce::String& reason) {
+            ProcessRenderRuntime::notifyApplicationRenderFailure(
+                job.contentKey, job.contentRevision, job.targetRevision,
+                reason, job.renderCache, renderFailureGate);
+#if !JucePlugin_Build_Standalone
+            const bool posted = juce::MessageManager::callAsync(
+                [this, renderFailureGate, key = job.contentKey, reason]() {
+                    ProcessRenderRuntime::CompletionCallbackLease callbackLease(*renderFailureGate);
+                    if (!callbackLease)
+                        return;
+                    if (auto* session = getCaptureSession())
+                        session->onRenderFailed(key, reason);
+                });
+            if (!posted)
+                AppLogger::error("RenderWorker callback failure could not be dispatched to CaptureSession");
+#endif
         };
         crs->attachExecutionLease(std::move(lease));
     }
@@ -1021,7 +1052,10 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
         bindings.retireSegment = [this](ContentKey segmentContentKey) {
             // CaptureSegmentContent owns content; CRS cache is derived.
             if (contentRenderService_) {
+                contentRenderService_->removePlaybackSource(segmentContentKey);
                 contentRenderService_->removeRenderCache(segmentContentKey);
+                contentRenderService_->removeStretcher(segmentContentKey);
+                contentRenderService_->getTimeStretchCache().invalidate(segmentContentKey);
             }
         };
 
@@ -1041,22 +1075,30 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
                 ContentKey segContentKey = segment->contentKey;
                 auto gate = completionGate_;
 
-                f0ExtractionService_->submit(
+                const auto submitResult = f0ExtractionService_->submit(
                     F0RequestKey{segContentKey},
                     [audio, sr, segContentKey](const std::shared_ptr<F0RunOwnerState>& runOwnerState) -> F0ExtractionService::Result {
                         F0ExtractionService::Result result;
                         result.contentKey = segContentKey;
-                        if (!audio || audio->getNumSamples() == 0) {
-                            result.errorMessage = "no_audio_data";
+                        if (!audio || audio->getNumSamples() == 0
+                            || audio->getNumChannels() <= 0) {
+                            result.errorMessage = !audio
+                                ? "Capture F0 extraction has no audio buffer"
+                                : "Capture F0 audio buffer has no usable samples or channels (samples="
+                                    + std::to_string(audio->getNumSamples()) + ", channels="
+                                    + std::to_string(audio->getNumChannels()) + ")";
                             return result;
                         }
                         // Lazy initialize F0 runtime and resolve service inside worker.
                         auto& f0Runtime = ProcessF0Runtime::getInstance();
+                        std::string initializationError;
                         if (!f0Runtime.isReady())
-                            f0Runtime.initialize(ModelPathResolver::getModelsDirectory());
+                            f0Runtime.initialize(ModelPathResolver::getModelsDirectory(), &initializationError);
                         auto f0Svc = f0Runtime.getF0Service();
                         if (!f0Svc) {
-                            result.errorMessage = "no_f0_service";
+                            result.errorMessage = initializationError.empty()
+                                ? "F0 runtime has no inference service after initialization"
+                                : initializationError;
                             return result;
                         }
                         // F0 is mono; stereo input uses channel 0 (left).
@@ -1065,8 +1107,12 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
                         auto extraction = f0Svc->extractF0(
                             src, static_cast<size_t>(numSamples),
                             static_cast<int>(sr), runOwnerState);
-                        if (!extraction.ok() || extraction.value().empty()) {
-                            result.errorMessage = "f0_empty_or_unvoiced";
+                        if (!extraction.ok()) {
+                            result.errorMessage = extraction.error().fullMessage();
+                            return result;
+                        }
+                        if (extraction.value().empty()) {
+                            result.errorMessage = "F0 inference returned an empty result";
                             return result;
                         }
                         result.f0 = extraction.value();
@@ -1082,11 +1128,18 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
                         ProcessRenderRuntime::CompletionCallbackLease callbackLease(*gate);
                         if (!callbackLease)
                             return;
+                        if (result.requestKey != F0RequestKey{segContentKey})
+                            return;
                         if (auto* session = getCaptureSession()) {
                             if (!result.success) {
+                                const auto reason = result.errorMessage.empty()
+                                    ? std::string("Capture F0 extraction failed without an error detail")
+                                    : result.errorMessage;
                                 session->commitSegmentF0Result(
                                     segContentKey, nullptr,
-                                    OriginalF0State::Failed);
+                                    OriginalF0State::Failed,
+                                    reason);
+                                recordOriginalF0FailureEvent(segContentKey, juce::String(reason));
                                 return;
                             }
                             auto pitchCurve = std::make_shared<PitchCurve>();
@@ -1104,7 +1157,36 @@ void OpenTuneAudioProcessor::initializeRuntimeStateOnce()
                             if (pendingTimeToolSeedKeys_.count(segContentKey) != 0)
                                 ensureTimeToolAnchorSeed(segContentKey);
                         }
+                    },
+                    [this, gate, segContentKey](F0ExtractionService::Result&& result) {
+                        ProcessRenderRuntime::CompletionCallbackLease callbackLease(*gate);
+                        if (!callbackLease
+                            || result.requestKey != F0RequestKey{segContentKey})
+                            return;
+                        if (auto* session = getCaptureSession())
+                        {
+                            const auto reason = result.errorMessage.empty()
+                                ? std::string("F0 completion dispatcher rejected the result without an error detail")
+                                : result.errorMessage;
+                            session->commitSegmentF0Result(
+                                segContentKey, nullptr, OriginalF0State::Failed,
+                                reason);
+                            recordOriginalF0FailureEvent(segContentKey, juce::String(reason));
+                        }
                     });
+                if (submitResult != F0ExtractionService::SubmitResult::Accepted
+                    && submitResult != F0ExtractionService::SubmitResult::AlreadyInProgress
+                    && submitResult != F0ExtractionService::SubmitResult::ShuttingDown) {
+                    const auto reason = submitResult == F0ExtractionService::SubmitResult::QueueFull
+                        ? std::string("F0 extraction queue is full")
+                        : std::string("F0 extraction submission was rejected: invalid task");
+                    if (auto* session = getCaptureSession())
+                    {
+                        session->commitSegmentF0Result(
+                            segContentKey, nullptr, OriginalF0State::Failed, reason);
+                        recordOriginalF0FailureEvent(segContentKey, juce::String(reason));
+                    }
+                }
             }
         };
 
@@ -1310,34 +1392,40 @@ void OpenTuneAudioProcessor::resetInferenceBackend(bool forceCpu, std::function<
     // 耗时 reset（Session 销毁、按当前配置重建、AccelerationDetector
     // resetAndDetect）由 ProcessRenderRuntime 的 control worker 串行执行。
     auto gate = completionGate_;
-    auto* processor = this;
     ProcessRenderRuntime::getInstance().resetInferenceBackend(forceCpu, contentRenderService_,
-        [processor, gate, beforeResume = std::move(beforeResume)](ProcessRenderRuntime::ControlResult result) mutable {
-            ProcessRenderRuntime::CompletionCallbackLease callbackLease(*gate);
-            if (!callbackLease)
-                return;
+        [beforeResume = std::move(beforeResume)](
+            ProcessRenderRuntime::ControlResult result, juce::String errorMessage) mutable {
             if (result == ProcessRenderRuntime::ControlResult::Failed)
             {
-                AppLogger::error("[Processor] inference backend control failed");
+                AppLogger::error("[Processor] inference backend control failed: " + errorMessage);
+                ConfirmDialogContent::showDiagnostic(
+                    nullptr,
+                    "Vocoder initialization failed",
+                    errorMessage,
+                    AppLogger::makeDiagnosticText("Inference backend reset", errorMessage));
                 return;
             }
             if (beforeResume)
                 beforeResume();
             AppLogger::info("[Processor] Inference backend reset complete");
-        });
+        }, gate);
 }
 
 void OpenTuneAudioProcessor::setVocoderModelWeight(const VocoderModelWeight& weight)
 {
     auto gate = completionGate_;
     auto* processor = this;
-    ProcessRenderRuntime::getInstance().setVocoderModelWeight(weight, contentRenderService_, [processor, gate](ProcessRenderRuntime::ControlResult result) {
-        ProcessRenderRuntime::CompletionCallbackLease callbackLease(*gate);
-        if (!callbackLease)
-            return;
+    ProcessRenderRuntime::getInstance().setVocoderModelWeight(weight, contentRenderService_,
+        [processor](ProcessRenderRuntime::ControlResult result,
+                          juce::String errorMessage) {
         if (result == ProcessRenderRuntime::ControlResult::Failed)
         {
-            AppLogger::error("[Processor] vocoder model control failed");
+            AppLogger::error("[Processor] vocoder model control failed: " + errorMessage);
+            ConfirmDialogContent::showDiagnostic(
+                nullptr,
+                "Vocoder model initialization failed",
+                errorMessage,
+                AppLogger::makeDiagnosticText("Vocoder initialization", errorMessage));
             return;
         }
         // 3. 模型切换完成后才清 RenderCache/TimeStretchCache 并恢复 render worker
@@ -1356,7 +1444,7 @@ void OpenTuneAudioProcessor::setVocoderModelWeight(const VocoderModelWeight& wei
         if (auto* dc = processor->getDocumentController())
             dc->invalidateAllModificationCaches();
 #endif
-    });
+    }, gate);
 }
 
 void OpenTuneAudioProcessor::invalidateAllContentCaches()
@@ -1378,19 +1466,33 @@ void OpenTuneAudioProcessor::invalidateAllContentCaches()
 #endif
 }
 
-bool OpenTuneAudioProcessor::setF0ModelType(F0ModelType type)
+bool OpenTuneAudioProcessor::setF0ModelType(F0ModelType type, juce::String* failureReason)
 {
     auto& f0Runtime = ProcessF0Runtime::getInstance();
+    std::string initializationError;
     if (!f0Runtime.isReady()
-        && !f0Runtime.initialize(ModelPathResolver::getModelsDirectory(), type))
+        && !f0Runtime.initialize(ModelPathResolver::getModelsDirectory(), type, &initializationError))
+    {
+        if (failureReason != nullptr)
+            *failureReason = initializationError.empty()
+                ? "F0 runtime initialization failed without an error detail"
+                : juce::String(initializationError);
         return false;
+    }
 
     auto f0Svc = ProcessF0Runtime::getInstance().getF0Service();
     if (!f0Svc) {
+        if (failureReason != nullptr)
+            *failureReason = "F0 runtime has no inference service after initialization";
         AppLogger::warn("[Processor] F0 service not ready, cannot switch model");
         return false;
     }
-    if (!f0Svc->setF0Model(type)) {
+    std::string modelError;
+    if (!f0Svc->setF0Model(type, &modelError)) {
+        if (failureReason != nullptr)
+            *failureReason = modelError.empty()
+                ? "Selected F0 model could not be activated"
+                : juce::String(modelError);
         AppLogger::error("[Processor] Failed to switch F0 model");
         return false;
     }
@@ -3321,6 +3423,7 @@ void OpenTuneAudioProcessor::requestRenderForLocalMutationRange(ContentKey key,
     job.startSample = startSample;
     job.endSampleExclusive = endSample;
     job.contentSnapshot = snap;
+    job.contentRevision = snap->contentRevision;
 
     crs->enqueueRender(std::move(job));
 }
@@ -3940,7 +4043,16 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
     }
 
     auto snap = getContentSnapshot(request.contentKey);
-    if (snap == nullptr || snap->audioBuffer == nullptr) {
+    if (snap == nullptr) {
+        setContentOriginalF0State(request.contentKey, OriginalF0State::Failed);
+        setContentOriginalF0FailureReason(request.contentKey,
+            "F0 extraction could not read the content snapshot");
+        return false;
+    }
+    if (snap->audioBuffer == nullptr) {
+        setContentOriginalF0State(request.contentKey, OriginalF0State::Failed);
+        setContentOriginalF0FailureReason(request.contentKey,
+            "F0 extraction content snapshot has no audio buffer");
         return false;
     }
 
@@ -3992,13 +4104,25 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
             break;
     }
 
+    snap = getContentSnapshot(request.contentKey);
+    if (snap == nullptr || snap->audioBuffer == nullptr) {
+        setContentOriginalF0State(request.contentKey, OriginalF0State::Failed);
+        setContentOriginalF0FailureReason(request.contentKey,
+            "F0 extraction could not read the current content snapshot after request admission");
+        return false;
+    }
+
     if (f0ExtractionService_->isActive(F0RequestKey{request.contentKey})) {
         f0ExtractionService_->cancel(F0RequestKey{request.contentKey});
+        f0RequestTokens_.erase(request.contentKey);
     }
 
     auto gate = completionGate_;
     OpenTuneAudioProcessor* const processor = this;
     const auto capturedRequest = request;
+    const uint64_t capturedContentRevision = snap->contentRevision;
+    const auto capturedAudioBuffer = snap->audioBuffer;
+    auto requestToken = std::make_shared<uint64_t>(0);
     // 提交时捕获不可变内容快照：worker 只执行纯数据 F0 计算，owner 销毁后
     // 绝不访问裸 processor（快照 shared_ptr 与进程级 F0 服务随 worker 存活）。
     const auto capturedSnap = snap;
@@ -4010,7 +4134,9 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
             result.contentKey = capturedRequest.contentKey;
 
             if (!capturedSnap || capturedSnap->audioBuffer == nullptr) {
-                result.errorMessage = "content_snapshot_failed";
+                result.errorMessage = !capturedSnap
+                    ? "F0 extraction could not read the content snapshot"
+                    : "F0 extraction content snapshot has no audio buffer";
                 return result;
             }
 
@@ -4018,11 +4144,14 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
 
             // 进程级 F0 服务（进程寿命，owner 销毁后仍安全）；惰性初始化保留原语义。
             auto& f0Runtime = ProcessF0Runtime::getInstance();
+            std::string initializationError;
             if (!f0Runtime.isReady())
-                f0Runtime.initialize(ModelPathResolver::getModelsDirectory());
+                f0Runtime.initialize(ModelPathResolver::getModelsDirectory(), &initializationError);
             auto f0Service = f0Runtime.getF0Service();
             if (!f0Service) {
-                result.errorMessage = "f0_service_unavailable";
+                result.errorMessage = initializationError.empty()
+                    ? "F0 runtime has no inference service after initialization"
+                    : initializationError;
                 return result;
             }
 
@@ -4035,7 +4164,9 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
             result.success = true;
             return result;
         },
-        [processor, gate, capturedRequest](F0ExtractionService::Result&& result) {
+        [processor, gate, capturedRequest, capturedContentRevision,
+         capturedAudioBuffer, requestToken]
+        (F0ExtractionService::Result&& result) {
             // Both the normal commit and the dispatcher-failure mailbox invoke
             // this callback on the message thread.  Do not add a second
             // dispatcher hop after the mailbox has already recovered the
@@ -4044,21 +4175,37 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
             if (!callbackLease)
                 return;
 
+            const auto tokenIt = processor->f0RequestTokens_.find(capturedRequest.contentKey);
+            if (result.requestKey != F0RequestKey{capturedRequest.contentKey}
+                || result.requestToken != *requestToken
+                || tokenIt == processor->f0RequestTokens_.end()
+                || tokenIt->second != result.requestToken)
+                return;
+
             auto currentSnap = processor->getContentSnapshot(capturedRequest.contentKey);
             if (!currentSnap
+                || currentSnap->contentRevision != capturedContentRevision
                 || currentSnap->audioBuffer == nullptr
-                || result.sourceAudioBuffer == nullptr
-                || currentSnap->audioBuffer != result.sourceAudioBuffer) {
+                || currentSnap->audioBuffer != capturedAudioBuffer
+                || (result.sourceAudioBuffer != nullptr
+                    && result.sourceAudioBuffer != capturedAudioBuffer)) {
+                processor->f0RequestTokens_.erase(tokenIt);
                 AppLogger::log("ContentRefresh: stale result dropped contentKey objectId="
                     + juce::String(static_cast<juce::int64>(capturedRequest.contentKey.objectId)));
                 return;
             }
 
             if (!result.success) {
+                processor->f0RequestTokens_.erase(capturedRequest.contentKey);
                 AppLogger::log("ContentRefresh: extraction failed contentKey objectId="
                     + juce::String(static_cast<juce::int64>(capturedRequest.contentKey.objectId))
                     + " reason=" + juce::String(result.errorMessage));
                 processor->setContentOriginalF0State(capturedRequest.contentKey, OriginalF0State::Failed);
+                processor->setContentOriginalF0FailureReason(
+                    capturedRequest.contentKey,
+                    result.errorMessage.empty()
+                        ? "F0 extraction failed without an error detail"
+                        : result.errorMessage);
                 return;
             }
 
@@ -4118,15 +4265,19 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
 
                         if (!segments.empty()) {
                             pitchCurve->replaceCorrectionSegments(segments);
+                            pitchCurve->retainVoicedCorrectionSegments();
                         }
                     }
                 }
             }
 
             if (!processor->writeOriginalF0ToOwner(capturedRequest.contentKey, pitchCurve)) {
+                processor->f0RequestTokens_.erase(capturedRequest.contentKey);
                 AppLogger::log("ContentRefresh: OriginalF0 commit failed contentKey objectId="
                     + juce::String(static_cast<juce::int64>(capturedRequest.contentKey.objectId)));
                 processor->setContentOriginalF0State(capturedRequest.contentKey, OriginalF0State::Failed);
+                processor->setContentOriginalF0FailureReason(capturedRequest.contentKey,
+                    "F0 result could not be committed to the content owner");
                 return;
             }
             // OriginalF0 只更新分析数据，不触发音频渲染
@@ -4161,26 +4312,56 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
             }
 
             processor->setContentOriginalF0State(capturedRequest.contentKey, OriginalF0State::Ready);
+            processor->f0RequestTokens_.erase(capturedRequest.contentKey);
             if (processor->pendingTimeToolSeedKeys_.count(capturedRequest.contentKey) != 0)
                 processor->ensureTimeToolAnchorSeed(capturedRequest.contentKey);
 
             // F0 就绪后请求完整渲染：此前因无 F0 而 Blank 的 chunk 需重新渲染
             processor->requestFullContentRender(capturedRequest.contentKey);
         },
-        [processor, gate, capturedRequest](F0ExtractionService::Result&&) {
+        [processor, gate, capturedRequest, capturedContentRevision, requestToken]
+        (F0ExtractionService::Result&& result) {
             ProcessRenderRuntime::CompletionCallbackLease callbackLease(*gate);
             if (!callbackLease)
                 return;
+            const auto tokenIt = processor->f0RequestTokens_.find(capturedRequest.contentKey);
+            if (result.requestKey != F0RequestKey{capturedRequest.contentKey}
+                || result.requestToken != *requestToken
+                || tokenIt == processor->f0RequestTokens_.end()
+                || tokenIt->second != result.requestToken)
+                return;
+            const auto currentSnap = processor->getContentSnapshot(capturedRequest.contentKey);
+            if (!currentSnap || currentSnap->contentRevision != capturedContentRevision) {
+                processor->f0RequestTokens_.erase(tokenIt);
+                return;
+            }
+            processor->f0RequestTokens_.erase(tokenIt);
             processor->setContentOriginalF0State(
                 capturedRequest.contentKey, OriginalF0State::Failed);
-        });
+            processor->setContentOriginalF0FailureReason(
+                capturedRequest.contentKey,
+                result.errorMessage.empty()
+                    ? "F0 completion dispatcher rejected the result without an error detail"
+                    : result.errorMessage);
+        }, requestToken.get());
 
     if (submitResult != F0ExtractionService::SubmitResult::Accepted) {
         AppLogger::log("ContentRefresh: submit rejected contentKey objectId="
             + juce::String(static_cast<juce::int64>(request.contentKey.objectId)));
+        if (submitResult == F0ExtractionService::SubmitResult::AlreadyInProgress)
+            return true;
+        if (submitResult == F0ExtractionService::SubmitResult::ShuttingDown)
+            return false;
+        f0RequestTokens_.erase(request.contentKey);
         setContentOriginalF0State(request.contentKey, OriginalF0State::Failed);
+        setContentOriginalF0FailureReason(request.contentKey,
+            submitResult == F0ExtractionService::SubmitResult::QueueFull
+                ? "F0 extraction queue is full"
+                : "F0 extraction submission was rejected: invalid task");
         return false;
     }
+
+    f0RequestTokens_[request.contentKey] = *requestToken;
 
     return true;
 }
@@ -4781,10 +4962,10 @@ bool OpenTuneAudioProcessor::replaceContentNotesForFullMutation(ContentKey key, 
     if (!ok)
         return false;
 
-    // 发布由调用方统一负责：Scissors 提交后调用 republishPlaybackSource；
-    // requestContentRefresh 经 onContentFullMutationCompleted → render 请求内
-    // requestRenderForLocalMutationRange 的 republishPlaybackSource 重建包络。
-    // 此处不再发布，避免同一变更两次 publish（不含包络的中间态双发布）。
+    // 发布由调用方统一负责：Scissors 提交事务（applyScissorsNotes）内
+    // republishPlaybackSource；requestContentRefresh 经 onContentFullMutationCompleted
+    // → render 请求内 requestRenderForLocalMutationRange 的 republishPlaybackSource
+    // 重建包络。此处不再发布，避免同一变更两次 publish（不含包络的中间态双发布）。
     return true;
 }
 
@@ -4808,6 +4989,579 @@ ContentCommitSnapshot OpenTuneAudioProcessor::commitContentNotesAndSegmentsWithO
     return commitContentNotesAndSegmentsInternal(
         key, std::move(notesInRange), std::move(segments), affectedRange,
         std::move(originalF0InRange), std::move(erasedRanges));
+}
+
+SelectedNoteParameterEditResult OpenTuneAudioProcessor::editSelectedNoteParameter(
+    ContentKey key,
+    const std::vector<int>& selectedNoteIndices,
+    uint64_t expectedNotesRevision,
+    AudioEditingScheme::ParameterId parameterId,
+    float value,
+    float retuneSpeedDefault,
+    float vibratoDepthDefault,
+    float vibratoRateDefault,
+    juce::String undoDescription)
+{
+    SelectedNoteParameterEditResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread()) {
+        result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+        return result;
+    }
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || snapshot->pitchCurve == nullptr || contentCommands_ == nullptr) {
+        result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+        return result;
+    }
+    const auto patch = planSelectedNoteParameterEdit(
+        key, *snapshot, selectedNoteIndices, expectedNotesRevision, parameterId, value,
+        retuneSpeedDefault, vibratoDepthDefault, vibratoRateDefault);
+    if (!patch) {
+        if (snapshot->notesRevision != expectedNotesRevision) {
+            result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+            result.contentSnapshot = snapshot;
+            return result;
+        }
+        const bool hasSelectedNote = std::any_of(
+            selectedNoteIndices.begin(), selectedNoteIndices.end(),
+            [&snapshot](int index) {
+                return index >= 0 && index < static_cast<int>(snapshot->notes.size());
+            });
+        result.status = hasSelectedNote
+            ? AudioEditingScheme::ParameterEditStatus::Failed
+            : AudioEditingScheme::ParameterEditStatus::NoTarget;
+        return result;
+    }
+
+    result.status = AudioEditingScheme::ParameterEditStatus::Applied;
+    result.changed = patch->changed;
+    result.affectedRange = patch->affectedRange;
+    if (!patch->changed || patch->affectedRange.isEmpty())
+        return result;
+
+    const ContentEditRangeFrames affectedRange{
+        patch->affectedRange.startFrame,
+        patch->affectedRange.endFrameExclusive
+    };
+    result.contentSnapshot = contentCommands_->commitNotesAndSegments(
+        patch->contentKey, patch->afterNotes, patch->afterSegments, affectedRange);
+    if (result.contentSnapshot == nullptr) {
+        result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+        return result;
+    }
+
+    undoManager_.addAction(std::make_unique<PianoRollEditAction>(
+        contentCommands_,
+        patch->contentKey,
+        std::move(undoDescription),
+        patch->beforeNotes,
+        patch->afterNotes,
+        patch->beforeSegments,
+        patch->afterSegments,
+        affectedRange));
+    return result;
+}
+
+OpenTuneAudioProcessor::SelectedNoteEqEditResult OpenTuneAudioProcessor::editSelectedNoteEq(
+    ContentKey key,
+    const std::vector<int>& selectedNoteIndices,
+    uint64_t expectedNotesRevision,
+    const std::optional<EqSettings>& settings,
+    juce::String undoDescription)
+{
+    SelectedNoteEqEditResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    auto plan = planSelectedNoteEqEdit(
+        key, *snapshot, selectedNoteIndices, expectedNotesRevision, settings);
+    result.status = plan.status;
+    if (plan.status == SelectedNoteEqEditStatus::StaleRevision) {
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+    if (plan.status != SelectedNoteEqEditStatus::Ready)
+        return result;
+
+    result.contentSnapshot = contentCommands_->commitNoteTopologyPatch(key, plan.afterPatch);
+    if (result.contentSnapshot == nullptr) {
+        result.status = SelectedNoteEqEditStatus::Failed;
+        return result;
+    }
+
+    undoManager_.addAction(std::make_unique<PianoRollNotePatchAction>(
+        contentCommands_, key, std::move(undoDescription),
+        std::move(plan.beforePatch), std::move(plan.afterPatch)));
+    result.status = SelectedNoteEqEditStatus::Applied;
+    return result;
+}
+
+SelectedNoteDeleteResult OpenTuneAudioProcessor::deleteSelectedPianoRollNotes(
+    ContentKey key,
+    const std::vector<int>& selectedNoteIndices,
+    uint64_t expectedNotesRevision,
+    juce::String undoDescription)
+{
+    SelectedNoteDeleteResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    auto plan = planSelectedNoteDelete(*snapshot, selectedNoteIndices, expectedNotesRevision);
+    result.status = plan.status;
+    if (plan.status == SelectedNoteDeleteStatus::StaleRevision) {
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+    if (plan.status != SelectedNoteDeleteStatus::Ready)
+        return result;
+
+    result.beforeNotes = snapshot->notes;
+    if (auto* edit = std::get_if<SelectedNoteTopologyDelete>(&plan.edit)) {
+        result.contentSnapshot = contentCommands_->commitNoteTopologyPatch(key, edit->afterPatch);
+        if (result.contentSnapshot == nullptr) {
+            result.status = SelectedNoteDeleteStatus::Failed;
+            return result;
+        }
+        undoManager_.addAction(std::make_unique<PianoRollNotePatchAction>(
+            contentCommands_, key, std::move(undoDescription),
+            std::move(edit->beforePatch), std::move(edit->afterPatch)));
+    } else {
+        auto& curveEdit = std::get<SelectedNotePitchCurveDelete>(plan.edit);
+        result.affectedRange = curveEdit.affectedRange;
+        result.pitchCurveEdited = true;
+        const ContentEditRangeFrames affectedRange{
+            curveEdit.affectedRange.startFrame,
+            curveEdit.affectedRange.endFrameExclusive
+        };
+        result.contentSnapshot = contentCommands_->commitNotesAndSegments(
+            key, curveEdit.afterNotes, curveEdit.afterSegments, affectedRange);
+        if (result.contentSnapshot == nullptr) {
+            result.status = SelectedNoteDeleteStatus::Failed;
+            return result;
+        }
+        undoManager_.addAction(std::make_unique<PianoRollEditAction>(
+            contentCommands_, key, std::move(undoDescription),
+            std::move(curveEdit.beforeNotes), std::move(curveEdit.afterNotes),
+            std::move(curveEdit.beforeSegments), std::move(curveEdit.afterSegments), affectedRange));
+    }
+
+    result.status = SelectedNoteDeleteStatus::Applied;
+    return result;
+}
+
+OpenTuneAudioProcessor::PasteNotesResult OpenTuneAudioProcessor::pasteNotesAt(
+    ContentKey key,
+    const std::vector<Note>& clipboardNotes,
+    double pasteStartTime,
+    uint64_t expectedNotesRevision,
+    juce::String undoDescription)
+{
+    PasteNotesResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    auto plan = planPasteNotesEdit(*snapshot, clipboardNotes, pasteStartTime, expectedNotesRevision);
+    result.status = plan.status;
+    if (plan.status == PasteNotesStatus::StaleRevision
+        || plan.status == PasteNotesStatus::EmptyClipboard) {
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+    if (plan.status != PasteNotesStatus::Ready)
+        return result;
+
+    result.pastedNotes = plan.pastedNotes;
+    result.contentSnapshot = contentCommands_->commitNoteTopologyPatch(key, plan.afterPatch);
+    if (result.contentSnapshot == nullptr) {
+        result.status = PasteNotesStatus::Failed;
+        return result;
+    }
+
+    undoManager_.addAction(std::make_unique<PianoRollNotePatchAction>(
+        contentCommands_, key, std::move(undoDescription),
+        std::move(plan.beforePatch), std::move(plan.afterPatch)));
+    result.status = PasteNotesStatus::Applied;
+    return result;
+}
+
+DrawNoteCommitResult OpenTuneAudioProcessor::drawNote(
+    ContentKey key,
+    const DrawNoteEditInput& input,
+    uint64_t expectedNotesRevision,
+    juce::String undoDescription)
+{
+    DrawNoteCommitResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    auto plan = planDrawNoteEdit(*snapshot, input, expectedNotesRevision);
+    if (plan.status == DrawNotePlanStatus::StaleRevision) {
+        result.status = DrawNoteCommitStatus::StaleRevision;
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+    if (plan.status == DrawNotePlanStatus::NoChange) {
+        result.status = DrawNoteCommitStatus::NoChange;
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+
+    result.insertedNote = plan.insertedNote;
+    result.pitchCurveEdited = plan.pitchCurveEdited;
+    result.affectedRange = plan.affectedRange;
+    if (!plan.pitchCurveEdited) {
+        result.contentSnapshot = contentCommands_->commitNoteTopologyPatch(key, plan.afterPatch);
+        if (result.contentSnapshot == nullptr) {
+            result.contentSnapshot = snapshot;
+            return result;
+        }
+
+        undoManager_.addAction(std::make_unique<PianoRollNotePatchAction>(
+            contentCommands_, key, std::move(undoDescription),
+            std::move(plan.beforePatch), std::move(plan.afterPatch)));
+    } else {
+        result.contentSnapshot = contentCommands_->commitNotesAndSegments(
+            key,
+            plan.afterNotes,
+            plan.segmentsToCommit,
+            ContentEditRangeFrames{ plan.affectedRange.startFrame,
+                                    plan.affectedRange.endFrameExclusive });
+        if (result.contentSnapshot == nullptr) {
+            result.contentSnapshot = snapshot;
+            return result;
+        }
+
+        const auto& curve = snapshot->pitchCurve;
+        const F0Timeline timeline(curve->getHopSize(), curve->getSampleRate(),
+                                  static_cast<int>(curve->size()));
+        const double rangeStartSeconds = timeline.timeAtFrame(plan.affectedRange.startFrame);
+        const double rangeEndSeconds = timeline.timeAtFrame(plan.affectedRange.endFrameExclusive);
+        auto afterNotes = filterNotesToRange(
+            result.contentSnapshot->notes, rangeStartSeconds, rangeEndSeconds);
+        auto afterSegments = clipSegmentsToFrameRange(
+            result.contentSnapshot->pitchCurve->getCorrectionSegments(),
+            plan.affectedRange.startFrame,
+            plan.affectedRange.endFrameExclusive);
+
+        undoManager_.addAction(std::make_unique<PianoRollEditAction>(
+            contentCommands_, key, std::move(undoDescription),
+            std::move(plan.beforeNotesInPitchRange), std::move(afterNotes),
+            std::move(plan.beforeSegments), std::move(afterSegments),
+            ContentEditRangeFrames{ plan.affectedRange.startFrame,
+                                    plan.affectedRange.endFrameExclusive }));
+    }
+
+    result.status = DrawNoteCommitStatus::Applied;
+    return result;
+}
+
+OpenTuneAudioProcessor::NoteResizeCommitResult OpenTuneAudioProcessor::resizePianoRollNote(
+    ContentKey key,
+    int noteIndex,
+    NoteResizeEdge edge,
+    double clampedTime,
+    double minDuration,
+    uint64_t expectedNotesRevision,
+    const std::vector<PitchCorrectionSegment>& segments,
+    F0FrameRange affectedRange,
+    juce::String undoDescription)
+{
+    NoteResizeCommitResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+    result.contentSnapshot = snapshot;
+    if (snapshot->notesRevision != expectedNotesRevision) {
+        result.status = NoteResizeCommitStatus::StaleRevision;
+        return result;
+    }
+
+    const auto plan = planNoteResizeEdit(
+        snapshot->notes, noteIndex, edge, clampedTime, minDuration);
+    if (affectedRange.isEmpty()) {
+        ContentNoteRangePatch beforePatch;
+        ContentNoteRangePatch afterPatch;
+        beforePatch.affectedRange = { plan.dirtyStartTime, plan.dirtyEndTime };
+        afterPatch.affectedRange = beforePatch.affectedRange;
+        beforePatch.afterNotesInRange = filterNotesToRange(
+            snapshot->notes, plan.dirtyStartTime, plan.dirtyEndTime);
+        afterPatch.afterNotesInRange = filterNotesToRange(
+            plan.afterNotes, plan.dirtyStartTime, plan.dirtyEndTime);
+
+        result.contentSnapshot = contentCommands_->commitNoteTopologyPatch(key, afterPatch);
+        if (result.contentSnapshot == nullptr) {
+            result.contentSnapshot = snapshot;
+            return result;
+        }
+        undoManager_.addAction(std::make_unique<PianoRollNotePatchAction>(
+            contentCommands_, key, std::move(undoDescription),
+            std::move(beforePatch), std::move(afterPatch)));
+        result.status = NoteResizeCommitStatus::Applied;
+        return result;
+    }
+
+    if (snapshot->pitchCurve == nullptr)
+        return result;
+
+    const auto& curve = snapshot->pitchCurve;
+    const F0Timeline timeline(curve->getHopSize(), curve->getSampleRate(),
+                              static_cast<int>(curve->size()));
+    const double rangeStartSeconds = timeline.timeAtFrame(affectedRange.startFrame);
+    const double rangeEndSeconds = timeline.timeAtFrame(affectedRange.endFrameExclusive);
+    auto beforeNotes = filterNotesToRange(
+        snapshot->notes, rangeStartSeconds, rangeEndSeconds);
+    auto beforeSegments = clipSegmentsToFrameRange(
+        curve->getCorrectionSegments(),
+        affectedRange.startFrame,
+        affectedRange.endFrameExclusive);
+    const ContentEditRangeFrames ownerRange{
+        affectedRange.startFrame,
+        affectedRange.endFrameExclusive
+    };
+    result.contentSnapshot = contentCommands_->commitNotesAndSegments(
+        key,
+        filterNotesToRange(plan.afterNotes, rangeStartSeconds, rangeEndSeconds),
+        clipSegmentsToFrameRange(segments, affectedRange.startFrame, affectedRange.endFrameExclusive),
+        ownerRange);
+    if (result.contentSnapshot == nullptr) {
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+
+    auto afterNotes = filterNotesToRange(
+        result.contentSnapshot->notes, rangeStartSeconds, rangeEndSeconds);
+    auto afterSegments = clipSegmentsToFrameRange(
+        result.contentSnapshot->pitchCurve->getCorrectionSegments(),
+        affectedRange.startFrame,
+        affectedRange.endFrameExclusive);
+    undoManager_.addAction(std::make_unique<PianoRollEditAction>(
+        contentCommands_, key, std::move(undoDescription),
+        std::move(beforeNotes), std::move(afterNotes),
+        std::move(beforeSegments), std::move(afterSegments), ownerRange));
+    result.status = NoteResizeCommitStatus::Applied;
+    result.affectedRange = affectedRange;
+    result.pitchCurveEdited = true;
+    return result;
+}
+
+ScissorsCommitResult OpenTuneAudioProcessor::applyScissorsNotes(
+    ContentKey key,
+    const std::vector<Note>& afterNotes,
+    uint64_t expectedNotesRevision,
+    juce::String undoDescription)
+{
+    ScissorsCommitResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    // Planner 已在 UI 侧按同一 snapshot 的 revision 计算计划；stale check 只对
+    // 提交前的 snapshot revision，外部事务变化则拒绝，避免错内容提交。
+    if (snapshot->notesRevision != expectedNotesRevision) {
+        result.status = ScissorsCommitStatus::StaleRevision;
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+
+    if (!replaceContentNotesForFullMutation(key, afterNotes))
+        return result;
+
+    republishPlaybackSource(key);
+
+    // 提交成功后不与 expectedNotesRevision 比较（notesRevision 已推进）；
+    // postcommit snapshot 作为事务结果，其 notes（normalized data）作为 undo after。
+    const auto afterSnapshot = getContentSnapshot(key);
+    if (afterSnapshot == nullptr)
+        return result;
+
+    result.contentSnapshot = afterSnapshot;
+    undoManager_.addAction(std::make_unique<ScissorsUndoAction>(
+        contentCommands_, key, std::move(undoDescription),
+        snapshot->notes, afterSnapshot->notes));
+    result.status = ScissorsCommitStatus::Applied;
+    return result;
+}
+
+EraserStrokeEditResult OpenTuneAudioProcessor::editEraserStroke(
+    ContentKey key,
+    F0FrameRange brushRange,
+    const std::vector<int>& noteIndices,
+    uint64_t expectedNotesRevision,
+    juce::String undoDescription)
+{
+    EraserStrokeEditResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    const F0Timeline timeline = snapshot->pitchCurve != nullptr
+        ? F0Timeline{ snapshot->pitchCurve->getHopSize(),
+                      snapshot->pitchCurve->getSampleRate(),
+                      static_cast<int>(snapshot->pitchCurve->size()) }
+        : F0Timeline{};
+    auto plan = planEraserStrokeEdit(
+        *snapshot, timeline, brushRange, noteIndices, expectedNotesRevision);
+    result.status = plan.status;
+    if (plan.status == EraserStrokeEditStatus::StaleRevision) {
+        result.contentSnapshot = snapshot;
+        return result;
+    }
+    if (plan.status != EraserStrokeEditStatus::Ready)
+        return result;
+
+    result.beforeNotes = std::move(plan.beforeNotes);
+    result.affectedRange = plan.affectedRange;
+    result.contentSnapshot = contentCommands_->commitNotesAndSegmentsWithOriginalF0(
+        key,
+        plan.afterNotes,
+        plan.afterSegments,
+        ContentEditRangeFrames{ plan.affectedRange.startFrame,
+                                plan.affectedRange.endFrameExclusive },
+        plan.afterOriginalF0,
+        plan.afterErasedRanges);
+    if (result.contentSnapshot == nullptr) {
+        result.status = EraserStrokeEditStatus::Failed;
+        return result;
+    }
+
+    const auto& committedCurve = result.contentSnapshot->pitchCurve;
+    std::vector<float> afterOriginalF0(
+        committedCurve->getOriginalF0().begin() + plan.affectedRange.startFrame,
+        committedCurve->getOriginalF0().begin() + plan.affectedRange.endFrameExclusive);
+    std::vector<F0FrameRange> afterErasedRanges;
+    for (const auto& range : committedCurve->getErasedRanges()) {
+        const int overlapStart = std::max(range.startFrame, plan.affectedRange.startFrame);
+        const int overlapEnd = std::min(range.endFrameExclusive, plan.affectedRange.endFrameExclusive);
+        if (overlapStart < overlapEnd)
+            afterErasedRanges.push_back({ overlapStart, overlapEnd });
+    }
+
+    auto action = std::make_unique<PianoRollEditAction>(
+        contentCommands_, key, std::move(undoDescription),
+        result.beforeNotes, result.contentSnapshot->notes,
+        plan.beforeSegments, plan.afterSegments,
+        ContentEditRangeFrames{ plan.affectedRange.startFrame,
+                                plan.affectedRange.endFrameExclusive },
+        plan.beforeOriginalF0, std::move(afterOriginalF0),
+        plan.beforeErasedRanges, std::move(afterErasedRanges));
+    action->setErasedRangePatch();
+    undoManager_.addAction(std::move(action));
+    result.status = EraserStrokeEditStatus::Applied;
+    return result;
+}
+
+ManualCorrectionEditResult OpenTuneAudioProcessor::applyManualCorrection(
+    ContentKey key,
+    const std::vector<ManualCorrectionOp>& ops,
+    int dirtyStartFrame,
+    int dirtyEndFrame,
+    juce::String undoDescription)
+{
+    ManualCorrectionEditResult result;
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || snapshot->pitchCurve == nullptr
+        || contentCommands_ == nullptr || ops.empty() || dirtyEndFrame < dirtyStartFrame)
+        return result;
+
+    auto scratchCurve = PitchCurve::fromSnapshot(snapshot->pitchCurve);
+    for (const auto& op : ops) {
+        if (op.endFrameExclusive <= op.startFrame)
+            continue;
+        scratchCurve->setManualCorrectionRange(
+            op.startFrame,
+            op.endFrameExclusive,
+            op.f0Data,
+            op.source,
+            op.parameterSnapshot);
+    }
+
+    const ContentEditRangeFrames affectedRange{ dirtyStartFrame, dirtyEndFrame + 1 };
+    const auto curveSnapshot = scratchCurve->getSnapshot();
+    const F0Timeline timeline{ curveSnapshot->getHopSize(), curveSnapshot->getSampleRate(),
+                               static_cast<int>(curveSnapshot->size()) };
+    const double rangeStartSeconds = timeline.isEmpty()
+        ? 0.0
+        : timeline.timeAtFrame(affectedRange.startFrame);
+    const double rangeEndSeconds = timeline.isEmpty()
+        ? 0.0
+        : timeline.timeAtFrame(affectedRange.endFrameExclusive);
+
+    auto scopedNotes = filterNotesToRange(snapshot->notes, rangeStartSeconds, rangeEndSeconds);
+    auto beforeNotes = scopedNotes;
+    auto beforeSegments = clipSegmentsToFrameRange(
+        snapshot->pitchCurve->getCorrectionSegments(),
+        affectedRange.startFrame,
+        affectedRange.endFrameExclusive);
+    auto committedSnapshot = contentCommands_->commitNotesAndSegments(
+        key,
+        std::move(scopedNotes),
+        clipSegmentsToFrameRange(curveSnapshot->getCorrectionSegments(),
+                                 affectedRange.startFrame,
+                                 affectedRange.endFrameExclusive),
+        affectedRange);
+    if (committedSnapshot == nullptr)
+        return result;
+
+    auto afterNotes = filterNotesToRange(
+        committedSnapshot->notes, rangeStartSeconds, rangeEndSeconds);
+    auto afterSegments = clipSegmentsToFrameRange(
+        committedSnapshot->pitchCurve->getCorrectionSegments(),
+        affectedRange.startFrame,
+        affectedRange.endFrameExclusive);
+    undoManager_.addAction(std::make_unique<PianoRollEditAction>(
+        contentCommands_, key, std::move(undoDescription),
+        std::move(beforeNotes), std::move(afterNotes),
+        std::move(beforeSegments), std::move(afterSegments), affectedRange));
+
+    result.status = ManualCorrectionEditStatus::Applied;
+    result.contentSnapshot = std::move(committedSnapshot);
+    return result;
 }
 
 ContentCommitSnapshot OpenTuneAudioProcessor::commitContentNotesAndSegmentsInternal(
@@ -4989,6 +5743,80 @@ ContentCommitSnapshot OpenTuneAudioProcessor::commitVolumeEnvelope(ContentKey ke
     return getContentSnapshot(key);
 }
 
+VolumeEnvelopeRegionEditResult OpenTuneAudioProcessor::commitVolumeEnvelopeRegionPlan(
+    ContentKey key,
+    ContentCommitSnapshot snapshot,
+    VolumeEnvelopeRegionEditPlan plan,
+    juce::String undoDescription)
+{
+    VolumeEnvelopeRegionEditResult result;
+    if (plan.status != VolumeEnvelopeRegionEditStatus::Ready) {
+        result.status = plan.status;
+        if (plan.status == VolumeEnvelopeRegionEditStatus::StaleRevision)
+            result.contentSnapshot = std::move(snapshot);
+        return result;
+    }
+
+    auto committedSnap = commitVolumeEnvelope(key, plan.afterEnvelope);
+    if (committedSnap == nullptr) {
+        result.status = VolumeEnvelopeRegionEditStatus::Failed;
+        return result;
+    }
+
+    undoManager_.addAction(std::make_unique<VolumeEnvelopeEditAction>(
+        contentCommands_, key, std::move(undoDescription),
+        std::move(plan.beforeEnvelope), std::move(plan.afterEnvelope)));
+    result.status = VolumeEnvelopeRegionEditStatus::Applied;
+    result.contentSnapshot = std::move(committedSnap);
+    return result;
+}
+
+VolumeEnvelopeRegionEditResult OpenTuneAudioProcessor::editVolumeEnvelopeRegions(
+    ContentKey key,
+    const std::vector<int>& selectedNoteIndices,
+    uint64_t expectedNotesRevision,
+    float deltaGainDb,
+    juce::String undoDescription)
+{
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    VolumeEnvelopeRegionEditResult result;
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    return commitVolumeEnvelopeRegionPlan(
+        key, snapshot,
+        planVolumeEnvelopeRegionDeltaEdit(*snapshot, selectedNoteIndices,
+                                          expectedNotesRevision, deltaGainDb),
+        std::move(undoDescription));
+}
+
+VolumeEnvelopeRegionEditResult OpenTuneAudioProcessor::resetVolumeEnvelopeRegion(
+    ContentKey key,
+    int noteIndex,
+    uint64_t expectedNotesRevision,
+    juce::String undoDescription)
+{
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    VolumeEnvelopeRegionEditResult result;
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return result;
+
+    const auto snapshot = getContentSnapshot(key);
+    if (snapshot == nullptr || contentCommands_ == nullptr)
+        return result;
+
+    return commitVolumeEnvelopeRegionPlan(
+        key, snapshot,
+        planVolumeEnvelopeRegionResetEdit(*snapshot, noteIndex, expectedNotesRevision),
+        std::move(undoDescription));
+}
+
 void OpenTuneAudioProcessor::republishPlaybackSource(ContentKey key)
 {
 #if JucePlugin_Enable_ARA
@@ -5136,6 +5964,30 @@ bool OpenTuneAudioProcessor::setContentTimeGrid(ContentKey key,
     return ok;
 }
 
+bool OpenTuneAudioProcessor::applyTimeGridEdit(
+    ContentKey key,
+    std::shared_ptr<const TimeGridSnapshot> before,
+    std::shared_ptr<const TimeGridSnapshot> after,
+    juce::String description)
+{
+    auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+    jassert(messageManager != nullptr && messageManager->isThisTheMessageThread());
+    if (messageManager == nullptr || !messageManager->isThisTheMessageThread())
+        return false;
+    if (!key.isValid() || before == nullptr || after == nullptr || contentCommands_ == nullptr)
+        return false;
+
+    auto action = std::make_unique<TimeGridEditAction>(
+        contentCommands_, key,
+        description.isNotEmpty() ? description : LOC_RAW("Edit time grid"),
+        std::move(before), after);
+    if (!setContentTimeGrid(key, after))
+        return false;
+
+    undoManager_.addAction(std::move(action));
+    return true;
+}
+
 bool OpenTuneAudioProcessor::setContentDetectedKey(ContentKey key, const DetectedKey& detectedKey)
 {
     switch (key.domainKind) {
@@ -5208,8 +6060,6 @@ bool OpenTuneAudioProcessor::setContentOriginalF0State(ContentKey key, OriginalF
             auto* clip = standaloneContentRepository_->findClip(key);
             if (!clip) return false;
             clip->applyOriginalF0State(state);
-            if (state == OriginalF0State::Failed)
-                f0FailureGeneration_.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
 #endif
@@ -5233,6 +6083,59 @@ bool OpenTuneAudioProcessor::setContentOriginalF0State(ContentKey key, OriginalF
             break;
     }
     return false;
+}
+
+bool OpenTuneAudioProcessor::setContentOriginalF0FailureReason(ContentKey key, std::string reason)
+{
+#if JucePlugin_Build_Standalone
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
+#endif
+    switch (key.domainKind) {
+#if JucePlugin_Build_Standalone
+        case DomainKind::StandaloneClip: {
+            auto* clip = standaloneContentRepository_->findClip(key);
+            if (!clip) return false;
+            recordOriginalF0FailureEvent(key, juce::String(reason));
+            clip->applyOriginalF0FailureReason(std::move(reason));
+            return true;
+        }
+#endif
+#if JucePlugin_Enable_ARA
+        case DomainKind::ARAAudioModification: {
+            auto* dc = getDocumentController();
+            if (!dc) return false;
+            return dc->applyOriginalF0FailureReasonToModification(key, std::move(reason));
+        }
+#endif
+#if !JucePlugin_Build_Standalone
+        case DomainKind::RegularVST3Capture: {
+            auto* session = getCaptureSession();
+            auto* seg = session ? session->findSegmentByContentKey(key) : nullptr;
+            if (!seg || !seg->content) return false;
+            recordOriginalF0FailureEvent(key, juce::String(reason));
+            seg->content->applyOriginalF0FailureReason(std::move(reason));
+            return true;
+        }
+#endif
+        default:
+            break;
+    }
+    return false;
+}
+
+void OpenTuneAudioProcessor::recordOriginalF0FailureEvent(
+    ContentKey key, const juce::String& reason)
+{
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
+    pendingF0FailureEvents_.push_back({key, reason});
+}
+
+std::deque<OriginalF0FailureEvent> OpenTuneAudioProcessor::takeOriginalF0FailureEvents()
+{
+    jassert(juce::MessageManager::getInstance()->isThisTheMessageThread());
+    std::deque<OriginalF0FailureEvent> events;
+    events.swap(pendingF0FailureEvents_);
+    return events;
 }
 
 bool OpenTuneAudioProcessor::applyContentPitchShiftState(ContentKey key,

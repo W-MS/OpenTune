@@ -1,9 +1,13 @@
 #include "../Source/Render/ContentRenderService.h"
+#include "../Source/Inference/TimeStretchCache.h"
 #include "../Source/Inference/VocoderInferenceService.h"
+#include "../Source/Inference/VocoderInterface.h"
 #include "../Source/Inference/VocoderRenderScheduler.h"
+#include "../Source/Inference/VocoderSidecarMetadata.h"
 #include "../Source/Runtime/ProcessRenderRuntime.h"
 #include "LifecycleTestTrace.h"
 #include "LifecycleWatchdog.h"
+#include "../Source/Utils/TimeCoordinate.h"
 #include <juce_events/juce_events.h>
 #include <cstdio>
 #include <memory>
@@ -12,6 +16,22 @@
 
 namespace
 {
+class DefaultVocoderCapability final : public OpenTune::VocoderInterface
+{
+public:
+    std::vector<float> synthesize(const std::vector<float>&,
+                                  const std::vector<float>&,
+                                  const float*,
+                                  size_t,
+                                  Ort::RunOptions&) override
+    {
+        return {};
+    }
+
+    float getFMax() const override { return 16000.0f; }
+    void setMelFMax(float) override {}
+};
+
 bool checkRenderContract(bool value, const char* reason)
 {
     if (! value)
@@ -66,12 +86,38 @@ bool runRenderCacheCompletionContract()
     if (! checkRenderContract(jobs.size() == 1 && cache.claimPendingJob(jobs.front()), "blank_claim_failed"))
         return false;
     const auto blankRevision = jobs.front().targetRevision;
-    if (! checkRenderContract(cache.markChunkAsBlank(0, blankRevision), "first_blank_not_accepted")
-        || ! checkRenderContract(! cache.markChunkAsBlank(0, blankRevision), "repeated_blank_accepted")
+    if (! checkRenderContract(
+            cache.markChunkAsBlank(0, blankRevision) == OpenTune::RenderCache::ChunkRenderResult::Published,
+            "first_blank_not_accepted")
+        || ! checkRenderContract(
+            cache.markChunkAsBlank(0, blankRevision) == OpenTune::RenderCache::ChunkRenderResult::Stale,
+            "repeated_blank_accepted")
         || ! checkRenderContract(cache.getChunkStats().blank == 1, "blank_state_not_blank"))
         return false;
 
     return checkRenderContract(cache.isCanonicalSettled(), "completion_contract_not_settled");
+}
+
+bool runHighFrequencyMetadataContract()
+{
+    DefaultVocoderCapability defaultVocoder;
+    juce::StringArray absent;
+    absent.add("mel_fmax: 16000");
+    juce::StringArray disabled;
+    disabled.add("needs_high_frequency_original: false");
+    juce::StringArray enabled;
+    enabled.add("needs_high_frequency_original: true");
+    juce::StringArray nested;
+    nested.add("model:");
+    nested.add("  needs_high_frequency_original: true");
+
+    return checkRenderContract(
+        !defaultVocoder.needsHighFrequencyOriginal()
+            && !OpenTune::sidecarNeedsHighFrequencyOriginal(absent)
+            && !OpenTune::sidecarNeedsHighFrequencyOriginal(disabled)
+            && OpenTune::sidecarNeedsHighFrequencyOriginal(enabled)
+            && !OpenTune::sidecarNeedsHighFrequencyOriginal(nested),
+        "high_frequency_original_metadata_contract_regressed");
 }
 
 bool runVocoderErrorContract()
@@ -111,6 +157,27 @@ bool runVocoderErrorContract()
         return false;
     return true;
 }
+
+bool runTimeStretchCacheInvalidationContract()
+{
+    const size_t baseline = OpenTune::RenderCache::globalCacheCurrentBytes().load(
+        std::memory_order_acquire);
+    OpenTune::TimeStretchCache cache;
+    const OpenTune::ContentKey key{OpenTune::DomainKind::StandaloneClip, 924, 0};
+    const uint32_t oldGeneration = cache.beginBuild(key);
+    cache.invalidate(key);
+    cache.store(key, std::vector<float>(256, 1.0f), 1, 1, 44100.0, oldGeneration);
+
+    juce::AudioBuffer<float> destination(1, 256);
+    destination.clear();
+    const int readSamples = cache.sliceCanonicalForOutputRange(
+        key, 1, 1, 0, destination, 0, 256);
+    return checkRenderContract(
+        readSamples == 0
+            && OpenTune::RenderCache::globalCacheCurrentBytes().load(std::memory_order_acquire)
+                == baseline,
+        "invalidated_time_stretch_build_was_published");
+}
 }
 
 bool runRenderCacheCapacityContract()
@@ -118,7 +185,29 @@ bool runRenderCacheCapacityContract()
     auto& limit = OpenTune::RenderCache::renderCachePcmLimitBytes();
     const size_t oldLimit = limit.load(std::memory_order_acquire);
     const size_t baseline = OpenTune::RenderCache::renderCacheCurrentBytes().load(std::memory_order_acquire);
-    bool passed = true;
+    constexpr size_t expectedDefaultLimit = static_cast<size_t>(6) * 1024 * 1024 * 1024;
+    bool passed = checkRenderContract(
+        OpenTune::RenderCache::kDefaultRenderCachePcmLimitBytes == expectedDefaultLimit
+            && oldLimit == expectedDefaultLimit,
+        "default_pcm_budget_not_6_gib");
+
+    const auto completeChunk = [](OpenTune::RenderCache& cache,
+                                  int64_t startSample,
+                                  int64_t endSampleExclusive,
+                                  uint64_t contentRevision,
+                                  float sample) {
+        cache.reconcileFullPlanAndRequest(
+            {{startSample, endSampleExclusive}}, startSample, endSampleExclusive, contentRevision);
+        const auto jobs = cache.getPendingJobs();
+        if (jobs.size() != 1 || !cache.claimPendingJob(jobs.front()))
+            return false;
+        return cache.completeChunkRenderWithAudio(
+                   startSample,
+                   endSampleExclusive,
+                   std::vector<float>(static_cast<size_t>(endSampleExclusive - startSample), sample),
+                   jobs.front().targetRevision)
+            == OpenTune::RenderCache::ChunkRenderResult::Published;
+    };
 
     {
         limit.store(baseline + 1024, std::memory_order_release);
@@ -126,12 +215,12 @@ bool runRenderCacheCapacityContract()
         const std::vector<OpenTune::RenderCache::PlannedChunk> firstPlan{{0, 256}};
         cache.reconcileFullPlanAndRequest(firstPlan, 0, 256, 1);
         const auto firstJob = cache.getPendingJobs();
-        passed = firstJob.size() == 1 && cache.claimPendingJob(firstJob.front());
+        passed = passed && firstJob.size() == 1 && cache.claimPendingJob(firstJob.front());
         if (passed)
         {
             std::vector<float> firstAudio(256, 1.0f);
-            passed = cache.completeChunkRenderWithAudio(0, 256, std::move(firstAudio),
-                                                        firstJob.front().targetRevision)
+            passed = passed && cache.completeChunkRenderWithAudio(
+                                    0, 256, std::move(firstAudio), firstJob.front().targetRevision)
                 == OpenTune::RenderCache::ChunkRenderResult::Published;
         }
 
@@ -142,8 +231,8 @@ bool runRenderCacheCapacityContract()
         if (passed)
         {
             std::vector<float> secondAudio(256, 2.0f);
-            passed = cache.completeChunkRenderWithAudio(256, 512, std::move(secondAudio),
-                                                        secondJob.front().targetRevision)
+            passed = passed && cache.completeChunkRenderWithAudio(
+                                    256, 512, std::move(secondAudio), secondJob.front().targetRevision)
                 == OpenTune::RenderCache::ChunkRenderResult::MemoryLimitExceeded;
             passed = passed && cache.completeChunkRenderFailure(
                 secondJob.front().startSample, secondJob.front().targetRevision);
@@ -167,8 +256,8 @@ bool runRenderCacheCapacityContract()
         if (passed)
         {
             std::vector<float> audio(256, 1.0f);
-            passed = cache.completeChunkRenderWithAudio(0, 256, std::move(audio),
-                                                        job.front().targetRevision)
+            passed = passed && cache.completeChunkRenderWithAudio(
+                                    0, 256, std::move(audio), job.front().targetRevision)
                 == OpenTune::RenderCache::ChunkRenderResult::Published;
             const bool prepared = cache.prepareForPlaybackSampleRate(48000.0);
             const size_t preparedBytes =
@@ -193,8 +282,8 @@ bool runRenderCacheCapacityContract()
             if (passed)
             {
                 std::vector<float> rebuiltAudio(256, 2.0f);
-                passed = cache.completeChunkRenderWithAudio(
-                             0, 256, std::move(rebuiltAudio), rebuiltJob.front().targetRevision)
+                passed = passed && cache.completeChunkRenderWithAudio(
+                                        0, 256, std::move(rebuiltAudio), rebuiltJob.front().targetRevision)
                     == OpenTune::RenderCache::ChunkRenderResult::MemoryLimitExceeded;
                 const auto stats = cache.getChunkStats();
                 passed = passed && stats.running == 1
@@ -206,6 +295,130 @@ bool runRenderCacheCapacityContract()
 
     passed = passed
         && OpenTune::RenderCache::renderCacheCurrentBytes().load(std::memory_order_acquire) == baseline;
+
+    {
+        limit.store(baseline + 32768, std::memory_order_release);
+        OpenTune::RenderCacheRegistry registry;
+        const OpenTune::ContentKey removedKey{OpenTune::DomainKind::StandaloneClip, 920, 0};
+        auto removedCache = registry.getOrCreate(removedKey);
+        passed = checkRenderContract(
+            removedCache != nullptr && completeChunk(*removedCache, 0, 256, 1, 1.0f),
+            "registry_remove_pcm_setup_failed") && passed;
+        passed = checkRenderContract(
+            OpenTune::RenderCache::renderCacheCurrentBytes().load(std::memory_order_acquire)
+                == baseline + 256 * sizeof(float),
+            "registry_remove_pcm_not_tracked") && passed;
+        registry.remove(removedKey);
+        passed = checkRenderContract(
+            registry.get(removedKey) == nullptr
+                && OpenTune::RenderCache::renderCacheCurrentBytes().load(std::memory_order_acquire)
+                    == baseline,
+            "registry_remove_did_not_clear_pcm") && passed;
+
+        const OpenTune::ContentKey firstClearKey{OpenTune::DomainKind::StandaloneClip, 921, 0};
+        const OpenTune::ContentKey secondClearKey{OpenTune::DomainKind::StandaloneClip, 922, 0};
+        auto firstCache = registry.getOrCreate(firstClearKey);
+        auto secondCache = registry.getOrCreate(secondClearKey);
+        passed = checkRenderContract(
+            firstCache != nullptr && secondCache != nullptr
+                && completeChunk(*firstCache, 0, 256, 1, 1.0f)
+                && completeChunk(*secondCache, 0, 256, 1, 2.0f),
+            "registry_clear_pcm_setup_failed") && passed;
+        registry.clear();
+        passed = checkRenderContract(
+            registry.get(firstClearKey) == nullptr && registry.get(secondClearKey) == nullptr
+                && OpenTune::RenderCache::renderCacheCurrentBytes().load(std::memory_order_acquire)
+                    == baseline,
+            "registry_clear_did_not_clear_pcm") && passed;
+
+        const OpenTune::ContentKey staleKey{OpenTune::DomainKind::StandaloneClip, 923, 0};
+        auto staleCache = registry.getOrCreate(staleKey);
+        staleCache->reconcileFullPlanAndRequest({{0, 256}}, 0, 256, 1);
+        const auto staleJobs = staleCache->getPendingJobs();
+        const bool staleClaimed = staleJobs.size() == 1
+            && staleCache->claimPendingJob(staleJobs.front());
+        registry.remove(staleKey);
+        passed = checkRenderContract(
+            staleClaimed
+                && staleCache->completeChunkRenderWithAudio(
+                       0, 256, std::vector<float>(256, 1.0f), staleJobs.front().targetRevision)
+                    == OpenTune::RenderCache::ChunkRenderResult::Stale,
+            "cleared_cache_accepted_claimed_completion") && passed;
+    }
+    passed = checkRenderContract(
+        OpenTune::RenderCache::renderCacheCurrentBytes().load(std::memory_order_acquire) == baseline,
+        "registry_cleanup_counter_not_at_baseline") && passed;
+
+    {
+        limit.store(baseline + 65536, std::memory_order_release);
+        OpenTune::RenderCache cache;
+        const std::vector<OpenTune::RenderCache::PlannedChunk> plan{{0, 256}, {256, 512}};
+        cache.reconcileFullPlanAndRequest(plan, 0, 512, 1);
+        auto jobs = cache.getPendingJobs();
+        bool ready = jobs.size() == 2;
+        for (const auto& job : jobs)
+        {
+            ready = ready && cache.claimPendingJob(job);
+            if (ready)
+            {
+                const float sample = job.startSample == 0 ? 1.0f : 2.0f;
+                ready = cache.completeChunkRenderWithAudio(
+                    job.startSample,
+                    job.endSampleExclusive,
+                    std::vector<float>(static_cast<size_t>(job.endSampleExclusive - job.startSample), sample),
+                    job.targetRevision)
+                    == OpenTune::RenderCache::ChunkRenderResult::Published;
+            }
+        }
+        ready = ready && cache.prepareForPlaybackSampleRate(48000.0);
+        passed = checkRenderContract(ready, "local_edit_prepared_setup_failed") && passed;
+
+        if (ready)
+        {
+            const size_t bytesBeforeEdit =
+                OpenTune::RenderCache::renderCacheCurrentBytes().load(std::memory_order_acquire);
+            const int64_t preparedChunkStart = OpenTune::TimeCoordinate::sampleRateProject(
+                256, OpenTune::RenderCache::kSampleRate, 48000.0);
+            const size_t changedChunkPcmBytes =
+                static_cast<size_t>(OpenTune::TimeCoordinate::sampleRateProject(
+                    256, OpenTune::RenderCache::kSampleRate, 48000.0)) * sizeof(float);
+            limit.store(bytesBeforeEdit + 256 * sizeof(float) + changedChunkPcmBytes,
+                        std::memory_order_release);
+
+            cache.reconcileFullPlanAndRequest(plan, 0, 256, 2);
+            jobs = cache.getPendingJobs();
+            bool edited = jobs.size() == 1 && jobs.front().startSample == 0
+                && cache.claimPendingJob(jobs.front());
+            if (edited)
+            {
+                edited = cache.completeChunkRenderWithAudio(
+                    0, 256, std::vector<float>(256, 3.0f), jobs.front().targetRevision)
+                    == OpenTune::RenderCache::ChunkRenderResult::Published;
+            }
+            passed = checkRenderContract(edited, "local_edit_reallocated_unchanged_prepared_pcm")
+                && passed;
+
+            if (edited)
+            {
+                juce::AudioBuffer<float> unchangedChunk(1, 64);
+                unchangedChunk.clear();
+                cache.overlayPreparedAudio(
+                    unchangedChunk, 0, 64, preparedChunkStart + 32, 48000, 2);
+                passed = checkRenderContract(
+                    unchangedChunk.getSample(0, 0) != 0.0f,
+                    "unchanged_prepared_chunk_rejected_current_revision") && passed;
+                passed = checkRenderContract(
+                    OpenTune::RenderCache::renderCacheCurrentBytes().load(std::memory_order_acquire)
+                        == bytesBeforeEdit + 256 * sizeof(float) + changedChunkPcmBytes,
+                    "local_edit_pcm_budget_used_for_unchanged_chunk") && passed;
+            }
+        }
+        cache.clear();
+    }
+
+    passed = checkRenderContract(
+        OpenTune::RenderCache::renderCacheCurrentBytes().load(std::memory_order_acquire) == baseline,
+        "local_edit_cleanup_counter_not_at_baseline") && passed;
     limit.store(oldLimit, std::memory_order_release);
     return passed;
 }
@@ -235,7 +448,9 @@ bool runRenderWorkerRequeueContract()
     retry.endSampleExclusive = 256;
     retry.queuedChunkStartSample = 0;
     retry.targetRevision = pending.front().targetRevision;
-    if (!checkRenderContract(service->requeueRenderChunk(retry), "requeue_submit_failed"))
+    if (!checkRenderContract(
+            service->requeueRenderChunk(retry) == OpenTune::RenderWorker::RequeueResult::Requeued,
+            "requeue_submit_failed"))
         return false;
 
     service->drainRenderWorker();
@@ -256,7 +471,9 @@ bool runRenderWorkerRequeueContract()
     retry.contentKey = detachedKey;
     retry.renderCache = detachedCache;
     retry.targetRevision = detachedPending.front().targetRevision;
-    if (!checkRenderContract(!service->requeueRenderChunk(retry),
+    if (!checkRenderContract(
+                                 service->requeueRenderChunk(retry)
+                                     != OpenTune::RenderWorker::RequeueResult::Requeued,
                              "detached_requeue_was_accepted")
         || !checkRenderContract(detachedCache->completeChunkRenderFailure(
                                     retry.startSample, retry.targetRevision),
@@ -342,16 +559,24 @@ int runChild(int argc, char** argv)
     constexpr std::size_t payloadFloats =
         OpenTune::VocoderRenderScheduler::kMaxJobPayloadBytes / sizeof(float);
     if (!OpenTune::VocoderRenderScheduler::isJobPayloadWithinLimit(payloadFloats, 0, 0)
-        || OpenTune::VocoderRenderScheduler::isJobPayloadWithinLimit(payloadFloats + 1, 0, 0))
+        || OpenTune::VocoderRenderScheduler::isJobPayloadWithinLimit(payloadFloats + 1, 0, 0)
+        || !OpenTune::VocoderRenderScheduler::isJobPayloadWithinLimit(0, 0, 0,
+            OpenTune::VocoderRenderScheduler::kMaxJobPayloadBytes)
+        || OpenTune::VocoderRenderScheduler::isJobPayloadWithinLimit(0, 0, 0,
+            OpenTune::VocoderRenderScheduler::kMaxJobPayloadBytes + 1))
     {
         std::fprintf(stderr, "{\"event\":\"vocoder_payload_capacity\",\"result\":\"failure\"}\n");
         return 1;
     }
+    if (!runHighFrequencyMetadataContract())
+        return 1;
     if (!runRenderCacheCapacityContract())
     {
         std::fprintf(stderr, "{\"event\":\"render_cache_capacity\",\"result\":\"failure\"}\n");
         return 1;
     }
+    if (!runTimeStretchCacheInvalidationContract())
+        return 1;
     if (! runRenderCacheCompletionContract())
         return 1;
     if (!runVocoderErrorContract())
@@ -396,7 +621,9 @@ int runChild(int argc, char** argv)
         completion.gate = completionGate;
         completion.applicationFailure = [&applicationFailures](OpenTune::ContentKey,
                                                                 uint64_t,
-                                                                const juce::String&) {
+                                                                uint64_t,
+                                                                const juce::String&,
+                                                                std::shared_ptr<OpenTune::RenderCache>) {
             applicationFailures.fetch_add(1, std::memory_order_relaxed);
         };
         completion.chunkSettled = [&settled](OpenTune::ContentKey,
@@ -435,7 +662,8 @@ int runChild(int argc, char** argv)
     service->detachExecutionLease(&owner);
     OpenTuneTest::trace("RenderRuntimeLifecycleTests", "lease_detached");
 
-    runtime.resetVocoder(nullptr, [](OpenTune::ProcessRenderRuntime::ControlResult) {});
+    runtime.resetVocoder(nullptr, [](OpenTune::ProcessRenderRuntime::ControlResult,
+                                     juce::String) {});
     std::thread firstShutdown([&runtime] {
         runtime.releaseOwner();
         juce::MessageManager::callAsync([] {

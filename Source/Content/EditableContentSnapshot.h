@@ -11,6 +11,7 @@
 #include "../DSP/ReferenceFeatures.h"
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <memory>
+#include <string>
 #include <vector>
 #include <cstdint>
 
@@ -37,6 +38,7 @@ struct EditableContentSnapshot
     PitchShiftSettings pitchShiftSettings;
 
     OriginalF0State originalF0State{OriginalF0State::NotRequested};
+    std::string originalF0FailureReason;
     DetectedKey detectedKey;
     std::vector<SilentGap> silentGaps;
     ReferenceFeatureSet referenceFeatures;

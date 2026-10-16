@@ -58,14 +58,15 @@ inline bool extractOriginalF0ForImportedClip(F0InferenceService& f0Service,
                                               std::string& errorMessage)
 {
     if (snap.audioBuffer == nullptr) {
-        errorMessage = "clip_snapshot_failed";
+        errorMessage = "Imported clip snapshot has no audio buffer";
         return false;
     }
 
     const int numSamples = snap.audioBuffer->getNumSamples();
     const int numChannels = snap.audioBuffer->getNumChannels();
     if (numSamples <= 0 || numChannels <= 0) {
-        errorMessage = "invalid_audio_buffer";
+        errorMessage = "Audio buffer has no usable samples or channels (samples="
+            + std::to_string(numSamples) + ", channels=" + std::to_string(numChannels) + ")";
         return false;
     }
 
@@ -101,8 +102,12 @@ inline bool extractOriginalF0ForImportedClip(F0InferenceService& f0Service,
 
     auto extraction = f0Service.extractF0(src, static_cast<size_t>(numSamples),
                                           static_cast<int>(internalSampleRate), runOwnerState);
-    if (!extraction.ok() || extraction.value().empty()) {
-        errorMessage = "f0_empty_or_unvoiced";
+    if (!extraction.ok()) {
+        errorMessage = extraction.error().fullMessage();
+        return false;
+    }
+    if (extraction.value().empty()) {
+        errorMessage = "F0 inference returned an empty result";
         return false;
     }
 

@@ -54,6 +54,11 @@ struct SnapSettings {
     bool isActive() const noexcept { return enabled && mode != Mode::Off; }
 };
 
+struct PluginEditorSize {
+    int width = 1000;
+    int height = 900;
+};
+
 struct SharedPreferencesState {
     Language language = Language::Chinese;
     ThemeId theme = ThemeId::Aurora;
@@ -147,6 +152,9 @@ public:
     void setWholeNoteMoveSnapMode(WholeNoteMoveSnapMode mode);
     WholeNoteMoveSnapMode getWholeNoteMoveSnapMode() const;
 
+    PluginEditorSize getDefaultPluginEditorSize();
+    void setDefaultPluginEditorSize(PluginEditorSize size);
+
     std::vector<juce::String> getRecentProjects() const;
     void pushRecentProject(const juce::String& projectPath);
     void clearRecentProjects();
@@ -155,8 +163,9 @@ private:
     StorageOptions storageOptions_;
     mutable std::mutex mutex_;
     AppPreferencesState state_;
-    juce::ApplicationProperties properties_;
     std::unique_ptr<juce::InterProcessLock> processLock_;
+    juce::ApplicationProperties properties_;
+    std::unique_ptr<juce::PropertiesFile> pluginEditorSizeProperties_;
 
     void initialiseStorage();
     void saveLocked();

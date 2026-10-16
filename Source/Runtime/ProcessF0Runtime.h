@@ -42,8 +42,9 @@ class ProcessF0Runtime
 public:
     static ProcessF0Runtime& getInstance();
 
-    bool initialize(const std::string& modelsDir);
-    bool initialize(const std::string& modelsDir, F0ModelType initialModel);
+    bool initialize(const std::string& modelsDir, std::string* errorMessage = nullptr);
+    bool initialize(const std::string& modelsDir, F0ModelType initialModel,
+                    std::string* errorMessage = nullptr);
 
     std::shared_ptr<Ort::Env> getOrtEnv() const;
     std::shared_ptr<F0InferenceService> getF0Service() const;

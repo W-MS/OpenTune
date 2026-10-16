@@ -23,7 +23,7 @@ namespace OpenTune {
 // 轨道面板常量
 static constexpr int TRACK_PANEL_WIDTH = 120; // 紧凑模式宽度
 static constexpr int MAX_TRACKS = MaxTracks;    // 最大轨道数量
-static constexpr int DEFAULT_VISIBLE_TRACKS = 2; // 默认显示轨道数量
+static constexpr int DEFAULT_VISIBLE_TRACKS = kDefaultVisibleTracks; // 默认显示轨道数量
 
     // 环形LED电平表 - 包裹在音量旋钮外圈
     class CircularLevelMeter : public juce::Component, private juce::Timer
@@ -505,6 +505,7 @@ public:
         virtual void trackColorRandomizeRequested(int trackId) { juce::ignoreUnused(trackId); }
         // 可见轨道数量变化回调（用于同步ArrangementView滚动边界）
         virtual void visibleTrackCountChanged(int newCount) { juce::ignoreUnused(newCount); }
+        virtual bool pointerShortcutBindingRequested(const KeyShortcutConfig::KeyBinding& /*binding*/) { return false; }
     };
 
     // 构造函数，高度由外部传入
@@ -544,6 +545,7 @@ public:
     // 动态轨道高度控制 - 与ArrangementView同步
     void setTrackHeight(int height);
     int getTrackHeight() const { return trackHeight_; }
+    void setShortcutSettings(const KeyShortcutConfig::KeyShortcutSettings& settings) { shortcutSettings_ = settings; }
     
     // 垂直滚动偏移 - 与ArrangementView同步（Y轴滚动同步）
     void setVerticalScrollOffset(int offset);
@@ -560,6 +562,8 @@ public:
     static constexpr int MAX_TRACK_HEIGHT = 300;  // 最大高度：窗口1/3左右
 
 private:
+    bool dispatchPointerBinding(const KeyShortcutConfig::KeyBinding& binding);
+
     struct TrackControl
     {
         // 只保留3个核心控件：Solo、Mute按钮和音量旋钮（带电平表）
@@ -574,6 +578,7 @@ private:
     int activeTrackId_{0};
     int visibleTrackCount_{DEFAULT_VISIBLE_TRACKS};  // 当前可见轨道数量，默认2
     int trackHeight_{DEFAULT_TRACK_HEIGHT};  // 动态轨道高度
+    KeyShortcutConfig::KeyShortcutSettings shortcutSettings_ = KeyShortcutConfig::KeyShortcutSettings::getDefault();
     int verticalScrollOffset_{0};  // 垂直滚动偏移（与ArrangementView同步）
     AddTrackButton addTrackButton_;  // +号按钮
     VolumeKnobLookAndFeel knobLnF_;  // Custom LookAndFeel for knobs

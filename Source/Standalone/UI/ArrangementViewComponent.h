@@ -28,6 +28,7 @@
 #include "../Utils/ZoomSensitivityConfig.h"
 #include "../Utils/KeyShortcutConfig.h"
 #include "../../Utils/TimelineDisplayMode.h"
+#include "../../Utils/TrackConstants.h"
 
 namespace OpenTune {
 
@@ -90,6 +91,7 @@ public:
         // View emits playhead position requests only (ruler seek / empty-space seek).
         // The editor owns transport decisions; the view never drives transport state.
         virtual bool playheadPositionChangeRequested(double /*timeSeconds*/) { return false; }
+        virtual bool pointerShortcutRequested(KeyShortcutConfig::ShortcutId /*id*/) { return false; }
     };
 
     ArrangementViewComponent(OpenTuneAudioProcessor& processor);
@@ -106,6 +108,11 @@ public:
     void mouseDoubleClick(const juce::MouseEvent& e) override;
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
     bool keyPressed(const juce::KeyPress& key) override;
+    bool handleViewportShortcut(const juce::KeyPress& key);
+    bool dispatchPointerShortcut(const KeyShortcutConfig::KeyBinding& binding)
+    {
+        return handlePointerShortcut(binding);
+    }
 
     void scrollBarMoved(juce::ScrollBar* scrollBar, double newRangeStart) override;
 
@@ -146,6 +153,9 @@ public:
     int getRulerHeight() const noexcept { return rulerHeight_; }
 
 private:
+    bool matchesShortcut(KeyShortcutConfig::ShortcutId id, const juce::KeyPress& key) const;
+    bool handlePointerShortcut(const KeyShortcutConfig::KeyBinding& binding);
+
     enum class DragOperation { None, Move, Gain, TrimLeft, TrimRight, FadeIn, FadeOut };
 
 
@@ -178,6 +188,10 @@ private:
     void rebuildContentMetrics();
     void cancelZoomPreview() noexcept;
     void timerCallback() override;
+    void handleVerticalZoomWheel(float deltaY, bool keepViewportCentre = false);
+    void handleHorizontalZoomWheel(float deltaY, double anchorTime, double anchorViewportX);
+    void applyHorizontalZoom(double zoomFactor, double anchorTime, double anchorViewportX);
+    void handleHorizontalScrollWheel(float deltaY);
     TimelineViewportRequest makeViewportRequest(
         TimelineViewportRequest::Kind kind,
         double targetTime,
@@ -260,7 +274,7 @@ private:
 
     juce::Colour playheadColour_{UIColors::playhead};
     int verticalScrollOffset_{0};
-    int visibleTrackCount_{2};  // synced from TrackPanel via PluginEditor
+    int visibleTrackCount_{kDefaultVisibleTracks};  // synced from TrackPanel via PluginEditor
 
     struct ContentMetrics {
         uint64_t revision = 0;
@@ -303,6 +317,7 @@ private:
     static constexpr int kZoomPreviewFrameMs = 16;
     ZoomSensitivityConfig::ZoomSensitivitySettings zoomSensitivity_ = ZoomSensitivityConfig::ZoomSensitivitySettings::getDefault();
     KeyShortcutConfig::KeyShortcutSettings shortcutSettings_ = KeyShortcutConfig::KeyShortcutSettings::getDefault();
+    const KeyShortcutConfig::KeyBinding* pointerShortcutBinding_ = nullptr;
 
     int waveformBuildTickCounter_{ 0 }; // 播放状态下的限频计数器
     bool inferenceActive_{ false };

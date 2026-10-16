@@ -32,16 +32,18 @@ std::shared_ptr<F0InferenceService> ProcessF0Runtime::getF0Service() const
     return f0Service_;
 }
 
-bool ProcessF0Runtime::initialize(const std::string& modelsDir)
+bool ProcessF0Runtime::initialize(const std::string& modelsDir, std::string* errorMessage)
 {
     if (ready_.load(std::memory_order_acquire))
         return true;
 
     AppPreferences preferences;
-    return initialize(modelsDir, preferences.getF0ModelType());
+    return initialize(modelsDir, preferences.getF0ModelType(), errorMessage);
 }
 
-bool ProcessF0Runtime::initialize(const std::string& modelsDir, F0ModelType initialModel)
+bool ProcessF0Runtime::initialize(const std::string& modelsDir,
+                                 F0ModelType initialModel,
+                                 std::string* errorMessage)
 {
     if (ready_.load(std::memory_order_acquire))
         return true;
@@ -54,6 +56,8 @@ bool ProcessF0Runtime::initialize(const std::string& modelsDir, F0ModelType init
     std::string onnxLoadReport;
     if (!ModelPathResolver::ensureOnnxRuntimeLoaded(&onnxLoadReport))
     {
+        if (errorMessage != nullptr)
+            *errorMessage = "ONNX Runtime loading failed: " + onnxLoadReport;
         AppLogger::log("ProcessF0Runtime: ensureOnnxRuntimeLoaded failed: "
             + juce::String(onnxLoadReport));
         return false;
@@ -61,15 +65,14 @@ bool ProcessF0Runtime::initialize(const std::string& modelsDir, F0ModelType init
     AppLogger::log("ProcessF0Runtime: onnxRuntime=" + juce::String(onnxLoadReport)
         + " modelsDir=" + juce::String(modelsDir));
 
-    AccelerationDetector::getInstance().detect();
-
     try
     {
+        AccelerationDetector::getInstance().detect();
         Ort::InitApi();
         ortEnv_ = std::make_shared<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "OpenTune");
         f0Service_ = std::make_shared<F0InferenceService>(ortEnv_);
 
-        if (!f0Service_->initialize(modelsDir, initialModel))
+        if (!f0Service_->initialize(modelsDir, initialModel, errorMessage))
         {
             AppLogger::log("ProcessF0Runtime: F0 initialize failed");
             f0Service_.reset();
@@ -82,7 +85,17 @@ bool ProcessF0Runtime::initialize(const std::string& modelsDir, F0ModelType init
     }
     catch (const std::exception& e)
     {
+        if (errorMessage != nullptr)
+            *errorMessage = "F0 runtime initialization threw std::exception: " + std::string(e.what());
         AppLogger::log("ProcessF0Runtime: exception: " + juce::String(e.what()));
+        f0Service_.reset();
+        ortEnv_.reset();
+        return false;
+    }
+    catch (...)
+    {
+        if (errorMessage != nullptr)
+            *errorMessage = "F0 runtime initialization threw an unknown exception";
         f0Service_.reset();
         ortEnv_.reset();
         return false;

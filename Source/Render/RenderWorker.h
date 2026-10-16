@@ -2,6 +2,7 @@
 
 #include "RenderJob.h"
 #include <atomic>
+#include <cstdint>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
@@ -24,6 +25,7 @@ struct RenderExecutionLease
 {
     void* owner{nullptr};
     std::function<void(RenderJob&)> renderJobCallback;
+    std::function<void(const RenderJob&, const juce::String&)> renderFailureCallback;
 
     bool isValid() const noexcept
     {
@@ -40,6 +42,15 @@ class RenderWorker
 {
 public:
     static constexpr std::size_t kMaxQueueDepth = 1000;
+
+    enum class RequeueResult : uint8_t
+    {
+        Requeued,
+        LeaseUnavailable,
+        QueueFull,
+        CacheRejected,
+        InvalidJob
+    };
 
     struct AsyncState
     {
@@ -83,7 +94,7 @@ public:
     // detach uses the same mutex, so detach and deferred requeue cannot leave
     // a Pending chunk behind an empty lease. On rejection the caller owns
     // failure settlement and notification.
-    bool requeueStage1Chunk(const RenderJob& job);
+    RequeueResult requeueStage1Chunk(const RenderJob& job);
     std::shared_ptr<AsyncState> beginAsyncJob();
     static void completeAsyncJob(const std::shared_ptr<AsyncState>& state) noexcept;
     static bool isAsyncJobClosed(const std::shared_ptr<AsyncState>& state) noexcept;
@@ -111,13 +122,19 @@ public:
     bool isJoinable() const noexcept;
 
 private:
+    struct RejectedStage1Job
+    {
+        RenderCache::PendingJob pending;
+        juce::String reason;
+    };
+
     void loop();
-    bool enqueueLocked(RenderJob job, bool requeueRunningChunk = false);
+    bool enqueueLocked(RenderJob job);
 
     // 物理 Stage1 队列与 cache pending chunk 集合同步。仅可在 mutex_ 持有时调用。
     // 每个 (RenderCache, chunk start) 身份只允许一个排队项。
     void syncStage1QueueLocked(const RenderJob& templateJob,
-                               std::vector<RenderCache::PendingJob>& rejectedJobs);
+                               std::vector<RejectedStage1Job>& rejectedJobs);
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;

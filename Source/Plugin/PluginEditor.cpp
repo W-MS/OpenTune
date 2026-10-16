@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 
 #include "Editor/ConfirmDialogContent.h"
 #include "Editor/Preferences/SharedPreferencePages.h"
@@ -34,14 +35,12 @@ constexpr const char* kHostPluginFormatName = "Audio Unit";
 constexpr const char* kHostPluginFormatName = "VST3";
 #endif
 
-// 100% 基线窗口尺寸（§4.4）：min 660×500，max 固定 3000×2000，preferred 1000×900。
+// 100% 基线窗口尺寸（§4.4）：min 660×500，max 固定 3000×2000；默认值由 AppPreferences 提供。
 // VST3 外层窗口归宿主，不按 display.userArea 夹紧（§5.2）。
 constexpr int kBaseMinWidth = 660;
 constexpr int kBaseMinHeight = 500;
 constexpr int kMaxWindowWidth = 3000;
 constexpr int kMaxWindowHeight = 2000;
-constexpr int kPreferredWidth = 1000;
-constexpr int kPreferredHeight = 900;
 
 void showHostManagedMessage(juce::Component* parent, const juce::String& title, const juce::String& detail)
 {
@@ -129,9 +128,9 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
                  })
     , overviewStrip_(pianoRoll_.getWaveformMipmapCache())
 {
-    // 构造顺序固定：limits → resizable → preferred size（§4.4）。
+    // 构造顺序固定：limits → resizable → global default size（§4.4）。
     // uiZoom 唯一真相在 Processor：构造读取一次，之后由心跳同步（§7.3）；
-    // preferred 尺寸不随 uiZoom 换算，min 按 uiZoom 取整、max 固定（§5.2）。
+    // 默认尺寸不随 uiZoom 换算，min 按 uiZoom 取整、max 固定（§5.2）。
     appliedUiZoomPercent_ = processorRef_.getUiZoomPercent();
     const float uiZoomScale = static_cast<float>(appliedUiZoomPercent_) / 100.0f;
     const int minimumWidth = static_cast<int>(std::ceil(kBaseMinWidth * uiZoomScale));
@@ -140,8 +139,10 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
                     minimumHeight,
                     kMaxWindowWidth, kMaxWindowHeight);
     setResizable(true, true);
-    setSize(juce::jmax(kPreferredWidth, minimumWidth),
-            juce::jmax(kPreferredHeight, minimumHeight));
+    const auto defaultEditorSize = appPreferences_.getDefaultPluginEditorSize();
+    setSize(juce::jlimit(minimumWidth, kMaxWindowWidth, defaultEditorSize.width),
+            juce::jlimit(minimumHeight, kMaxWindowHeight, defaultEditorSize.height));
+    lastSavedEditorSize_ = { getWidth(), getHeight() };
 
     UIColors::applyTheme(appPreferences_.getState().shared.theme);
 
@@ -230,6 +231,10 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
     contentRoot_.addAndMakeVisible(topBar_);
     contentRoot_.addAndMakeVisible(parameterPanel_);
     parameterPanel_.addListener(this);
+    parameterPanel_.onPitchGridModeChanged = [this](PitchGridMode mode) {
+        if (auto* handler = pianoRoll_.getToolHandler())
+            handler->setPitchGridMode(mode);
+    };
 
     contentRoot_.addAndMakeVisible(pianoRoll_);
     pianoRoll_.addListener(this);
@@ -243,12 +248,14 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
     renderBadge_.setVisible(false);
 
     contentCommands_ = processorRef_.getContentCommands();
+    pianoRoll_.setProcessor(&processorRef_);
     pianoRoll_.setContentCommands(contentCommands_);
     pianoRoll_.setReadContentSnapshot([this](ContentKey key) {
         return processorRef_.getContentSnapshot(key);
     });
     // EQ popup「以后不再提示」偏好直接注入（无中转层）
     pianoRoll_.setAppPreferences(&appPreferences_);
+    pianoRoll_.setShortcutSettings(appPreferences_.getState().shared.shortcuts);
 
     applyThemeToEditor(appPreferences_.getState().shared.theme);
 
@@ -268,8 +275,13 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
     startTimerHz(kHeartbeatHz);
 
     const auto f0Type = appPreferences_.getState().shared.f0ModelType;
-    if (!processorRef_.setF0ModelType(f0Type))
+    juce::String f0InitializationError;
+    if (!processorRef_.setF0ModelType(f0Type, &f0InitializationError)) {
         appPreferences_.setF0ModelType(F0ModelType::FCPE);
+        ConfirmDialogContent::showDiagnostic(
+            &contentRoot_, LOC_RAW("OriginalF0 model initialization failed"), f0InitializationError,
+            AppLogger::makeDiagnosticText("OriginalF0 model initialization", f0InitializationError));
+    }
 
     grabKeyboardFocus();
 }
@@ -320,6 +332,13 @@ void OpenTuneAudioProcessorEditor::paint(juce::Graphics& g)
 
 void OpenTuneAudioProcessorEditor::resized()
 {
+    const juce::Point<int> editorSize(getWidth(), getHeight());
+    if (editorSizePersistenceEnabled_
+        && (editorSize.x != lastSavedEditorSize_.x || editorSize.y != lastSavedEditorSize_.y)) {
+        appPreferences_.setDefaultPluginEditorSize({ editorSize.x, editorSize.y });
+        lastSavedEditorSize_ = editorSize;
+    }
+
     // 外层 editor 绝不 transform；content root 按外窗尺寸/uiZoom 得到逻辑尺寸并整体缩放（§7.3）。
     const float uiZoomScale = static_cast<float>(appliedUiZoomPercent_) / 100.0f;
     contentRoot_.setBounds(0, 0,
@@ -372,6 +391,14 @@ void OpenTuneAudioProcessorEditor::resized()
         onboardingOverlay_->updateLayout();
         if (onboardingOverlay_->isActive())
             onboardingOverlay_->toFront(false);
+    }
+}
+
+void OpenTuneAudioProcessorEditor::visibilityChanged()
+{
+    if (!editorSizePersistenceEnabled_ && isShowing()) {
+        lastSavedEditorSize_ = { getWidth(), getHeight() };
+        editorSizePersistenceEnabled_ = true;
     }
 }
 
@@ -550,16 +577,6 @@ void OpenTuneAudioProcessorEditor::timerCallback()
                 pendingNoteGenerationOnReady_.erase(intentIt);
             }
         }
-        if (currentState == OriginalF0State::Failed
-            && (previous == lastObservedOriginalF0States_.end()
-                || previous->second != OriginalF0State::Failed)) {
-            const auto summary = LOC(kOriginalF0NotReady);
-            OpenTune::ConfirmDialogContent::showDiagnostic(
-                &contentRoot_,
-                LOC(kOriginalF0),
-                summary,
-                AppLogger::makeDiagnosticText("OriginalF0/FCPE", summary));
-        }
         lastObservedOriginalF0States_[contentKey] = currentState;
     };
 
@@ -569,6 +586,33 @@ void OpenTuneAudioProcessorEditor::timerCallback()
     if (auto* session = processorRef_.getCaptureSession()) {
         for (const auto& segment : session->listSegments())
             observeOriginalF0State(segment.contentKey);
+    }
+
+    auto f0FailureEvents = processorRef_.takeOriginalF0FailureEvents();
+#if JucePlugin_Enable_ARA
+    if (auto* dc = processorRef_.getDocumentController()) {
+        auto araEvents = dc->takeOriginalF0FailureEvents();
+        f0FailureEvents.insert(f0FailureEvents.end(),
+                               std::make_move_iterator(araEvents.begin()),
+                               std::make_move_iterator(araEvents.end()));
+    }
+#endif
+    for (const auto& event : f0FailureEvents) {
+        const auto reason = event.reason.isNotEmpty()
+            ? event.reason
+            : LOC(kOriginalF0FailureReasonUnavailable);
+        const auto summary = Loc::format(
+            LOC(kOriginalF0FailureDetail),
+            juce::String(static_cast<juce::int64>(event.contentKey.objectId)),
+            getDomainKindName(event.contentKey.domainKind), reason);
+        OpenTune::ConfirmDialogContent::showDiagnostic(
+            &contentRoot_, LOC(kOriginalF0FailureTitle), summary,
+            AppLogger::makeDiagnosticText(
+                "OriginalF0/FCPE domain="
+                    + juce::String(getDomainKindName(event.contentKey.domainKind))
+                    + " contentKey="
+                    + juce::String(static_cast<juce::int64>(event.contentKey.objectId)),
+                reason));
     }
 
     // Content 切换检测
@@ -893,6 +937,16 @@ bool OpenTuneAudioProcessorEditor::keyPressed(const juce::KeyPress& key)
 
 bool OpenTuneAudioProcessorEditor::handleEditorShortcut(const juce::KeyPress& key)
 {
+    const int keyCode = key.getKeyCode();
+    const bool unmodifiedArrow = !key.getModifiers().isAnyModifierKeyDown()
+        && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey
+            || keyCode == juce::KeyPress::leftKey || keyCode == juce::KeyPress::rightKey);
+    if (unmodifiedArrow && pianoRoll_.hasKeyboardFocus(true))
+        return pianoRoll_.keyPressed(key);
+
+    if (pianoRoll_.handleViewportShortcut(key))
+        return true;
+
     const auto& shortcutSettings = appPreferences_.getState().shared.shortcuts;
 
     if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::Undo, key)) {
@@ -1035,7 +1089,13 @@ void OpenTuneAudioProcessorEditor::showPreferencesDialog()
         processorRef_.setVocoderModelWeight(weight);
     };
     auto onF0ModelChanged = [this](F0ModelType type) {
-        return processorRef_.setF0ModelType(type);
+        juce::String reason;
+        if (processorRef_.setF0ModelType(type, &reason))
+            return true;
+        ConfirmDialogContent::showDiagnostic(
+            &contentRoot_, LOC_RAW("OriginalF0 model initialization failed"), reason,
+            AppLogger::makeDiagnosticText("OriginalF0 model initialization", reason));
+        return false;
     };
     auto onLightPitchCorrectionChanged = [this](bool) {
         processorRef_.invalidateAllContentCaches();
@@ -1440,6 +1500,37 @@ void OpenTuneAudioProcessorEditor::stopPlaybackRequested()
     stopRequested();
 }
 
+bool OpenTuneAudioProcessorEditor::pointerShortcutRequested(KeyShortcutConfig::ShortcutId id)
+{
+    switch (id) {
+        case KeyShortcutConfig::ShortcutId::Undo:
+            undoRequested();
+            return true;
+        case KeyShortcutConfig::ShortcutId::Redo:
+            redoRequested();
+            return true;
+        case KeyShortcutConfig::ShortcutId::PlayPause:
+            playPauseToggleRequested();
+            return true;
+        case KeyShortcutConfig::ShortcutId::PlayFromStart:
+#if JucePlugin_Enable_ARA
+            if (auto* docController = processorRef_.getDocumentController()) {
+                const double startPosition = processorRef_.getPlayStartPosition();
+                if (!docController->requestStartPlayback(startPosition))
+                    AppLogger::log("ARA: play-from-start request failed — host playback controller unavailable");
+                return true;
+            }
+#endif
+            surfaceRegularVst3HostControlledTransport("play from start");
+            return true;
+        case KeyShortcutConfig::ShortcutId::Stop:
+            stopPlaybackRequested();
+            return true;
+        default:
+            return false;
+    }
+}
+
 void OpenTuneAudioProcessorEditor::autoTuneRequested()
 {
     const auto activeKey = resolveCurrentContentKey();
@@ -1469,10 +1560,21 @@ void OpenTuneAudioProcessorEditor::autoTuneRequested()
     }
 
     if (f0State == OriginalF0State::Failed) {
+        auto reason = processorRef_.getContentSnapshot(activeKey);
+        juce::String failureReason = reason != nullptr
+            ? juce::String(reason->originalF0FailureReason)
+            : juce::String{};
+#if JucePlugin_Enable_ARA
+        if (failureReason.isEmpty())
+            if (auto* dc = processorRef_.getDocumentController())
+                failureReason = juce::String(dc->readOriginalF0FailureReason(activeKey));
+#endif
+        if (failureReason.isEmpty())
+            failureReason = "OriginalF0 failure detail is unavailable at the content owner";
         OpenTune::ConfirmDialogContent::showMessage(
             &contentRoot_,
             LOC(kOriginalF0),
-            LOC(kOriginalF0ExtractionFailed));
+            LOC(kOriginalF0ExtractionFailed) + "\n\nReason: " + failureReason);
         return;
     }
 

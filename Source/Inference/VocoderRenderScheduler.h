@@ -10,8 +10,10 @@
 #include <mutex>
 #include <deque>
 #include <thread>
+#include <string>
 #include <vector>
 #include "../Utils/Error.h"
+#include "../DSP/HybridAperiodicResidual.h"
 
 namespace OpenTune {
 
@@ -39,6 +41,7 @@ public:
         std::vector<float> f0;
         std::vector<float> uv;  // 1=voiced 显式浊音掩码；空则由 f0>0 推导
         std::vector<float> conditioning;
+        std::shared_ptr<const HybridRenderPayload> hybridPayload;
         std::function<void(JobResult, const juce::String&, const std::vector<float>&)> onComplete;
     };
 
@@ -50,7 +53,8 @@ public:
     static constexpr std::size_t kMaxJobPayloadBytes = 16 * 1024 * 1024;
     static bool isJobPayloadWithinLimit(std::size_t f0Capacity,
                                         std::size_t uvCapacity,
-                                        std::size_t conditioningCapacity) noexcept;
+                                        std::size_t conditioningCapacity,
+                                        std::size_t retainedBytes = 0) noexcept;
     static InferenceFailure classifyInferenceError(const Error& error);
     VocoderRenderScheduler();
     ~VocoderRenderScheduler();
@@ -60,7 +64,7 @@ public:
      * @param service Vocoder inference service (must outlive scheduler)
      * @return true if initialization successful
      */
-    bool initialize(VocoderInferenceService* service);
+    bool initialize(VocoderInferenceService* service, std::string* errorMessage = nullptr);
 
     /**
      * Shutdown and drain queue
@@ -71,7 +75,7 @@ public:
      * Submit a rendering job to the queue
      * @param job Job to execute
      */
-    bool submit(Job job);
+    bool submit(Job job, std::string* rejectionReason = nullptr);
 
     static constexpr int kMaxQueueDepth = 100;
 

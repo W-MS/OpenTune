@@ -40,6 +40,9 @@ constexpr const char* kSharedWholeNoteMoveSnapModeKey = "shared.pianoRoll.wholeN
 constexpr const char* kSharedPitchLaneVisualModeKey = "shared.pianoRoll.pitchLaneVisualMode";
 constexpr const char* kSharedEqSuppressRemoveConfirmationKey = "shared.eq.suppressRemoveConfirmation";
 constexpr const char* kSharedOnboardingShownKey = "shared.onboardingShown";
+constexpr const char* kPluginEditorSizeKey = "defaultSize";
+constexpr const char* kShortcutSchemaVersionKey = "shared.shortcuts.schemaVersion";
+constexpr int kShortcutSchemaVersion = 1;
 
 juce::File resolveSettingsDirectory(const AppPreferences::StorageOptions& storageOptions)
 {
@@ -275,20 +278,58 @@ TrackColorMode trackColorModeFromToken(const juce::String& token)
 KeyShortcutConfig::KeyShortcutSettings decodeShortcutSettings(const juce::PropertiesFile& properties)
 {
     auto settings = KeyShortcutConfig::KeyShortcutSettings::getDefault();
+    const bool migrateMouseDefaults = properties.getIntValue(kShortcutSchemaVersionKey, 0)
+        < kShortcutSchemaVersion;
 
     for (const auto& info : KeyShortcutConfig::kShortcutInfos) {
+        if (!properties.containsKey(info.storageKey))
+            continue;
+
         const auto stored = properties.getValue(info.storageKey, {});
         if (stored.isEmpty()) {
+            settings.bindings[static_cast<size_t>(info.id)].bindings.clear();
             continue;
         }
 
         KeyShortcutConfig::ShortcutBinding decoded;
-        if (KeyShortcutConfig::parseShortcutBinding(stored, decoded) && !decoded.bindings.empty()) {
+        if (KeyShortcutConfig::parseShortcutBinding(stored, decoded)) {
+            if (migrateMouseDefaults) {
+                for (const auto& defaultBinding : info.defaultBindings) {
+                    if (defaultBinding.type != KeyShortcutConfig::BindingType::Keyboard)
+                        decoded.addBinding(defaultBinding);
+                }
+            }
             settings.bindings[static_cast<size_t>(info.id)] = std::move(decoded);
         }
     }
 
     return settings;
+}
+
+void writeShortcutSettingsToProperties(
+    juce::PropertiesFile& properties,
+    const KeyShortcutConfig::KeyShortcutSettings& shortcuts)
+{
+    for (const auto& info : KeyShortcutConfig::kShortcutInfos) {
+        properties.setValue(info.storageKey,
+                            KeyShortcutConfig::toCanonicalString(
+                                shortcuts.bindings[static_cast<size_t>(info.id)]));
+    }
+    properties.setValue(kShortcutSchemaVersionKey, kShortcutSchemaVersion);
+}
+
+PluginEditorSize readDefaultPluginEditorSize(const juce::PropertiesFile& properties)
+{
+    const auto defaultSize = PluginEditorSize{};
+    const auto stored = properties.getValue(kPluginEditorSizeKey,
+                                            juce::String(defaultSize.width) + ","
+                                                + juce::String(defaultSize.height));
+    const int separator = stored.indexOfChar(',');
+    if (separator < 0)
+        return defaultSize;
+
+    return { stored.substring(0, separator).getIntValue(),
+             stored.substring(separator + 1).getIntValue() };
 }
 
 AppPreferencesState loadStateFromProperties(const juce::PropertiesFile& properties)
@@ -441,11 +482,7 @@ void writeStateToProperties(juce::PropertiesFile& properties, const AppPreferenc
     }
     properties.setValue(kSharedRecentProjectsKey, recentPaths.joinIntoString("|"));
 
-    for (const auto& info : KeyShortcutConfig::kShortcutInfos) {
-        properties.setValue(info.storageKey,
-                            KeyShortcutConfig::toCanonicalString(
-                                state.shared.shortcuts.bindings[static_cast<size_t>(info.id)]));
-    }
+    writeShortcutSettingsToProperties(properties, state.shared.shortcuts);
 }
 
 } // namespace
@@ -477,8 +514,12 @@ void AppPreferences::load()
         return;
     }
 
+    const bool migrateShortcutSchema = userSettings->getIntValue(kShortcutSchemaVersionKey, 0)
+        < kShortcutSchemaVersion;
     const bool hasLegacyVisualPreference = userSettings->containsKey(kSharedPitchLaneVisualModeKey);
     state_ = loadStateFromProperties(*userSettings);
+    if (migrateShortcutSchema)
+        writeShortcutSettingsToProperties(*userSettings, state_.shared.shortcuts);
     if (hasLegacyVisualPreference) {
         const bool needsVisualPreferenceMigration =
             !userSettings->containsKey(kSharedPianoRollShowPianoKeyboardKey)
@@ -486,8 +527,9 @@ void AppPreferences::load()
         if (needsVisualPreferenceMigration)
             writeStateToProperties(*userSettings, state_);
         userSettings->removeValue(kSharedPitchLaneVisualModeKey);
-        userSettings->saveIfNeeded();
     }
+    if (migrateShortcutSchema || hasLegacyVisualPreference)
+        userSettings->saveIfNeeded();
     TuningConfig::setCurrentTuningHz(state_.shared.tuning.tuningHz);
 }
 
@@ -672,6 +714,11 @@ void AppPreferences::initialiseStorage()
 
     const auto options = makePropertiesOptions(storageOptions_, processLock_.get());
     properties_.setStorageParameters(options);
+
+    auto editorSizeStorageOptions = storageOptions_;
+    editorSizeStorageOptions.fileName = resolveSettingsFile(storageOptions_).getFileName() + ".editor-size";
+    pluginEditorSizeProperties_ = std::make_unique<juce::PropertiesFile>(
+        makePropertiesOptions(editorSizeStorageOptions, processLock_.get()));
 }
 
 void AppPreferences::saveLocked()
@@ -784,6 +831,28 @@ WholeNoteMoveSnapMode AppPreferences::getWholeNoteMoveSnapMode() const
 {
     const std::lock_guard<std::mutex> lock(mutex_);
     return state_.shared.wholeNoteMoveSnapMode;
+}
+
+PluginEditorSize AppPreferences::getDefaultPluginEditorSize()
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    jassert(pluginEditorSizeProperties_ != nullptr);
+    if (pluginEditorSizeProperties_ == nullptr)
+        return {};
+
+    pluginEditorSizeProperties_->reload();
+    return readDefaultPluginEditorSize(*pluginEditorSizeProperties_);
+}
+
+void AppPreferences::setDefaultPluginEditorSize(PluginEditorSize size)
+{
+    const std::lock_guard<std::mutex> lock(mutex_);
+    jassert(pluginEditorSizeProperties_ != nullptr);
+    if (pluginEditorSizeProperties_ == nullptr)
+        return;
+
+    pluginEditorSizeProperties_->setValue(kPluginEditorSizeKey,
+                           juce::String(size.width) + "," + juce::String(size.height));
 }
 
 } // namespace OpenTune

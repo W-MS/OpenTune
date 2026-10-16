@@ -148,6 +148,17 @@ RenderCache::~RenderCache() {
     clear();
 }
 
+bool RenderCache::markFailureNotificationForContentRevision(uint64_t contentRevision)
+{
+    const juce::SpinLock::ScopedLockType guard(lock_);
+    if (hasNotifiedFailureContentRevision_
+        && notifiedFailureContentRevision_ >= contentRevision)
+        return false;
+    notifiedFailureContentRevision_ = contentRevision;
+    hasNotifiedFailureContentRevision_ = true;
+    return true;
+}
+
 void RenderCache::publishLocked(
     std::vector<std::shared_ptr<const PublishedRenderSnapshot>>& releases) {
     pruneRetiredSnapshotsLocked(releases);
@@ -163,6 +174,7 @@ void RenderCache::publishLocked(
         pc.endSampleExclusive = chunk.endSampleExclusive;
         pc.audio = chunk.audio;
         pc.contentRevision = chunk.lastRequestedContentRevision;
+        pc.audioRevision = chunk.audioRevision;
         snapshot->chunks.push_back(pc);
     }
     auto oldSnapshot = std::atomic_load(&publishedSnapshot_);
@@ -230,23 +242,25 @@ bool RenderCache::rebuildPrepared(double requestedSampleRate)
             pc.startSample = prepStart;
             pc.endSampleExclusive = prepEnd;
 
-            // 增量复用：canonical 内容未变（同 span、同 contentRevision）时直接共享
+            // 增量复用：canonical PCM 未变（同 span、同 audioRevision）时直接共享
             // 旧 prepared PCM，跳过 r8brain 重采样。条件从严：任何不匹配都重采样，
             // 宁可重做不可复用过期音频。
             auto prevIt = previous.find(prepStart);
             if (!aliasCanonical
                 && prevIt != previous.end()
                 && prevIt->second->endSampleExclusive == prepEnd
-                && prevIt->second->sourceRevision == chunk.contentRevision)
+                && prevIt->second->audioRevision == chunk.audioRevision)
             {
                 pc.audio = prevIt->second->audio;
-                pc.sourceRevision = prevIt->second->sourceRevision;
+                pc.audioRevision = chunk.audioRevision;
+                pc.sourceRevision = chunk.contentRevision;
                 prepSnap->chunks.push_back(std::move(pc));
                 continue;
             }
 
             if (aliasCanonical) {
                 pc.audio = chunk.audio;
+                pc.audioRevision = chunk.audioRevision;
                 pc.sourceRevision = chunk.contentRevision;
             } else {
                 const int outputLength = static_cast<int>(prepEnd - prepStart);
@@ -272,6 +286,7 @@ bool RenderCache::rebuildPrepared(double requestedSampleRate)
                 pc.audio = makeTrackedPcm(std::move(resampled), reservedBytes);
                 if (!pc.audio)
                     return false;
+                pc.audioRevision = chunk.audioRevision;
                 pc.sourceRevision = chunk.contentRevision;
             }
 
@@ -619,6 +634,7 @@ RenderCache::ReconcileResult RenderCache::reconcileFullPlanAndRequest(
                     {
                         ++newChunk.desiredRevision;
                         newChunk.lastRequestedContentRevision = contentRevision;
+                        newChunk.audioRevision = ++audioRevisionCounter_;
                         if (newChunk.status == Chunk::Status::Pending)
                         {
                             newPendingChunks.insert(planned.startSample);
@@ -656,6 +672,7 @@ RenderCache::ReconcileResult RenderCache::reconcileFullPlanAndRequest(
                 newChunk.publishedRevision = 0;
                 newChunk.audio = nullptr;
                 newChunk.lastRequestedContentRevision = contentRevision;
+                newChunk.audioRevision = ++audioRevisionCounter_;
                 newPendingChunks.insert(planned.startSample);
                 result.stateChanged = true;
             }
@@ -999,7 +1016,7 @@ bool RenderCache::isCanonicalSettled() const
     return isCanonicalSettledLocked_();
 }
 
-bool RenderCache::markChunkAsBlank(int64_t startSample, uint64_t revision) {
+RenderCache::ChunkRenderResult RenderCache::markChunkAsBlank(int64_t startSample, uint64_t revision) {
     const double startSeconds = projectRenderSeconds(startSample);
     int64_t endSample = 0;
     std::shared_ptr<const std::vector<float>> oldAudio;
@@ -1007,20 +1024,20 @@ bool RenderCache::markChunkAsBlank(int64_t startSample, uint64_t revision) {
         const juce::SpinLock::ScopedLockType guard(lock_);
         auto it = chunks_.find(startSample);
         if (it == chunks_.end()) {
-            return false;
+            return ChunkRenderResult::Stale;
         }
 
         auto& chunk = it->second;
 
         if (chunk.status != Chunk::Status::Running) {
-            return false;
+            return ChunkRenderResult::Stale;
         }
 
         if (chunk.runningRevision != revision) {
             AppLogger::log("RenderCache::markChunkAsBlank STALE runningRevision="
                 + juce::String(static_cast<juce::int64>(chunk.runningRevision))
                 + " != revision=" + juce::String(static_cast<juce::int64>(revision)));
-            return false;
+            return ChunkRenderResult::Stale;
         }
 
         chunk.status = Chunk::Status::Blank;
@@ -1054,13 +1071,13 @@ bool RenderCache::markChunkAsBlank(int64_t startSample, uint64_t revision) {
             it->second.audio = std::move(oldAudio);
             std::atomic_store(&publishedSnapshot_, previousSnapshot);
         }
-        return false;
+        return ChunkRenderResult::MemoryLimitExceeded;
     }
 
     AppLogger::log("RenderCache::markChunkAsBlank start=" + juce::String(startSeconds, 3)
         + " endSampleExclusive=" + juce::String(endSample)
         + " revision=" + juce::String(static_cast<juce::int64>(revision)));
-    return true;
+    return ChunkRenderResult::Published;
 }
 
 } // namespace OpenTune

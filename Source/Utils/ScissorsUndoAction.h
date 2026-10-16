@@ -2,31 +2,37 @@
 
 #include "UndoManager.h"
 #include "Note.h"
-#include <functional>
+#include "Content/ContentEditCommands.h"
+#include "Content/ContentKey.h"
+#include <memory>
 #include <vector>
 
 namespace OpenTune {
 
-// Scissors 拓扑 undo action：保存切分前后的完整 notes 向量。
-// undo/redo 直接应用 before/after 完整向量（replaceContentNotesForFullMutation），
-// 不重新计算切点、不触发 render、不失效 RenderCache。
+// Scissors 拓扑 undo action：保存切分/合并前后的完整 notes 向量与固定 ContentKey。
+// undo/redo 经构造时绑定的 ContentEditCommands 对固定 key 全量替换 notes
+// （replaceContentNotesForFullMutation + republishPlaybackSource），不重新计算切点、
+// 不触发 render、不失效 RenderCache；写入失败时不 republish（内容未变，避免发布
+// 错误内容）。不通过组件当前 editedContentKey_ 解析。
 class ScissorsUndoAction : public UndoAction {
 public:
-    ScissorsUndoAction(juce::String description,
+    ScissorsUndoAction(std::shared_ptr<ContentEditCommands> commands,
+                       ContentKey key,
+                       juce::String description,
                        std::vector<Note> beforeNotes,
-                       std::vector<Note> afterNotes,
-                       std::function<bool(const std::vector<Note>&)> applyNotes,
-                       std::function<void()> republishPlaybackSource = nullptr);
+                       std::vector<Note> afterNotes);
 
     void undo() override;
     void redo() override;
     juce::String getDescription() const override { return description_; }
 
 private:
+    void applyNotes(const std::vector<Note>& notes);
+
+    std::shared_ptr<ContentEditCommands> commands_;
+    ContentKey contentKey_;
     juce::String description_;
     std::vector<Note> beforeNotes_, afterNotes_;
-    std::function<bool(const std::vector<Note>&)> applyNotes_;
-    std::function<void()> republishPlaybackSource_;
 };
 
 } // namespace OpenTune

@@ -62,6 +62,7 @@ public:
 
     void paint(juce::Graphics& g) override;
     void resized() override;
+    void visibilityChanged() override;
     void mouseDown(const juce::MouseEvent& e) override;
     bool keyPressed(const juce::KeyPress& key) override;
 
@@ -107,6 +108,7 @@ public:
     bool playheadPositionChangeRequested(double timeSeconds) override;
     void playPauseToggleRequested() override;
     void stopPlaybackRequested() override;
+    bool pointerShortcutRequested(KeyShortcutConfig::ShortcutId id) override;
     void autoTuneRequested() override;
     void pitchShiftRequested() override;
     void pitchCurveEdited(int startFrame, int endFrame) override;
@@ -171,6 +173,8 @@ private:
     juce::Component contentRoot_;
     // 当前已应用值，int 百分比（默认 100）；唯一真相在 Processor（构造读取、心跳同步，§7.3）。
     int appliedUiZoomPercent_ = 100;
+    juce::Point<int> lastSavedEditorSize_;
+    bool editorSizePersistenceEnabled_ = false;
 
     MenuBarComponent menuBar_;
     TransportBarComponent transportBar_;

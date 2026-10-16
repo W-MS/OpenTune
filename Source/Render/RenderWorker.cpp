@@ -107,23 +107,37 @@ void RenderWorker::detachExecutionLease(void* owner)
 void RenderWorker::reconcileAndSyncStage1Queue(const RenderJob& templateJob,
                                                const std::function<void()>& reconcile)
 {
-    std::vector<RenderCache::PendingJob> rejectedJobs;
+    std::vector<RenderWorker::RejectedStage1Job> rejectedJobs;
+    RenderExecutionLease failureLease;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         // 与 worker loop 的 claim 共用同一临界区：reconcile 产生的 revision
         // 不可能被旧 queued job 在新 snapshot 同步前 claim。
         reconcile();
         syncStage1QueueLocked(templateJob, rejectedJobs);
+        failureLease = lease_;
     }
     for (const auto& failure : rejectedJobs)
-        templateJob.renderCache->completeChunkRenderFailure(
-            failure.startSample, failure.targetRevision);
+    {
+        if (!templateJob.renderCache->completeChunkRenderFailure(
+                failure.pending.startSample, failure.pending.targetRevision))
+            continue;
+        if (failureLease.renderFailureCallback)
+        {
+            RenderJob failedJob = templateJob;
+            failedJob.startSample = failure.pending.startSample;
+            failedJob.endSampleExclusive = failure.pending.endSampleExclusive;
+            failedJob.queuedChunkStartSample = failure.pending.startSample;
+            failedJob.targetRevision = failure.pending.targetRevision;
+            failureLease.renderFailureCallback(failedJob, failure.reason);
+        }
+    }
     cv_.notify_all();
 }
 
 void RenderWorker::syncStage1QueueLocked(
     const RenderJob& templateJob,
-    std::vector<RenderCache::PendingJob>& rejectedJobs)
+    std::vector<RenderWorker::RejectedStage1Job>& rejectedJobs)
 {
     jassert(templateJob.kind == RenderJob::Kind::Stage1Render);
     jassert(templateJob.renderCache != nullptr);
@@ -163,6 +177,7 @@ void RenderWorker::syncStage1QueueLocked(
                         && queued.queuedChunkStartSample == startSample;
                 });
             queuedIt->contentSnapshot = templateJob.contentSnapshot;
+            queuedIt->contentRevision = templateJob.contentRevision;
             queuedIt->audioBuffer = templateJob.audioBuffer;
             queuedIt->audioSampleRate = templateJob.audioSampleRate;
             continue;
@@ -174,7 +189,15 @@ void RenderWorker::syncStage1QueueLocked(
         queued.targetRevision = pending.targetRevision;
         queued.queuedChunkStartSample = startSample;
         if (!enqueueLocked(std::move(queued)))
-            rejectedJobs.push_back(pending);
+        {
+            const juce::String reason = !lease_.isValid()
+                ? "RenderWorker rejected the chunk because its execution lease is unavailable"
+                : queue_.size() >= RenderWorker::kMaxQueueDepth
+                    ? "RenderWorker queue is full (capacity="
+                        + juce::String(RenderWorker::kMaxQueueDepth) + ")"
+                    : "RenderWorker rejected the chunk without exposing an internal cause";
+            rejectedJobs.push_back({pending, reason});
+        }
     }
 }
 
@@ -278,31 +301,40 @@ bool RenderWorker::enqueue(RenderJob job)
     return true;
 }
 
-bool RenderWorker::requeueStage1Chunk(const RenderJob& job)
+RenderWorker::RequeueResult RenderWorker::requeueStage1Chunk(const RenderJob& job)
 {
     if (job.kind != RenderJob::Kind::Stage1Render
         || job.renderCache == nullptr
         || job.queuedChunkStartSample < 0)
-        return false;
+        return RequeueResult::InvalidJob;
 
-    bool enqueued = false;
     {
         std::lock_guard<std::mutex> lk(mutex_);
+        if (!lease_.isValid())
+            return RequeueResult::LeaseUnavailable;
+        if (queue_.size() >= RenderWorker::kMaxQueueDepth)
+            return RequeueResult::QueueFull;
+        if (!job.renderCache->requeueRunningChunk(job.startSample, job.targetRevision))
+            return RequeueResult::CacheRejected;
+
         RenderJob queued = job;
         queued.queuedChunkStartSample = job.startSample;
-        enqueued = enqueueLocked(std::move(queued), true);
+        const auto* cache = queued.renderCache.get();
+        const auto insertIt = std::find_if(queue_.begin(), queue_.end(),
+            [cache, &queued](const RenderJob& existing) {
+                return existing.kind == RenderJob::Kind::Stage1Render
+                    && existing.renderCache.get() == cache
+                    && existing.queuedChunkStartSample > queued.queuedChunkStartSample;
+            });
+        queue_.insert(insertIt, std::move(queued));
     }
-    if (enqueued)
-        cv_.notify_one();
-    return enqueued;
+    cv_.notify_one();
+    return RequeueResult::Requeued;
 }
 
-bool RenderWorker::enqueueLocked(RenderJob job, bool requeueRunningChunk)
+bool RenderWorker::enqueueLocked(RenderJob job)
 {
     if (!lease_.isValid() || queue_.size() >= RenderWorker::kMaxQueueDepth)
-        return false;
-    if (requeueRunningChunk
-        && !job.renderCache->requeueRunningChunk(job.startSample, job.targetRevision))
         return false;
     if (job.kind != RenderJob::Kind::Stage1Render)
     {
@@ -509,14 +541,34 @@ void RenderWorker::loop()
             catch (const std::exception& e)
             {
                 AppLogger::error("[RenderWorker] render callback threw: " + juce::String(e.what()));
-                if (job.kind == RenderJob::Kind::Stage1Render && job.renderCache != nullptr)
-                    job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision);
+                if (job.kind == RenderJob::Kind::Stage1Render && job.renderCache != nullptr
+                    && job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision))
+                {
+                    bool leaseStillAttached = false;
+                    {
+                        std::lock_guard<std::mutex> lk(mutex_);
+                        leaseStillAttached = !stopping_.load() && lease_.owner == leaseCopy.owner;
+                    }
+                    if (leaseStillAttached && leaseCopy.renderFailureCallback)
+                        leaseCopy.renderFailureCallback(job,
+                            "Render callback threw std::exception: " + juce::String(e.what()));
+                }
             }
             catch (...)
             {
                 AppLogger::error("[RenderWorker] render callback threw unknown exception");
-                if (job.kind == RenderJob::Kind::Stage1Render && job.renderCache != nullptr)
-                    job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision);
+                if (job.kind == RenderJob::Kind::Stage1Render && job.renderCache != nullptr
+                    && job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision))
+                {
+                    bool leaseStillAttached = false;
+                    {
+                        std::lock_guard<std::mutex> lk(mutex_);
+                        leaseStillAttached = !stopping_.load() && lease_.owner == leaseCopy.owner;
+                    }
+                    if (leaseStillAttached && leaseCopy.renderFailureCallback)
+                        leaseCopy.renderFailureCallback(job,
+                            "Render callback threw an unknown exception");
+                }
             }
         }
     }

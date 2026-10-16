@@ -9,6 +9,7 @@
 #include "../ParameterPanel.h"
 #include "../UIColors.h"
 #include "../../../Utils/LocalizationManager.h"
+#include "../../../Utils/EqFilterEditOps.h"
 #include <cmath>
 
 namespace OpenTune {
@@ -359,20 +360,13 @@ void EqPopupComponent::cardSliderChanged(int parameterIndex)
     switch (parameterIndex)
     {
     case 0: // Frequency
-    {
-        const double freqMin = (f.type == EqFilterType::Peak) ? 500.0 : 20.0;
-        const double freqMax = (f.type == EqFilterType::Peak) ? 12000.0 : 20000.0;
-        f.frequencyHz = static_cast<float>(juce::jlimit(freqMin, freqMax, frequencySlider_.getValue()));
+        setEqFilterFrequencyAndGain(f, frequencySlider_.getValue(), f.gainDb);
         break;
-    }
     case 1: // Gain
-        f.gainDb = static_cast<float>(juce::jlimit(-12.0, 12.0, gainSlider_.getValue()));
+        setEqFilterFrequencyAndGain(f, f.frequencyHz, gainSlider_.getValue());
         break;
     case 2: // Q
-        f.q = static_cast<float>(juce::jlimit(
-            static_cast<double>(EqSettings::kMinQ),
-            static_cast<double>(EqSettings::kMaxQ),
-            qSlider_.getValue()));
+        adjustEqFilterQ(f, qSlider_.getValue() - f.q);
         break;
     }
 
@@ -945,39 +939,14 @@ void EqPopupComponent::mouseDown(const juce::MouseEvent& event)
         {
             if (cardBtn == CardButton::Bypass)
             {
-                auto& f = settings_.filters[cardBand_];
-                f.bypassed = !f.bypassed;
+                toggleEqFilterBypass(settings_.filters[cardBand_]);
                 renderer_.setSettings(settings_);
                 commitSettings();
                 repaint();
             }
             else if (cardBtn == CardButton::Remove)
             {
-                const int idx = cardBand_;
-                hideCardControls();
-                const bool empty = settings_.removeFilter(idx);
-                if (empty)
-                {
-                    if (onRemoveEq) onRemoveEq();
-                    return; // 'this' 可能已被销毁
-                }
-                // 更新选中索引
-                if (selectedFilterIndex_ == idx)
-                    selectedFilterIndex_ = -1;
-                else if (selectedFilterIndex_ > idx)
-                    --selectedFilterIndex_;
-                if (hoveredBand_ == idx)
-                    hoveredBand_ = -1;
-                else if (hoveredBand_ > idx)
-                    --hoveredBand_;
-                if (cardBand_ == idx)
-                    cardBand_ = -1;
-                else if (cardBand_ > idx)
-                    --cardBand_;
-                renderer_.setSettings(settings_);
-                updateCardState();
-                commitSettings();
-                repaint();
+                removeFilterAt(cardBand_);
             }
             return;
         }
@@ -991,15 +960,7 @@ void EqPopupComponent::mouseDown(const juce::MouseEvent& event)
             const auto newType = static_cast<EqFilterType>(typeIdx);
             if (f.type != newType)
             {
-                f.type = newType;
-                // 频率范围适配
-                if (newType == EqFilterType::Peak)
-                    f.frequencyHz = std::clamp(f.frequencyHz, 500.0f, 12000.0f);
-                else
-                    f.frequencyHz = std::clamp(f.frequencyHz, 20.0f, 20000.0f);
-                // Cut 类型增益归零
-                if (newType == EqFilterType::LowCut || newType == EqFilterType::HighCut)
-                    f.gainDb = 0.0f;
+                setEqFilterType(f, newType);
                 renderer_.setSettings(settings_);
                 configureCardControls(cardBand_);
                 commitSettings();
@@ -1023,7 +984,7 @@ void EqPopupComponent::mouseDown(const juce::MouseEvent& event)
                 toggleMaximize();
                 return;
             case ButtonId::Bypass:
-                settings_.active = !settings_.active;
+                toggleEqActive(settings_);
                 renderer_.setSettings(settings_);
                 commitSettings();
                 repaint();
@@ -1231,31 +1192,7 @@ void EqPopupComponent::mouseDoubleClick(const juce::MouseEvent& event)
     if (renderer_.graphBounds().contains(pos)
         && static_cast<int>(settings_.filters.size()) < EqSettings::kMaxFilters)
     {
-        double freq = renderer_.xToFreq(pos.x);
-        double gain = renderer_.yToGain(pos.y);
-
-        EqFilter newFilter;
-        newFilter.paletteSlot = -1;
-        if (freq < 200.0)
-            newFilter.type = EqFilterType::LowShelf;
-        else if (freq > 10000.0)
-            newFilter.type = EqFilterType::HighShelf;
-        else
-            newFilter.type = EqFilterType::Peak;
-
-        if (newFilter.type == EqFilterType::Peak)
-            freq = std::clamp(freq, 500.0, 12000.0);
-        else
-            freq = std::clamp(freq, static_cast<double>(EqSettings::kMinFrequencyHz),
-                              static_cast<double>(EqSettings::kMaxFrequencyHz));
-        gain = std::clamp(gain, static_cast<double>(EqSettings::kMinGainDb),
-                          static_cast<double>(EqSettings::kMaxGainDb));
-
-        newFilter.frequencyHz = static_cast<float>(freq);
-        newFilter.gainDb = static_cast<float>(gain);
-        newFilter.q = 1.0f;
-
-        settings_.filters.push_back(newFilter);
+        settings_.filters.push_back(makeEqFilter(renderer_.xToFreq(pos.x), renderer_.yToGain(pos.y)));
         EqGraphRenderer::assignPaletteSlots(settings_);
         const int newIndex = static_cast<int>(settings_.filters.size()) - 1;
         selectedFilterIndex_ = newIndex;
@@ -1295,11 +1232,7 @@ void EqPopupComponent::mouseWheelMove(const juce::MouseEvent& event, const juce:
 
     // 基础步进 ±0.08，Shift 细调乘 0.35
     const double step = 0.08 * (event.mods.isShiftDown() ? 0.35 : 1.0);
-    const double delta = wheel.deltaY > 0 ? step : -step;
-    f.q = static_cast<float>(std::clamp(
-        static_cast<double>(f.q) + delta,
-        static_cast<double>(EqSettings::kMinQ),
-        static_cast<double>(EqSettings::kMaxQ)));
+    adjustEqFilterQ(settings_.filters[targetBand], wheel.deltaY > 0 ? step : -step);
 
     renderer_.setSettings(settings_);
 
@@ -1429,9 +1362,7 @@ void EqPopupComponent::commitSettings()
 bool EqPopupComponent::removeFilterAt(int index)
 {
     hideCardControls();
-    settings_.filters.erase(settings_.filters.begin() + index);
-
-    if (settings_.filters.empty())
+    if (settings_.removeFilter(index))
     {
         if (onRemoveEq) onRemoveEq();
         return true; // 'this' 可能已被销毁

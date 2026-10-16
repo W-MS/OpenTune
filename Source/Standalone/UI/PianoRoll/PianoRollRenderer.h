@@ -136,7 +136,8 @@ public:
                                     const RenderContext& ctx,
                                     const std::vector<Note>& notes,
                                     const std::vector<int>& selectedNoteIndices,
-                                    const ContentRenderItem& item);
+                                    const ContentRenderItem& item,
+                                    bool playheadHighlight = false);
     void drawF0Curve(juce::Graphics& g, const RenderContext& ctx, const ContentRenderItem& item);
     void drawF0SelectionHighlight(juce::Graphics& g, const RenderContext& ctx, const ContentRenderItem& item);
 

@@ -5,6 +5,10 @@ namespace OpenTune {
 /// Authoritative maximum track count for the entire application.
 constexpr int MaxTracks = 12;
 
+/// Visible track headers shown for a new session, and the floor used when an
+/// older project file did not store its visible track count.
+constexpr int kDefaultVisibleTracks = 2;
+
 // ============================================================================
 // Shared Lane Geometry Contract
 // ============================================================================

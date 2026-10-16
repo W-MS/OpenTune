@@ -6,8 +6,7 @@
 #include "../Utils/AppLogger.h"
 #include "../../Utils/PianoRollEditAction.h"
 #include "../../Utils/PianoRollNotePatchAction.h"
-#include "../../Utils/VolumeEnvelopeEditAction.h"
-#include "../../Utils/TimeGridEditAction.h"   // 閳库槄?vocal-time-stretch ?.7
+#include "../../Utils/VolumeEnvelopeRegionEdit.h"
 #include "../../Utils/CursorTheme.h"
 #include <algorithm>
 #include <cmath>
@@ -25,6 +24,7 @@
 #include "TimelineViewportPolicy.h"
 #include "TimelineLayerComposer.h"
 #include "PianoRoll/PianoRollTimeMap.h"
+#include "../../PluginProcessor.h"
 namespace OpenTune {
 
 namespace {
@@ -112,6 +112,35 @@ void PianoRollComponent::initializeRenderer() {
     renderer_ = std::make_unique<PianoRollRenderer>();
 }
 
+void PianoRollComponent::handleVolumeEnvelopeRegionEditResult(
+    const VolumeEnvelopeRegionEditResult& result)
+{
+    if (result.status == VolumeEnvelopeRegionEditStatus::StaleRevision) {
+        closeEqPopup();
+        if (result.contentSnapshot != nullptr) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+        }
+        interactionState_.noteSelection.clear();
+    }
+
+    const bool applied = result.status == VolumeEnvelopeRegionEditStatus::Applied
+        && result.contentSnapshot != nullptr;
+    if (applied) {
+        cachedNotes_ = result.contentSnapshot->notes;
+        interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+        lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+    }
+
+    // Drag preview was rasterized during mouseDrag. Rebuild after every result so
+    // NoChange/Failed also remove it from the retained content surface.
+    requestContentRedraw();
+    overlay_->repaint();
+    if (applied) {
+        listeners_.call([](Listener& listener) { listener.contentEdited(); });
+    }
+}
+
 PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
     PianoRollToolHandler::Context toolCtx;
     toolCtx.getState = [this]() -> InteractionState& { return interactionState_; };
@@ -125,6 +154,62 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
     toolCtx.beginNoteDraft = [this]() { beginNoteDraft(); };
     toolCtx.commitNoteDraft = [this]() { return commitNoteDraft(); };
     toolCtx.clearNoteDraft = [this]() { clearNoteDraft(); };
+    toolCtx.commitDrawNote = [this](const DrawNoteEditInput& input,
+                                    uint64_t expectedNotesRevision,
+                                    juce::String description) {
+        if (processor_ == nullptr || !editedContentKey_.isValid())
+            return DrawNoteCommitResult{};
+        return processor_->drawNote(
+            editedContentKey_, input, expectedNotesRevision, std::move(description));
+    };
+    toolCtx.applyDrawNoteResult = [this](const DrawNoteCommitResult& result,
+                                         const std::vector<Note>& beforeNotes,
+                                         int selectedNoteIndex) {
+        interactionState_.noteDraft.clear();
+        pendingUndoDescription_ = {};
+        undoSnapshotCaptured_ = false;
+
+        if (result.contentSnapshot != nullptr) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            lastKnownPitchRevision_ = result.contentSnapshot->pitchRevision;
+            applyEditedContentCurve(result.contentSnapshot->pitchCurve);
+        }
+
+        if (result.status == DrawNoteCommitStatus::Applied) {
+            interactionState_.noteSelection.clear();
+            if (selectedNoteIndex >= 0) {
+                interactionState_.noteSelection.setSingle(
+                    selectedNoteIndex, static_cast<int>(cachedNotes_.size()));
+            } else {
+                interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+            }
+            invalidateLiveNotes(beforeNotes, cachedNotes_);
+            requestContentRedraw();
+            overlay_->repaint();
+            if (result.pitchCurveEdited) {
+                const int startFrame = result.affectedRange.startFrame;
+                const int endFrame = result.affectedRange.endFrameExclusive - 1;
+                listeners_.call([startFrame, endFrame](Listener& listener) {
+                    listener.pitchCurveEdited(startFrame, endFrame);
+                });
+            } else {
+                listeners_.call([](Listener& listener) { listener.contentEdited(); });
+            }
+            return;
+        }
+
+        if (result.status == DrawNoteCommitStatus::NoChange) {
+            invalidateLiveNotes(beforeNotes, cachedNotes_);
+            return;
+        }
+
+        interactionState_.noteSelection.clear();
+        if (result.status == DrawNoteCommitStatus::StaleRevision)
+            closeEqPopup();
+        requestContentRedraw();
+        overlay_->repaint();
+    };
     toolCtx.commitNotesAndSegments = [this](const std::vector<Note>& notes,
                                              const std::vector<PitchCorrectionSegment>& segments,
                                              F0FrameRange affectedRange) {
@@ -132,45 +217,101 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
         if (snap == nullptr) return ContentCommitSnapshot{};
         return commitEditedContentNotesAndSegments(*snap, notes, segments, affectedRange);
     };
-    toolCtx.commitNotesAndSegmentsWithOriginalF0 = [this](
-        const std::vector<Note>& notes,
-        const std::vector<PitchCorrectionSegment>& segments,
-        F0FrameRange affectedRange,
-        const std::vector<float>& originalF0InRange,
-        const std::optional<std::vector<F0FrameRange>>& erasedRanges) {
-        const auto snap = readEditedSnapshot();
-        if (snap == nullptr) return ContentCommitSnapshot{};
-        return commitEditedContentNotesAndSegments(
-            *snap, notes, segments, affectedRange,
-            std::vector<float>(originalF0InRange), erasedRanges);
+    toolCtx.commitNoteResize = [this](uint64_t expectedNotesRevision,
+                                      int noteIndex,
+                                      NoteResizeEdge edge,
+                                      double clampedTime,
+                                      double minDuration,
+                                      const std::vector<PitchCorrectionSegment>& segments,
+                                      F0FrameRange affectedRange,
+                                      juce::String description) -> bool {
+        if (processor_ == nullptr || !editedContentKey_.isValid())
+            return false;
+
+        const auto beforeNotes = cachedNotes_;
+        const auto result = processor_->resizePianoRollNote(
+            editedContentKey_, noteIndex, edge, clampedTime, minDuration,
+            expectedNotesRevision, segments, affectedRange, std::move(description));
+        pendingUndoDescription_ = {};
+        undoSnapshotCaptured_ = false;
+        if (result.contentSnapshot != nullptr) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            lastKnownPitchRevision_ = result.contentSnapshot->pitchRevision;
+            applyEditedContentCurve(result.contentSnapshot->pitchCurve);
+        }
+
+        if (result.status == OpenTuneAudioProcessor::NoteResizeCommitStatus::StaleRevision) {
+            closeEqPopup();
+            interactionState_.noteSelection.clear();
+        } else if (result.status == OpenTuneAudioProcessor::NoteResizeCommitStatus::Applied) {
+            interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+        }
+        if (result.status != OpenTuneAudioProcessor::NoteResizeCommitStatus::Applied)
+            interactionState_.noteDraft.clear();
+
+        invalidateLiveNotes(beforeNotes, cachedNotes_);
+        requestContentRedraw();
+        overlay_->repaint();
+        if (result.status == OpenTuneAudioProcessor::NoteResizeCommitStatus::Applied
+            && !result.pitchCurveEdited) {
+            listeners_.call([](Listener& listener) { listener.contentEdited(); });
+        }
+        return result.status == OpenTuneAudioProcessor::NoteResizeCommitStatus::Applied;
     };
     // ── OpenDyne 契约回调（Pitch/Scissors/Gain 域） ──
-    toolCtx.commitVolumeEnvelope = [this](AutomationLane before, AutomationLane after) -> ContentCommitSnapshot {
-        if (contentCommands_ == nullptr || !editedContentKey_.isValid()) return nullptr;
-        const auto committedSnap = contentCommands_->commitVolumeEnvelope(editedContentKey_, after);
-        if (committedSnap != nullptr) {
-            undoManager_.addAction(std::make_unique<VolumeEnvelopeEditAction>(
-                contentCommands_, editedContentKey_, LOC(kToolVolumeEnvelope),
-                std::move(before), std::move(after)));
-        }
-        refreshEditedContentNotes();
-        contentDirty_ = true;
-        rasterizeDirtySurfaces();
-        overlay_->repaint();
-        if (committedSnap != nullptr)
+    // VolumeEnvelope 事务：Processor 消息线程读 snapshot → planner（revision 校验 +
+    // baseline 区域 delta/reset）→ commitVolumeEnvelope + undo（固定 ContentKey）。
+    // Applied 后按原 UI 行为刷新 notes 缓存 / dirty / rasterize / repaint / contentEdited；
+    // NoChange 不提交不 undo；StaleRevision 刷新缓存/revision + 清选择。
+    toolCtx.editVolumeEnvelopeRegions =
+        [this](const std::vector<int>& selectedIndices, uint64_t expectedNotesRevision,
+               float deltaGainDb, juce::String description) -> VolumeEnvelopeRegionEditResult {
+        if (processor_ == nullptr || !editedContentKey_.isValid())
+            return {};
+        const auto result = processor_->editVolumeEnvelopeRegions(
+            editedContentKey_, selectedIndices, expectedNotesRevision, deltaGainDb,
+            std::move(description));
+        handleVolumeEnvelopeRegionEditResult(result);
+        return result;
+    };
+    toolCtx.resetVolumeEnvelopeRegion =
+        [this](int noteIndex, uint64_t expectedNotesRevision,
+               juce::String description) -> VolumeEnvelopeRegionEditResult {
+        if (processor_ == nullptr || !editedContentKey_.isValid())
+            return {};
+        const auto result = processor_->resetVolumeEnvelopeRegion(
+            editedContentKey_, noteIndex, expectedNotesRevision, std::move(description));
+        handleVolumeEnvelopeRegionEditResult(result);
+        return result;
+    };
+    // Scissors 事务：Processor 校验 revision + 全量替换 + republish + undo（固定
+    // ContentKey）。失败/StaleRevision 时刷新 notes 缓存/revision，不推 undo。
+    toolCtx.commitScissorsNotes = [this](const std::vector<Note>& afterNotes, juce::String undoDescription) {
+        if (processor_ == nullptr || !editedContentKey_.isValid()) return false;
+        const auto result = processor_->applyScissorsNotes(
+            editedContentKey_, afterNotes, lastKnownNotesRevision_, std::move(undoDescription));
+        if (result.status == ScissorsCommitStatus::Applied) {
+            interactionState_.noteSelection.clear();
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            pendingUndoDescription_ = {};
+            undoSnapshotCaptured_ = false;
+            requestContentRedraw();
             listeners_.call([](Listener& listener) { listener.contentEdited(); });
-        return committedSnap;
-    };
-    toolCtx.replaceContentNotesForFullMutation = [this](const std::vector<Note>& notes) {
-        return contentCommands_->replaceContentNotesForFullMutation(editedContentKey_, notes);
-    };
-    toolCtx.republishPlaybackSource = [this]() {
-        if (contentCommands_ == nullptr || !editedContentKey_.isValid()) return;
-        contentCommands_->republishPlaybackSource(editedContentKey_);
-    };
-    toolCtx.pushUndoAction = [this](std::unique_ptr<UndoAction> action) {
-        if (action != nullptr)
-            undoManager_.addAction(std::move(action));
+            return true;
+        }
+        if (result.status == ScissorsCommitStatus::StaleRevision
+            && result.contentSnapshot != nullptr) {
+            // 旧 index 不再对应新 notes：关旧 EQ popup、清旧选区，避免旧 index 误编辑
+            closeEqPopup();
+            interactionState_.noteSelection.clear();
+            interactionState_.noteDraft.clear();
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            requestContentRedraw();
+        }
+        return false;
     };
     // Pitch 工具与 AUTO 同源的 scale snap：唯一映射入口 ScaleUiMapping
     toolCtx.getActiveScaleSnap = [this]() -> std::optional<ScaleSnapConfig> {
@@ -181,6 +322,74 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
             && appPreferences_->getWholeNoteMoveSnapMode() == WholeNoteMoveSnapMode::StandardPitch;
     };
     toolCtx.getEditableContentSnapshot = [this]() { return readEditedSnapshot(); };
+    toolCtx.getNotesRevision = [this]() { return lastKnownNotesRevision_; };
+    toolCtx.editEraserStroke = [this](F0FrameRange brushRange,
+                                      const std::vector<int>& noteIndices,
+                                      uint64_t expectedNotesRevision,
+                                      juce::String description) -> EraserStrokeEditResult {
+        if (processor_ == nullptr || !editedContentKey_.isValid())
+            return EraserStrokeEditResult{};
+
+        auto result = processor_->editEraserStroke(
+            editedContentKey_, brushRange, noteIndices, expectedNotesRevision,
+            std::move(description));
+        if (result.status == EraserStrokeEditStatus::StaleRevision) {
+            closeEqPopup();
+            interactionState_.noteSelection.clear();
+            if (result.contentSnapshot != nullptr) {
+                cachedNotes_ = result.contentSnapshot->notes;
+                lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+                lastKnownPitchRevision_ = result.contentSnapshot->pitchRevision;
+                applyEditedContentCurve(result.contentSnapshot->pitchCurve);
+            }
+            requestContentRedraw();
+            overlay_->repaint();
+            return result;
+        }
+        if (result.status != EraserStrokeEditStatus::Applied)
+            return result;
+
+        cachedNotes_ = result.contentSnapshot->notes;
+        interactionState_.noteSelection.clear();
+        lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+        lastKnownPitchRevision_ = result.contentSnapshot->pitchRevision;
+        applyEditedContentCurve(result.contentSnapshot->pitchCurve);
+        pendingUndoDescription_ = {};
+        undoSnapshotCaptured_ = false;
+        requestContentRedraw();
+        overlay_->repaint();
+        return result;
+    };
+    toolCtx.deleteSelectedPianoRollNotes = [this](
+        const std::vector<int>& selectedIndices, uint64_t expectedNotesRevision, juce::String description) {
+        if (processor_ == nullptr)
+            return SelectedNoteDeleteResult{};
+
+        auto result = processor_->deleteSelectedPianoRollNotes(
+            editedContentKey_, selectedIndices, expectedNotesRevision, std::move(description));
+        if (result.status == SelectedNoteDeleteStatus::Applied
+            || result.status == SelectedNoteDeleteStatus::StaleRevision) {
+            if (result.status == SelectedNoteDeleteStatus::StaleRevision)
+                closeEqPopup();
+            interactionState_.noteSelection.clear();
+            interactionState_.selection.isSelectingF0 = false;
+            interactionState_.selection.f0SelectionAnchorFrame = -1;
+            interactionState_.selection.f0SelectionCurrentFrame = -1;
+            interactionState_.noteDraft.clear();
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            lastKnownPitchRevision_ = result.contentSnapshot->pitchRevision;
+            applyEditedContentCurve(result.contentSnapshot->pitchCurve);
+            requestContentRedraw();
+            if (result.status == SelectedNoteDeleteStatus::Applied) {
+                pendingUndoDescription_ = {};
+                undoSnapshotCaptured_ = false;
+                if (!result.pitchCurveEdited)
+                    listeners_.call([](Listener& listener) { listener.contentEdited(); });
+            }
+        }
+        return result;
+    };
     toolCtx.getOriginalF0 = [this]() -> std::vector<float> {
         if (!currentCurve_) return {};
         return currentCurve_->getOriginalF0();
@@ -193,7 +402,6 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
     toolCtx.getRetuneSpeed = [this]() { return currentRetuneSpeed_; };
     toolCtx.getVibratoDepth = [this]() { return currentVibratoDepth_; };
     toolCtx.getVibratoRate = [this]() { return currentVibratoRate_; };
-    toolCtx.calculateEffectivePIP = [this](Note& note) -> float { return calculateEffectivePIP(note); };
     toolCtx.getShortcutSettings = [this]() -> const KeyShortcutConfig::KeyShortcutSettings& { return shortcutSettings_; };
     toolCtx.setCurrentTool = [this](ToolId tool) { setCurrentTool(tool); };
     // EQ 工具：主音符 index 由 ToolHandler 唯一判定并直通；EQ cursor 经主题机制应用
@@ -269,8 +477,26 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
         listeners_.call([s, e](Listener& l) { l.pitchCurveEdited(s, e); });
     };
 
-    toolCtx.applyManualCorrection = [this](std::vector<PianoRollToolHandler::ManualCorrectionOp> ops, int s, int e, bool render) {
-        return applyManualCorrectionPatch(ops, s, e, render);
+    toolCtx.editManualCorrection = [this](std::vector<ManualCorrectionOp> ops,
+                                           int dirtyStartFrame,
+                                           int dirtyEndFrame,
+                                           juce::String description) {
+        if (processor_ == nullptr || !editedContentKey_.isValid())
+            return ManualCorrectionEditResult{};
+
+        auto result = processor_->applyManualCorrection(
+            editedContentKey_, ops, dirtyStartFrame, dirtyEndFrame, std::move(description));
+        if (result.status == ManualCorrectionEditStatus::Applied) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            lastKnownPitchRevision_ = result.contentSnapshot->pitchRevision;
+            applyEditedContentCurve(result.contentSnapshot->pitchCurve);
+            pendingUndoDescription_ = {};
+            undoSnapshotCaptured_ = false;
+            requestContentRedraw();
+        }
+        return result;
     };
     toolCtx.selectNotesOverlappingFrames = [this](int startFrame, int endFrameExclusive) {
         return selectNotesOverlappingFrames(startFrame, endFrameExclusive);
@@ -293,18 +519,13 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
     toolCtx.commitTimeGrid = [this](std::shared_ptr<const TimeGridSnapshot> newSnap,
                                      std::shared_ptr<const TimeGridSnapshot> oldSnap,
                                      juce::String description) -> bool {
-        if (contentCommands_ == nullptr || !editedContentKey_.isValid()) return false;
+        if (processor_ == nullptr || contentCommands_ == nullptr || !editedContentKey_.isValid())
+            return false;
         if (newSnap == nullptr || oldSnap == nullptr) return false;
 
-        auto action = std::make_unique<TimeGridEditAction>(
-            contentCommands_,
-            editedContentKey_,
-            description.isNotEmpty() ? description : LOC_RAW("Edit time grid"),
-            std::move(oldSnap),
-            newSnap);
-        const bool published = contentCommands_->setTimeGrid(editedContentKey_, newSnap);
-        if (!published) return false;
-        undoManager_.addAction(std::move(action));
+        if (!processor_->applyTimeGridEdit(
+                editedContentKey_, oldSnap, newSnap, std::move(description)))
+            return false;
 
         {
             auto snap = readEditedSnapshot();
@@ -709,16 +930,18 @@ void PianoRollComponent::setContentCommands(std::shared_ptr<ContentEditCommands>
 }
 
 
-void PianoRollComponent::refreshEditedContentNotes()
+std::shared_ptr<const EditableContentSnapshot> PianoRollComponent::refreshEditedContentNotes()
 {
     cachedNotes_.clear();
 
+    std::shared_ptr<const EditableContentSnapshot> snapshot;
     if (editedContentKey_.isValid()) {
-        if (auto snap = readEditedSnapshot()) {
-            cachedNotes_ = snap->notes;
-        }
+        snapshot = readEditedSnapshot();
+        if (snapshot)
+            cachedNotes_ = snapshot->notes;
     }
     interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+    return snapshot;
 }
 
 const std::vector<Note>& PianoRollComponent::getCommittedNotes() const
@@ -884,21 +1107,22 @@ void PianoRollComponent::openEqPopupForSelection(int primaryIndex)
 
     const Note& primary = notes[primaryIndex];
 
-    // 快照当前有效选中索引，供后续 apply/remove 使用
-    eqEditTargetIndices_.clear();
-    for (int idx : interactionState_.noteSelection.selectedIndices)
-        if (idx >= 0 && idx < static_cast<int>(notes.size()))
-            eqEditTargetIndices_.push_back(idx);
+    // 原样快照目标索引；事务按单一 snapshot 完整解析目标集合
+    eqEditTargetIndices_ = interactionState_.noteSelection.selectedIndices;
+    eqEditRevision_ = lastKnownNotesRevision_;
 
     eqPopup_ = std::make_unique<EqPopupComponent>();
     addAndMakeVisible(*eqPopup_);
-    // 主音符 eq 有值显示它，无值显示 EqSettings 默认；打开零 draft、零提交
+    // 主音符 eq 有值显示它，无值显示 EqSettings 默认；打开弹窗不提交
     eqPopup_->setEqSettings(primary.eq.value_or(EqSettings{}));
     eqPopup_->setPreviewMode(true);
     if (appPreferences_ != nullptr)
         eqPopup_->setRemoveConfirmationSuppressed(appPreferences_->getState().shared.suppressEqRemoveConfirmation);
     eqPopup_->onCommitSettings = [this](const EqSettings& settings) { applyEqSettingsToSelection(settings); };
-    eqPopup_->onRemoveEq = [this]() { removeEqFromSelection(); closeEqPopup(); };
+    eqPopup_->onRemoveEq = [this]() {
+        if (removeEqFromSelection())
+            closeEqPopup();
+    };
     eqPopup_->onClose = [this]() { closeEqPopup(); };
     eqPopup_->onReadSpectrum = [this](SpectrumArray& spectrum,
                                       SpectrumArray& peaks) {
@@ -924,10 +1148,34 @@ void PianoRollComponent::openEqPopupForSelection(int primaryIndex)
 void PianoRollComponent::closeEqPopup()
 {
     eqEditTargetIndices_.clear();
+    eqEditRevision_ = 0;
     if (eqPopup_ == nullptr)
         return;
     removeChildComponent(eqPopup_.get());
     eqPopup_.reset();
+}
+
+void PianoRollComponent::invalidateEqPopup()
+{
+    eqEditTargetIndices_.clear();
+    eqEditRevision_ = 0;
+    if (eqPopup_ == nullptr)
+        return;
+
+    eqPopup_->onCommitSettings = {};
+    eqPopup_->onRemoveEq = {};
+    eqPopup_->onClose = {};
+    eqPopup_->onRemoveConfirmationSuppressed = {};
+    eqPopup_->onReadSpectrum = {};
+    eqPopup_->stopTimer();
+    eqPopup_->setVisible(false);
+    juce::Component::SafePointer<PianoRollComponent> safeThis(this);
+    juce::Component::SafePointer<EqPopupComponent> safePopup(eqPopup_.get());
+    juce::MessageManager::callAsync([safeThis, safePopup]() {
+        if (safeThis != nullptr && safePopup != nullptr
+            && safeThis->eqPopup_.get() == safePopup.getComponent())
+            safeThis->closeEqPopup();
+    });
 }
 
 
@@ -955,53 +1203,57 @@ juce::Rectangle<int> PianoRollComponent::placeEqPopupBounds(const juce::Rectangl
 
 void PianoRollComponent::applyEqSettingsToSelection(const EqSettings& settings)
 {
-    if (!editedContentKey_.isValid() || contentCommands_ == nullptr)
+    if (!editedContentKey_.isValid() || processor_ == nullptr)
         return;
-    const auto& selected = eqEditTargetIndices_;
-    if (selected.empty())
+    const auto result = processor_->editSelectedNoteEq(
+        editedContentKey_, eqEditTargetIndices_, eqEditRevision_,
+        std::optional<EqSettings>{ settings }, LOC_RAW("Edit EQ"));
+    if (result.status == SelectedNoteEqEditStatus::StaleRevision) {
+        if (result.contentSnapshot != nullptr) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            interactionState_.noteSelection.clear();
+            requestContentRedraw();
+        }
+        invalidateEqPopup();
+        return;
+    }
+    if (result.status != SelectedNoteEqEditStatus::Applied)
         return;
 
-    // 严格复用 draft → 提交链：一次原子提交覆盖全部选中音符
-    beginNoteDraft();
-    auto& working = interactionState_.noteDraft.workingNotes;
-    for (int idx : selected) {
-        if (idx >= 0 && idx < static_cast<int>(working.size()))
-            working[idx].eq = settings;
-    }
-    interactionState_.noteDraft.contentDirty = true;
-    pendingUndoDescription_ = LOC_RAW("Edit EQ");
-    commitNoteDraft();
+    cachedNotes_ = result.contentSnapshot->notes;
+    lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+    eqEditRevision_ = result.contentSnapshot->notesRevision;
+    requestContentRedraw();
+    listeners_.call([](Listener& listener) { listener.contentEdited(); });
 }
 
-void PianoRollComponent::removeEqFromSelection()
+bool PianoRollComponent::removeEqFromSelection()
 {
-    if (!editedContentKey_.isValid() || contentCommands_ == nullptr)
-        return;
-    const auto& selected = eqEditTargetIndices_;
-    if (selected.empty())
-        return;
-
-    beginNoteDraft();
-    auto& working = interactionState_.noteDraft.workingNotes;
-    for (int idx : selected) {
-        if (idx >= 0 && idx < static_cast<int>(working.size()))
-            working[idx].eq = std::nullopt;
+    if (!editedContentKey_.isValid() || processor_ == nullptr)
+        return true;
+    const auto result = processor_->editSelectedNoteEq(
+        editedContentKey_, eqEditTargetIndices_, eqEditRevision_,
+        std::nullopt, LOC_RAW("Remove EQ"));
+    if (result.status == SelectedNoteEqEditStatus::StaleRevision) {
+        if (result.contentSnapshot != nullptr) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            interactionState_.noteSelection.clear();
+            requestContentRedraw();
+        }
+        invalidateEqPopup();
+        return false;
     }
-    interactionState_.noteDraft.contentDirty = true;
-    pendingUndoDescription_ = LOC_RAW("Remove EQ");
-    commitNoteDraft();
-}
+    if (result.status != SelectedNoteEqEditStatus::Applied)
+        return true;
 
-ContentCommitSnapshot PianoRollComponent::commitEditedContentPitchCorrectionSegments(const std::vector<PitchCorrectionSegment>& segments,
-                                                                         F0FrameRange affectedRange)
-{
-    // Delegate to the range-scoped merge path.  setPitchCorrectionSegments does
-    // full replacement which would discard segments outside affectedRange.
-    // commitEditedContentNotesAndSegments 锟?commitContentNotesAndSegments
-    // performs range-scoped merge (keptBefore + incoming + keptAfter).
-    const auto snap = readEditedSnapshot();
-    if (snap == nullptr) return {};
-    return commitEditedContentNotesAndSegments(*snap, cachedNotes_, segments, affectedRange);
+    cachedNotes_ = result.contentSnapshot->notes;
+    lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+    eqEditRevision_ = result.contentSnapshot->notesRevision;
+    requestContentRedraw();
+    listeners_.call([](Listener& listener) { listener.contentEdited(); });
+    return true;
 }
 
 ContentCommitSnapshot PianoRollComponent::commitEditedContentNotesAndSegments(const EditableContentSnapshot& snapshot,
@@ -1113,64 +1365,6 @@ ContentCommitSnapshot PianoRollComponent::commitEditedContentNotesAndSegments(co
         requestContentRedraw();
     }
     return committedSnap;
-}
-
-ContentCommitSnapshot PianoRollComponent::commitEditedContentNotesAndSegments(
-    const EditableContentSnapshot& snapshot,
-    const std::vector<Note>& notes,
-    const std::vector<PitchCorrectionSegment>& segments,
-    F0FrameRange affectedRange,
-    std::vector<float> originalF0InRange,
-    std::optional<std::vector<F0FrameRange>> erasedRanges)
-{
-    const auto committed = contentCommands_->commitNotesAndSegmentsWithOriginalF0(
-        editedContentKey_, notes, segments,
-        ContentEditRangeFrames{ affectedRange.startFrame, affectedRange.endFrameExclusive },
-        std::move(originalF0InRange), std::move(erasedRanges));
-    if (committed == nullptr)
-        return {};
-
-    const auto extractRangesInRange = [](const std::vector<F0FrameRange>& ranges, int start, int end) {
-        std::vector<F0FrameRange> result;
-        for (const auto& range : ranges) {
-            const int clippedStart = std::max(start, range.startFrame);
-            const int clippedEnd = std::min(end, range.endFrameExclusive);
-            if (clippedStart < clippedEnd)
-                result.push_back({clippedStart, clippedEnd});
-        }
-        return result;
-    };
-    const auto beforeErasedRanges = extractRangesInRange(
-        snapshot.pitchCurve->getErasedRanges(), affectedRange.startFrame, affectedRange.endFrameExclusive);
-    const auto afterErasedRanges = extractRangesInRange(
-        committed->pitchCurve->getErasedRanges(), affectedRange.startFrame, affectedRange.endFrameExclusive);
-    const auto beforeOriginalF0 = std::vector<float>(
-        snapshot.pitchCurve->getOriginalF0().begin() + affectedRange.startFrame,
-        snapshot.pitchCurve->getOriginalF0().begin() + affectedRange.endFrameExclusive);
-    const auto afterOriginalF0 = std::vector<float>(
-        committed->pitchCurve->getOriginalF0().begin() + affectedRange.startFrame,
-        committed->pitchCurve->getOriginalF0().begin() + affectedRange.endFrameExclusive);
-    auto action = std::make_unique<PianoRollEditAction>(
-        contentCommands_, editedContentKey_, pendingUndoDescription_.isNotEmpty()
-            ? pendingUndoDescription_ : LOC(kEdit),
-        snapshot.notes, committed->notes,
-        snapshot.pitchCurve->getCorrectionSegments(), committed->pitchCurve->getCorrectionSegments(),
-        ContentEditRangeFrames{ affectedRange.startFrame, affectedRange.endFrameExclusive },
-        beforeOriginalF0, afterOriginalF0, beforeErasedRanges, afterErasedRanges);
-    if (erasedRanges.has_value())
-        action->setErasedRangePatch();
-    undoManager_.addAction(std::move(action));
-    pendingUndoDescription_ = {};
-
-    cachedNotes_ = committed->notes;
-    interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
-    if (committed->pitchCurve)
-        applyEditedContentCurve(committed->pitchCurve);
-    undoSnapshotCaptured_ = false;
-    lastKnownNotesRevision_ = committed->notesRevision;
-    lastKnownPitchRevision_ = committed->pitchRevision;
-    requestContentRedraw();
-    return committed;
 }
 
 std::vector<PitchCorrectionSegment> PianoRollComponent::getCurrentSegments() const
@@ -1460,47 +1654,6 @@ void PianoRollComponent::invalidateInteractionPreview(const juce::Rectangle<int>
     overlay_->repaint(bounds);
 }
 
-bool PianoRollComponent::applyManualCorrectionPatch(const std::vector<PianoRollToolHandler::ManualCorrectionOp>& ops,
-                                                     int dirtyStartFrame,
-                                                     int dirtyEndFrame,
-                                                     bool triggerRenderEvent)
-{
-    if (!currentCurve_ || ops.empty()) {
-        return false;
-    }
-
-    auto scratchCurve = PitchCurve::fromSnapshot(currentCurve_);
-    auto curveSnapshot = currentCurve_;
-    for (const auto& op : ops) {
-        if (op.endFrameExclusive <= op.startFrame) {
-            continue;
-        }
-
-        curveSnapshot = scratchCurve->setManualCorrectionRange(
-            op.startFrame,
-            op.endFrameExclusive,
-            op.f0Data,
-            op.source,
-            op.parameterSnapshot);
-    }
-
-    // dirtyStartFrame/dirtyEndFrame 是所有 manual ops 的 dirty 帧并集（含端点）。
-    const F0FrameRange affectedRange{dirtyStartFrame,
-                                      dirtyEndFrame >= dirtyStartFrame ? dirtyEndFrame + 1 : dirtyStartFrame};
-    if (!commitEditedContentPitchCorrectionSegments(
-            curveSnapshot->getCorrectionSegments(), affectedRange)) {
-        return false;
-    }
-
-    if (triggerRenderEvent && dirtyEndFrame >= dirtyStartFrame) {
-        listeners_.call([dirtyStartFrame, dirtyEndFrame](Listener& l) {
-            l.pitchCurveEdited(dirtyStartFrame, dirtyEndFrame);
-        });
-    }
-
-    return true;
-}
-
 // ============================================================================
 // drawPlayheadOverlay — 直接绘制播放头（取代 FixedPlayheadComponent 子组件）
 // ============================================================================
@@ -1582,7 +1735,7 @@ void PianoRollComponent::drawPlayheadNoteHighlight(juce::Graphics& g)
                 hitIndices.push_back(i);
         }
         if (!hitIndices.empty())
-            renderer_->drawSelectedNoteHighlights(g, ctx, *notes, hitIndices, item);
+            renderer_->drawSelectedNoteHighlights(g, ctx, *notes, hitIndices, item, true);
     }
 }
 
@@ -2760,92 +2913,64 @@ AudioEditingScheme::ParameterEditResult PianoRollComponent::editParameter(AudioE
         return result;
     }
 
-    const auto contentSnapshot = readEditedSnapshot();
-    if (contentSnapshot == nullptr) {
-        result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+    if (target == AudioEditingScheme::ParameterTarget::SelectedNotes) {
+        interactionState_.noteSelection.trimToNoteCount(static_cast<int>(notes.size()));
+        if (processor_ == nullptr) {
+            result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+            return result;
+        }
+
+        const auto edit = processor_->editSelectedNoteParameter(
+            editedContentKey_,
+            interactionState_.noteSelection.selectedIndices,
+            lastKnownNotesRevision_,
+            id,
+            value,
+            currentRetuneSpeed_,
+            currentVibratoDepth_,
+            currentVibratoRate_,
+            LOC_RAW("Edit note"));
+        result.status = edit.status;
+        result.changed = edit.changed;
+        if (edit.status != AudioEditingScheme::ParameterEditStatus::Applied || !edit.changed) {
+            if (edit.contentSnapshot != nullptr) {
+                cachedNotes_ = edit.contentSnapshot->notes;
+                interactionState_.noteSelection.clear();
+                if (edit.contentSnapshot->pitchCurve != nullptr)
+                    applyEditedContentCurve(edit.contentSnapshot->pitchCurve);
+                lastKnownNotesRevision_ = edit.contentSnapshot->notesRevision;
+                lastKnownPitchRevision_ = edit.contentSnapshot->pitchRevision;
+                requestContentRedraw();
+            }
+            return result;
+        }
+
+        const auto affectedRange = edit.affectedRange;
+        if (!affectedRange.isEmpty()) {
+            const auto committedSnapshot = edit.contentSnapshot;
+            if (committedSnapshot == nullptr) {
+                result.status = AudioEditingScheme::ParameterEditStatus::Failed;
+                return result;
+            }
+            cachedNotes_ = committedSnapshot->notes;
+            interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+            if (committedSnapshot->pitchCurve != nullptr)
+                applyEditedContentCurve(committedSnapshot->pitchCurve);
+            pendingUndoDescription_ = {};
+            undoSnapshotCaptured_ = false;
+            lastKnownNotesRevision_ = committedSnapshot->notesRevision;
+            lastKnownPitchRevision_ = committedSnapshot->pitchRevision;
+            requestContentRedraw();
+            listeners_.call([affectedRange](Listener& l) {
+                l.pitchCurveEdited(affectedRange.startFrame, affectedRange.endFrameExclusive - 1);
+            });
+        }
         return result;
     }
 
-    if (target == AudioEditingScheme::ParameterTarget::SelectedNotes) {
-        double dirtyStartTime = 1e30;
-        double dirtyEndTime = -1e30;
-        bool anySelected = false;
-
-        interactionState_.noteSelection.trimToNoteCount(static_cast<int>(notes.size()));
-        for (int noteIndex : interactionState_.noteSelection.selectedIndices) {
-            auto& n = notes[static_cast<size_t>(noteIndex)];
-            anySelected = true;
-
-            float oldValue = 0.0f;
-            switch (id) {
-                case AudioEditingScheme::ParameterId::RetuneSpeed:
-                    oldValue = n.retuneSpeed;
-                    n.retuneSpeed = value;
-                    break;
-                case AudioEditingScheme::ParameterId::VibratoDepth:
-                    oldValue = n.vibratoDepth;
-                    n.vibratoDepth = value;
-                    break;
-                case AudioEditingScheme::ParameterId::VibratoRate:
-                    oldValue = n.vibratoRate;
-                    n.vibratoRate = value;
-                    break;
-            }
-            if (std::abs(value - oldValue) > 1e-6f)
-                result.changed = true;
-
-            n.dirty = true;
-            dirtyStartTime = std::min(dirtyStartTime, n.startTime);
-            dirtyEndTime = std::max(dirtyEndTime, n.endTime);
-        }
-
-        if (!anySelected) {
-            result.status = AudioEditingScheme::ParameterEditStatus::NoTarget;
-            return result;
-        }
-
-        if (!result.changed) {
-            result.status = AudioEditingScheme::ParameterEditStatus::Applied;
-            return result;
-        }
-
-        if (dirtyEndTime > dirtyStartTime) {
-            const auto editRange = f0tl.rangeForTimes(dirtyStartTime, dirtyEndTime);
-            if (!editRange.isEmpty()) {
-                auto scratchCurve = PitchCurve::fromSnapshot(currentCurve_);
-                const auto snap = scratchCurve->applyCorrectionToRange(
-                    notes, editRange.startFrame, editRange.endFrameExclusive,
-                    static_cast<float>(contentSnapshot->pitchShiftSettings.getPitchRatio()),
-                    currentRetuneSpeed_, currentVibratoDepth_, currentVibratoRate_);
-
-                const auto affectedRange = PitchCurve::expandNoteBasedCorrectionRange(
-                    editRange.startFrame, editRange.endFrameExclusive, f0tl.endFrameExclusive());
-
-                const double affectedStartSec = f0tl.timeAtFrame(affectedRange.startFrame);
-                const double affectedEndSec = f0tl.timeAtFrame(affectedRange.endFrameExclusive);
-                std::vector<Note> notesInRange;
-                for (const auto& n : notes) {
-                    if (n.endTime > affectedStartSec && n.startTime < affectedEndSec)
-                        notesInRange.push_back(n);
-                }
-
-                auto allSegments = snap->getCorrectionSegments();
-                std::vector<PitchCorrectionSegment> segmentsInRange;
-                for (const auto& seg : allSegments) {
-                    if (seg.startFrame < affectedRange.endFrameExclusive && seg.endFrame > affectedRange.startFrame)
-                        segmentsInRange.push_back(seg);
-                }
-
-                pendingUndoDescription_ = LOC_RAW("Edit note");
-                if (!commitEditedContentNotesAndSegments(*contentSnapshot, notesInRange, segmentsInRange, affectedRange)) {
-                    result.status = AudioEditingScheme::ParameterEditStatus::Failed;
-                    return result;
-                }
-                listeners_.call([affectedRange](Listener& l) { l.pitchCurveEdited(affectedRange.startFrame, affectedRange.endFrameExclusive - 1); });
-            }
-        }
-
-        result.status = AudioEditingScheme::ParameterEditStatus::Applied;
+    const auto contentSnapshot = readEditedSnapshot();
+    if (contentSnapshot == nullptr) {
+        result.status = AudioEditingScheme::ParameterEditStatus::Failed;
         return result;
     }
 
@@ -3313,7 +3438,14 @@ void PianoRollComponent::applyEditedContent(ContentKey contentKey,
     // 读侧也必须同步读：curveChanged 时需 refresh notes，否则 undo/redo 后不一致
     // 曲线回退后 notes 视觉残留的不对称（cachedNotes_ 滞后）。
     if (contentChanged || curveChanged) {
-        refreshEditedContentNotes();
+        const auto snapshot = refreshEditedContentNotes();
+        if (contentChanged) {
+            if (snapshot) {
+                lastKnownNotesRevision_ = snapshot->notesRevision;
+                lastKnownPitchRevision_ = snapshot->pitchRevision;
+                lastKnownTimeGridRevision_ = snapshot->timeGridRevision;
+            }
+        }
     }
 
     if (contentChanged || curveChanged) {
@@ -3369,6 +3501,8 @@ void PianoRollComponent::onNotesRevisionChanged()
     uint64_t rev = snap ? snap->notesRevision : 0;
     if (rev == lastKnownNotesRevision_) return;
     lastKnownNotesRevision_ = rev;
+    closeEqPopup();
+    interactionState_.noteSelection.clear();
     refreshEditedContentNotes();
     requestContentRedraw();
 }
@@ -4195,6 +4329,16 @@ void PianoRollComponent::mouseDoubleClick(const juce::MouseEvent& e) {
 }
 
 void PianoRollComponent::mouseDown(const juce::MouseEvent& e) {
+    if (e.mods.isMiddleButtonDown()
+        && handlePointerShortcut({ KeyShortcutConfig::BindingType::MiddleMouseButton, e.mods }))
+        return;
+    if (e.mods.isBackButtonDown()
+        && handlePointerShortcut({ KeyShortcutConfig::BindingType::MouseBack, e.mods }))
+        return;
+    if (e.mods.isForwardButtonDown()
+        && handlePointerShortcut({ KeyShortcutConfig::BindingType::MouseForward, e.mods }))
+        return;
+
     // ── OpenDyne：Command+Alt+拖拽 = 同时缩放两轴；Command+Shift+拖拽 = 平移视区 ──
     if (isOpenDyne()) {
         if (e.mods.isCommandDown() && e.mods.isAltDown() && e.x >= getTimelineContentStartX()) {
@@ -4341,9 +4485,11 @@ void PianoRollComponent::mouseUp(const juce::MouseEvent& e) {
 }
 
 void PianoRollComponent::handleVerticalZoomWheel(const juce::MouseEvent& e, float deltaY) {
-    const auto& settings = zoomSensitivity_;
-    float zoomFactor = 1.0f + (deltaY * settings.verticalZoomFactor);
-    const float contentY = static_cast<float>(e.y - rulerHeight_);
+    handleVerticalZoomAt(1.0f + deltaY * zoomSensitivity_.verticalZoomFactor,
+                         static_cast<float>(e.y - rulerHeight_));
+}
+
+void PianoRollComponent::handleVerticalZoomAt(float zoomFactor, float contentY) {
     float mouseMidi = makeViewMapper().yToMidi(contentY);
 
     pixelsPerSemitone_ *= zoomFactor;
@@ -4414,6 +4560,13 @@ void PianoRollComponent::handleHorizontalZoomWheel(const juce::MouseEvent& e, fl
 }
 
 void PianoRollComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) {
+    KeyShortcutConfig::BindingType wheelType;
+    if (KeyShortcutConfig::getWheelBindingType(wheel, e.mods, wheelType)) {
+        const KeyShortcutConfig::KeyBinding binding(wheelType, e.mods);
+        if (handlePointerShortcut(binding))
+            return;
+    }
+
     float deltaX = wheel.deltaX;
     float deltaY = wheel.deltaY;
 
@@ -4426,40 +4579,15 @@ void PianoRollComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::M
 
     if (deltaY == 0.0f && deltaX == 0.0f) return;
 
-    // ── OpenDyne（NotesPrimary）Melodyne 式导航 ──
-    if (isOpenDyne()) {
-        if (e.mods.isCommandDown()) {
-            handleOpenDyneZoomAtMouse(e, deltaY); // Windows Ctrl / macOS Command：横纵向同步缩放
-        } else if (e.mods.isAltDown()) {
-            handleVerticalZoomWheel(e, deltaY); // 纵向缩放音高轴
-        } else if (e.mods.isShiftDown()) {
-            handleOpenDyneHorizontalScrollWheel(deltaX, deltaY); // 横向滚动
-        } else {
-            handleVerticalScrollWheel(deltaY); // 纵向滚动
-        }
+    if (e.mods.isShiftDown() || e.mods.isCtrlDown()
+        || e.mods.isCommandDown() || e.mods.isAltDown())
         return;
-    }
 
-    if (e.mods.isShiftDown()) {
-        handleVerticalZoomWheel(e, deltaY);
-    } else if (e.mods.isCtrlDown()) {
-        handleHorizontalZoomWheel(e, deltaY);
-    } else if (e.mods.isAltDown()) {
-        handleHorizontalScrollWheel(deltaX, deltaY);
+    if (deltaX != 0.0f && deltaY == 0.0f) {
+        handleHorizontalScrollWheel(deltaX, 0.0f);
     } else {
         handleVerticalScrollWheel(deltaY);
     }
-}
-
-void PianoRollComponent::handleOpenDyneHorizontalScrollWheel(float deltaX, float deltaY) {
-    handleHorizontalScrollWheel(deltaX != 0.0f ? deltaX : deltaY, 0.0f);
-}
-
-void PianoRollComponent::handleOpenDyneZoomAtMouse(const juce::MouseEvent& e, float deltaY) {
-    saveOpenDyneZoomState();
-    // 时间轴与音高轴同时缩放，保持鼠标下的时间与音高不动
-    handleHorizontalZoomWheel(e, deltaY);
-    handleVerticalZoomWheel(e, deltaY);
 }
 
 void PianoRollComponent::beginOpenDyneZoomPan(const juce::MouseEvent& e) {
@@ -4764,18 +4892,20 @@ void PianoRollComponent::fitToSelectedNotes()
 }
 
 void PianoRollComponent::beginZoomPreview(const juce::MouseEvent& e, float deltaY) {
-    const auto& settings = zoomSensitivity_;
-    const double zoomFactor = 1.0 + static_cast<double>(deltaY) * settings.horizontalZoomFactor;
+    const double zoomFactor = 1.0 + static_cast<double>(deltaY) * zoomSensitivity_.horizontalZoomFactor;
+    beginZoomPreviewAt(e.x - getTimelineContentStartX(), zoomFactor);
+}
+
+void PianoRollComponent::beginZoomPreviewAt(int anchorViewportX, double zoomFactor) {
     const double oldPps = camera_.pixelsPerSecond;
     const double newPps = TimelineViewportPolicy::normalisePixelsPerSecond(
         oldPps * zoomFactor,
         TimelineViewportRequest::ViewKind::PianoRoll);
-    const int mouseX = e.x - getTimelineContentStartX();
-    const double mouseTime = camera_.visibleStartSeconds + mouseX / oldPps;
+    const double anchorTime = camera_.visibleStartSeconds + anchorViewportX / oldPps;
 
     zoomPreviewActive_ = true;
-    zoomAnchorTime_ = mouseTime;
-    zoomAnchorViewportX_ = mouseX;
+    zoomAnchorTime_ = anchorTime;
+    zoomAnchorViewportX_ = anchorViewportX;
     zoomDeadlineTicks_ = kZoomDeadlineTicks;
 
     userHasManuallyZoomed_ = true;
@@ -4843,6 +4973,7 @@ void PianoRollComponent::pasteNotes()
 {
     if (notesClipboard_.empty()) return;
     if (contentCommands_ == nullptr || !editedContentKey_.isValid()) return;
+    if (processor_ == nullptr) return;
 
     const auto& notes = getCommittedNotes();
     const auto& sel = interactionState_.noteSelection;
@@ -4869,62 +5000,40 @@ void PianoRollComponent::pasteNotes()
         pasteStartTime = maxEnd;
     }
 
-    // 剪贴板始终保存 source 时间；粘贴音符之间的 source 相对间距保持不变
-    double clipMinTime = notesClipboard_.front().startTime;
-    for (const auto& n : notesClipboard_) {
-        clipMinTime = std::min(clipMinTime, n.startTime);
-    }
-
-    std::vector<Note> pastedNotes;
-    pastedNotes.reserve(notesClipboard_.size());
-    for (auto n : notesClipboard_) {
-        const double origStart = n.startTime;
-        const double origDuration = n.endTime - n.startTime;
-        n.startTime = pasteStartTime + (origStart - clipMinTime);
-        n.endTime = n.startTime + origDuration;
-        n.dirty = true;
-        pastedNotes.push_back(n);
-    }
-
-    // 拓扑计划：归一化合并 + affected range（粘贴包络 ∪ 严格相交原音符完整边界）
-    // + before/after patch 内容。range 覆盖被截短原音符的完整区间，Undo/Redo 对称。
-    const auto plan = planPasteTopology(notes, pastedNotes);
-
-    // 拓扑编辑事务：commitNoteTopologyPatch 内部处理
-    // revision 推进 + republishPlaybackSource + snapshot 返回
-    ContentNoteRangePatch afterPatch;
-    afterPatch.affectedRange.startSeconds = plan.affectedRange.startSeconds;
-    afterPatch.affectedRange.endSeconds = plan.affectedRange.endSeconds;
-    afterPatch.afterNotesInRange = plan.afterNotesInRange;
-
-    const auto committedSnap = contentCommands_->commitNoteTopologyPatch(editedContentKey_, afterPatch);
-    if (!committedSnap) return;
-
-    cachedNotes_ = committedSnap->notes;
-    interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
-
-    // 构建 before-patch：仅范围内的原有 notes，用于 Undo
-    ContentNoteRangePatch beforePatch;
-    beforePatch.affectedRange = afterPatch.affectedRange;
-    beforePatch.afterNotesInRange = plan.beforeNotesInRange;
-
-    auto action = std::make_unique<PianoRollNotePatchAction>(
-        contentCommands_,
+    // 拓扑编辑事务：Processor 读一次 snapshot，plan（平移 + 拓扑）在 Processor 内计算，
+    // commitNoteTopologyPatch 处理 revision 推进 + republishPlaybackSource + snapshot 返回。
+    const auto result = processor_->pasteNotesAt(
         editedContentKey_,
-        pendingUndoDescription_.isNotEmpty() ? pendingUndoDescription_ : LOC(kPaste),
-        std::move(beforePatch),
-        std::move(afterPatch));
+        notesClipboard_,
+        pasteStartTime,
+        lastKnownNotesRevision_,
+        pendingUndoDescription_.isNotEmpty() ? pendingUndoDescription_ : LOC(kPaste));
 
-    undoManager_.addAction(std::move(action));
+    if (result.status == PasteNotesStatus::StaleRevision) {
+        if (result.contentSnapshot != nullptr) {
+            cachedNotes_ = result.contentSnapshot->notes;
+            lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+            interactionState_.noteSelection.clear();
+            requestContentRedraw();
+        }
+        pendingUndoDescription_ = {};
+        undoSnapshotCaptured_ = false;
+        return;
+    }
+    if (result.status != PasteNotesStatus::Applied) return;
+
+    cachedNotes_ = result.contentSnapshot->notes;
+    interactionState_.noteSelection.trimToNoteCount(static_cast<int>(cachedNotes_.size()));
+    lastKnownNotesRevision_ = result.contentSnapshot->notesRevision;
+
     pendingUndoDescription_ = {};
     undoSnapshotCaptured_ = false;
-    lastKnownNotesRevision_ = committedSnap->notesRevision;
 
-    // 选中刚粘贴的 notes（按 source 时间匹配）
+    // 选中刚粘贴的 notes（按旧 exact start/end 匹配）
     interactionState_.noteSelection.clear();
     const int noteCount = static_cast<int>(cachedNotes_.size());
     for (int i = 0; i < noteCount; ++i) {
-        for (const auto& pn : pastedNotes) {
+        for (const auto& pn : result.pastedNotes) {
             if (cachedNotes_[static_cast<size_t>(i)].startTime == pn.startTime
                 && cachedNotes_[static_cast<size_t>(i)].endTime == pn.endTime) {
                 interactionState_.noteSelection.add(i, noteCount);
@@ -4935,6 +5044,7 @@ void PianoRollComponent::pasteNotes()
 
     requestContentRedraw();
     overlay_->repaint();
+    listeners_.call([](Listener& listener) { listener.contentEdited(); });
 }
 
 void PianoRollComponent::duplicateNotes()
@@ -4943,84 +5053,106 @@ void PianoRollComponent::duplicateNotes()
     pasteNotes();
 }
 
+bool PianoRollComponent::handleViewportShortcut(const juce::KeyPress& key)
+{
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ScrollHorizontalLeft, key)) {
+        handleHorizontalScrollWheel(0.0f, 1.0f);
+        return true;
+    }
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ScrollHorizontalRight, key)) {
+        handleHorizontalScrollWheel(0.0f, -1.0f);
+        return true;
+    }
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, key)) {
+        beginZoomPreviewAt(getTimelineContentViewportWidth() / 2,
+                           1.0 + zoomSensitivity_.horizontalZoomFactor);
+        return true;
+    }
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomHorizontalOut, key)) {
+        beginZoomPreviewAt(getTimelineContentViewportWidth() / 2,
+                           1.0 / (1.0 + zoomSensitivity_.horizontalZoomFactor));
+        return true;
+    }
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomVerticalIn, key)) {
+        handleVerticalZoomAt(1.0f + zoomSensitivity_.verticalZoomFactor,
+                             static_cast<float>(getTimelineContentViewportHeight()) * 0.5f);
+        return true;
+    }
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomVerticalOut, key)) {
+        handleVerticalZoomAt(1.0f / (1.0f + zoomSensitivity_.verticalZoomFactor),
+                             static_cast<float>(getTimelineContentViewportHeight()) * 0.5f);
+        return true;
+    }
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::FitSelectedNotes, key)) {
+        fitToSelectedNotes();
+        return true;
+    }
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::FitAllNotes, key)) {
+        fitToAllNotes();
+        return true;
+    }
+    return false;
+}
+
+bool PianoRollComponent::matchesShortcut(KeyShortcutConfig::ShortcutId id,
+                                          const juce::KeyPress& key) const
+{
+    if (pointerShortcutBinding_ != nullptr)
+        return KeyShortcutConfig::matchesShortcut(shortcutSettings_, id, *pointerShortcutBinding_);
+    return KeyShortcutConfig::matchesShortcut(shortcutSettings_, id, key);
+}
+
+bool PianoRollComponent::handlePointerShortcut(const KeyShortcutConfig::KeyBinding& binding)
+{
+    const auto id = KeyShortcutConfig::findShortcutForBinding(shortcutSettings_, binding);
+    if (id == KeyShortcutConfig::ShortcutId::Count)
+        return false;
+
+    pointerShortcutBinding_ = &binding;
+    const bool handled = keyPressed(juce::KeyPress(0, binding.modifiers, 0));
+    pointerShortcutBinding_ = nullptr;
+    if (!handled)
+        listeners_.call([&](Listener& listener) { listener.pointerShortcutRequested(id); });
+    return true;
+}
+
 bool PianoRollComponent::keyPressed(const juce::KeyPress& key) {
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Undo, key)) {
+    if (handleViewportShortcut(key))
+        return true;
+
+    const auto keyCode = key.getKeyCode();
+    if (!key.getModifiers().isAnyModifierKeyDown()
+        && (keyCode == juce::KeyPress::upKey || keyCode == juce::KeyPress::downKey
+            || keyCode == juce::KeyPress::leftKey || keyCode == juce::KeyPress::rightKey)) {
+        return toolHandler_->keyPressed(key);
+    }
+
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Undo, key)) {
         listeners_.call([](Listener& l) { l.undoRequested(); });
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Redo, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Redo, key)) {
         listeners_.call([](Listener& l) { l.redoRequested(); });
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Copy, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Copy, key)) {
         copySelectedNotes();
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Paste, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Paste, key)) {
         pasteNotes();
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Cut, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Cut, key)) {
         copySelectedNotes();
         toolHandler_->handleDeleteKey();  // 剪切语义：复制到剪贴板 + 删除选中
         return true;
     }
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::DuplicateClip, key)) {
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::DuplicateClip, key)) {
         duplicateNotes();
         return true;
     }
-    // OpenDyne: Cmd+Alt+Arrow = precise keyboard zoom
-    if (isOpenDyne() && key.getModifiers().isCommandDown() && key.getModifiers().isAltDown()) {
-        float zoomFactor = 1.15f; // ~15% per keypress
-        const double visibleWidthSeconds = getTimelineContentViewportWidth() / camera_.pixelsPerSecond;
-        const int keyCode = key.getKeyCode();
-        if (keyCode == juce::KeyPress::leftKey) {
-            commitViewportRequest(makeViewportRequest(
-                TimelineViewportRequest::Kind::Manual,
-                camera_.visibleStartSeconds + visibleWidthSeconds * 0.5 * (1.0 - 1.0/zoomFactor),
-                0.0, camera_.pixelsPerSecond / zoomFactor));
-            return true;
-        }
-        if (keyCode == juce::KeyPress::rightKey) {
-            commitViewportRequest(makeViewportRequest(
-                TimelineViewportRequest::Kind::Manual,
-                camera_.visibleStartSeconds + visibleWidthSeconds * 0.5 * (1.0 - zoomFactor),
-                0.0, camera_.pixelsPerSecond * zoomFactor));
-            return true;
-        }
-        if (keyCode == juce::KeyPress::upKey) {
-            const float contentViewportHeight = static_cast<float>(getTimelineContentViewportHeight());
-            float centerMidi = maxMidi_ - (verticalScrollOffset_ + contentViewportHeight * 0.5f) / pixelsPerSemitone_;
-            pixelsPerSemitone_ = juce::jlimit(5.0f, 60.0f, pixelsPerSemitone_ * zoomFactor);
-            verticalScrollOffset_ = (maxMidi_ - centerMidi) * pixelsPerSemitone_ - contentViewportHeight * 0.5f;
-            const float maxScroll = juce::jmax(0.0f, getTotalHeight() - contentViewportHeight);
-            verticalScrollOffset_ = juce::jlimit(0.0f, maxScroll, verticalScrollOffset_);
-            staticDirty_ = true; contentDirty_ = true;
-            rasterizeDirtySurfaces(); updateScrollBars(); repaint(); overlay_->repaint();
-            return true;
-        }
-        if (keyCode == juce::KeyPress::downKey) {
-            const float contentViewportHeight = static_cast<float>(getTimelineContentViewportHeight());
-            float centerMidi = maxMidi_ - (verticalScrollOffset_ + contentViewportHeight * 0.5f) / pixelsPerSemitone_;
-            pixelsPerSemitone_ = juce::jlimit(5.0f, 60.0f, pixelsPerSemitone_ / zoomFactor);
-            verticalScrollOffset_ = (maxMidi_ - centerMidi) * pixelsPerSemitone_ - contentViewportHeight * 0.5f;
-            const float maxScroll = juce::jmax(0.0f, getTotalHeight() - contentViewportHeight);
-            verticalScrollOffset_ = juce::jlimit(0.0f, maxScroll, verticalScrollOffset_);
-            staticDirty_ = true; contentDirty_ = true;
-            rasterizeDirtySurfaces(); updateScrollBars(); repaint(); overlay_->repaint();
-            return true;
-        }
-    }
-    // Cmd+0: Zoom to selected notes (or all if none selected)
-    if (key.getKeyCode() == '0' && (key.getModifiers().isCommandDown() || key.getModifiers().isCtrlDown())) {
-        if (key.getModifiers().isShiftDown()) {
-            fitToAllNotes();
-        } else {
-            fitToSelectedNotes();
-        }
-        return true;
-    }
-    return toolHandler_->keyPressed(key);
+    return toolHandler_->keyPressed(key, pointerShortcutBinding_);
 }
 
 std::optional<PianoRollRenderer::ContentRenderItem> PianoRollComponent::buildContentRenderItem(
@@ -5191,48 +5323,6 @@ void PianoRollComponent::fitToScreen() {
 
 float PianoRollComponent::getTotalHeight() const {
     return (maxMidi_ - minMidi_ + 1.0f) * pixelsPerSemitone_;
-}
-
-float PianoRollComponent::calculateEffectivePIP(Note& note) {
-    if (!currentCurve_) return -1.0f;
-
-    if (note.endTime <= note.startTime) return -1.0f;
-
-    // 获取当前全局 pitchRatio，使 originalPitch 始终处于 Effective F0 域
-    float pitchRatio = 1.0f;
-    const auto contentSnap = readEditedSnapshot();
-    if (contentSnap != nullptr)
-        pitchRatio = static_cast<float>(contentSnap->pitchShiftSettings.getPitchRatio());
-
-    const auto& originalF0 = currentCurve_->getOriginalF0();
-
-    const auto f0tl = currentF0Timeline();
-    if (f0tl.isEmpty()) return -1.0f;
-    const auto noteRange = f0tl.nonEmptyRangeForTimes(note.startTime, note.endTime);
-    const int startFrame = noteRange.startFrame;
-    const int endFrameExclusive = noteRange.endFrameExclusive;
-    
-    if (startFrame >= endFrameExclusive) return -1.0f;
-
-    int numFrames = endFrameExclusive - startFrame;
-    
-    std::vector<float> noteF0(static_cast<std::size_t>(numFrames));
-    std::copy(originalF0.begin() + startFrame, originalF0.begin() + endFrameExclusive, noteF0.begin());
-
-    std::vector<float> voicedF0;
-    voicedF0.reserve(noteF0.size());
-    for (float f : noteF0) {
-        float eff = f * pitchRatio;
-        if (eff > 0.0f) voicedF0.push_back(eff);
-    }
-
-    if (voicedF0.empty()) {
-        return -1.0f;
-    }
-
-    std::sort(voicedF0.begin(), voicedF0.end());
-    float medianF0 = voicedF0[voicedF0.size() / 2];
-    return medianF0;
 }
 
 juce::String PianoRollComponent::AutoTuneApplyResult::message() const

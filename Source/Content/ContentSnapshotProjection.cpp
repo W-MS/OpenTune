@@ -52,6 +52,7 @@ EditableContentSnapshot makeContentSnapshot(const ContentState& state)
         state.timeGrid, state.sourceWindow, state.audioBuffer, state.sampleRate);
     snap.pitchShiftSettings = state.pitchShiftSettings;
     snap.originalF0State = state.analysis.originalF0State;
+    snap.originalF0FailureReason = state.analysis.originalF0FailureReason;
     snap.detectedKey = state.analysis.detectedKey;
     snap.silentGaps = state.analysis.silentGaps;
     snap.referenceFeatures = state.analysis.referenceFeatures;
@@ -84,6 +85,7 @@ ContentState contentStateFromSnapshot(const EditableContentSnapshot& snapshot)
     state.audioRevision = snapshot.audioRevision;
     state.analysis.pitchCurve = PitchCurve::fromSnapshot(snapshot.pitchCurve);
     state.analysis.setOriginalF0State(snapshot.originalF0State);
+    state.analysis.originalF0FailureReason = snapshot.originalF0FailureReason;
     state.analysis.detectedKey = snapshot.detectedKey;
     state.analysis.silentGaps = snapshot.silentGaps;
     state.analysis.referenceFeatures = snapshot.referenceFeatures;

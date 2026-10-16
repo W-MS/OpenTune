@@ -23,8 +23,10 @@
 #include <cstdint>
 #include <vector>
 #include <map>
+#include <deque>
 #include <mutex>
 #include <optional>
+#include <unordered_map>
 #include <utility>
 #if JucePlugin_Build_Standalone
 #include "SourceStore.h"
@@ -56,7 +58,18 @@
 #include "Utils/LocalizationManager.h"
 #include "Utils/PlaybackAudioReader.h"
 #include "Content/ContentKey.h"
+#include "Content/OriginalF0FailureEvent.h"
 #include "Content/ContentEditCommands.h"
+#include "Utils/SelectedNoteParameterEdit.h"
+#include "Utils/SelectedNoteEqEdit.h"
+#include "Utils/SelectedNoteDeleteEdit.h"
+#include "Utils/PasteTopologyEdit.h"
+#include "Utils/ScissorsTopologyEdit.h"
+#include "Utils/VolumeEnvelopeRegionEdit.h"
+#include "Utils/EraserStrokeEdit.h"
+#include "Utils/ManualCorrectionEdit.h"
+#include "Utils/DrawNoteEdit.h"
+#include "Utils/NoteResizeEdit.h"
 #include "Render/ContentRenderService.h"
 #include "Runtime/ProcessRenderRuntime.h"
 #include <functional>
@@ -373,7 +386,6 @@ private:
 #if JucePlugin_Build_Standalone
     std::atomic<juce::int64> lastControlTimestamp_{0};
     std::atomic<int> lastControlType_{static_cast<int>(DiagnosticControlCall::None)};
-    std::atomic<uint64_t> f0FailureGeneration_{0};
 #endif
 
 public:
@@ -535,6 +547,8 @@ private:
 
     ExperimentalReferenceAlignMode experimentalReferenceAlignMode_ = ExperimentalReferenceAlignMode::StandardAuto;
     std::unordered_set<ContentKey> pendingTimeToolSeedKeys_; // message-thread only
+    std::unordered_map<ContentKey, uint64_t> f0RequestTokens_; // message-thread only
+    std::deque<OriginalF0FailureEvent> pendingF0FailureEvents_; // message-thread only
 
     // 运行时惰性解析进程级 F0 服务，消除冷启动空快照
     // 仅在 initializeRuntimeState() 中构造，避免 scanner 在构造期间启动线程
@@ -613,7 +627,7 @@ public:
      */
     void setVocoderModelWeight(const VocoderModelWeight& weight);
 
-    bool setF0ModelType(F0ModelType type);
+    bool setF0ModelType(F0ModelType type, juce::String* failureReason = nullptr);
 
     /** 清除缓存并重新渲染所有 clip（UI 线程调用）。 */
     void invalidateAllContentCaches();
@@ -626,13 +640,6 @@ public:
     ContentRenderService* getContentRenderService() noexcept { return contentRenderService_.get(); }
     const ContentRenderService* getContentRenderService() const noexcept { return contentRenderService_.get(); }
     RenderCache::ChunkStats getReadableContentChunkStats(ContentKey key) const noexcept;
-#if JucePlugin_Build_Standalone
-    uint64_t getF0FailureGeneration() const noexcept
-    {
-        return f0FailureGeneration_.load(std::memory_order_relaxed);
-    }
-#endif
-
 #if !JucePlugin_Build_Standalone
     /** Returns the unbound host-plugin Capture session, or nullptr in Standalone/ARA mode. */
     Capture::CaptureSession* getCaptureSession() noexcept;
@@ -732,22 +739,144 @@ public:
         ContentEditRangeFrames affectedRange,
         std::vector<float> originalF0InRange,
         std::optional<std::vector<F0FrameRange>> erasedRanges = std::nullopt);
+    // Message-thread transaction for selected-note Retune/Vibrato parameter edits.
+    SelectedNoteParameterEditResult editSelectedNoteParameter(
+        ContentKey key,
+        const std::vector<int>& selectedNoteIndices,
+        uint64_t expectedNotesRevision,
+        AudioEditingScheme::ParameterId parameterId,
+        float value,
+        float retuneSpeedDefault,
+        float vibratoDepthDefault,
+        float vibratoRateDefault,
+        juce::String undoDescription = "Edit note");
+    struct SelectedNoteEqEditResult
+    {
+        SelectedNoteEqEditStatus status = SelectedNoteEqEditStatus::Failed;
+        ContentCommitSnapshot contentSnapshot;
+    };
+    SelectedNoteEqEditResult editSelectedNoteEq(
+        ContentKey key,
+        const std::vector<int>& selectedNoteIndices,
+        uint64_t expectedNotesRevision,
+        const std::optional<EqSettings>& settings,
+        juce::String undoDescription);
+    // Message-thread transaction for ordinary Piano Roll selected-note deletion.
+    SelectedNoteDeleteResult deleteSelectedPianoRollNotes(
+        ContentKey key,
+        const std::vector<int>& selectedNoteIndices,
+        uint64_t expectedNotesRevision,
+        juce::String undoDescription);
+    // Message-thread transaction for Piano Roll note paste. The UI resolves the
+    // paste start (source seconds) and passes the clipboard verbatim; the plan
+    // (translation + topology) is computed here against one snapshot read.
+    struct PasteNotesResult
+    {
+        PasteNotesStatus status = PasteNotesStatus::Failed;
+        ContentCommitSnapshot contentSnapshot;
+        std::vector<Note> pastedNotes;
+    };
+    PasteNotesResult pasteNotesAt(
+        ContentKey key,
+        const std::vector<Note>& clipboardNotes,
+        double pasteStartTime,
+        uint64_t expectedNotesRevision,
+        juce::String undoDescription);
+    DrawNoteCommitResult drawNote(
+        ContentKey key,
+        const DrawNoteEditInput& input,
+        uint64_t expectedNotesRevision,
+        juce::String undoDescription);
+    // Message-thread resize transaction: validate the mouse-down revision, then commit one scoped patch and undo action.
+    enum class NoteResizeCommitStatus
+    {
+        Failed,
+        StaleRevision,
+        Applied
+    };
+    struct NoteResizeCommitResult
+    {
+        NoteResizeCommitStatus status = NoteResizeCommitStatus::Failed;
+        ContentCommitSnapshot contentSnapshot;
+        F0FrameRange affectedRange;
+        bool pitchCurveEdited = false;
+    };
+    NoteResizeCommitResult resizePianoRollNote(
+        ContentKey key,
+        int noteIndex,
+        NoteResizeEdge edge,
+        double clampedTime,
+        double minDuration,
+        uint64_t expectedNotesRevision,
+        const std::vector<PitchCorrectionSegment>& segments,
+        F0FrameRange affectedRange,
+        juce::String undoDescription);
+    // Message-thread transaction for Scissors split/merge. The UI resolves the
+    // split time and tolerance (pixel-faithful) and computes the pure planner plan;
+    // stale check runs on the pre-commit snapshot revision only. Full note replace
+    // + republish + undo (postcommit snapshot as undo after), zero render.
+    ScissorsCommitResult applyScissorsNotes(
+        ContentKey key,
+        const std::vector<Note>& afterNotes,
+        uint64_t expectedNotesRevision,
+        juce::String undoDescription);
+    EraserStrokeEditResult editEraserStroke(
+        ContentKey key,
+        F0FrameRange brushRange,
+        const std::vector<int>& noteIndices,
+        uint64_t expectedNotesRevision,
+        juce::String undoDescription);
+    ManualCorrectionEditResult applyManualCorrection(
+        ContentKey key,
+        const std::vector<ManualCorrectionOp>& ops,
+        int dirtyStartFrame,
+        int dirtyEndFrame,
+        juce::String undoDescription);
     ContentCommitSnapshot commitContentNoteTopologyPatch(ContentKey key, ContentNoteRangePatch patch);
-    // 一次替换整个 VolumeEnvelope，推进
-    // outputGain/content revision，只走 republishPlaybackSource()（零 render enqueue）。
+    // 一次替换整个 VolumeEnvelope，推进 notesRevision（owner 的 applyVolumeEnvelope
+    // 只 ++notesRevision，不推进 contentRevision——gain 仅 playback 读 late apply，
+    // 不使 render cache 失效），只走 republishPlaybackSource()（零 render enqueue）。
     ContentCommitSnapshot commitVolumeEnvelope(ContentKey key, AutomationLane envelope);
+    // Message-thread transaction for VolumeEnvelope tool region-gain drag commit.
+    // Reads one snapshot, plans region deltas against the baseline envelope with
+    // expectedNotesRevision validation, commits via commitVolumeEnvelope, records
+    // undo (fixed ContentKey). NoChange does not commit/undo.
+    VolumeEnvelopeRegionEditResult editVolumeEnvelopeRegions(
+        ContentKey key,
+        const std::vector<int>& selectedNoteIndices,
+        uint64_t expectedNotesRevision,
+        float deltaGainDb,
+        juce::String undoDescription);
+    // Message-thread transaction for VolumeEnvelope tool double-click region reset.
+    VolumeEnvelopeRegionEditResult resetVolumeEnvelopeRegion(
+        ContentKey key,
+        int noteIndex,
+        uint64_t expectedNotesRevision,
+        juce::String undoDescription);
     // 无渲染发布入口：按 content domain 调现有装配函数，只读最新 snapshot、
     // 发布携带该 snapshot（AutomationLane/TimeGrid/revision）的不可变播放源。
     void republishPlaybackSource(ContentKey key);
     bool setContentTimeGrid(ContentKey key,
                             std::shared_ptr<const TimeGridSnapshot> grid);
+    bool applyTimeGridEdit(ContentKey key,
+                           std::shared_ptr<const TimeGridSnapshot> before,
+                           std::shared_ptr<const TimeGridSnapshot> after,
+                           juce::String description);
     bool setContentDetectedKey(ContentKey key, const DetectedKey& detectedKey);
     bool setContentOriginalF0State(ContentKey key, OriginalF0State state);
+    bool setContentOriginalF0FailureReason(ContentKey key, std::string reason);
+    void recordOriginalF0FailureEvent(ContentKey key, const juce::String& reason);
+    std::deque<OriginalF0FailureEvent> takeOriginalF0FailureEvents();
     bool applyContentPitchShiftState(ContentKey key, const PitchShiftEditState& state);
     std::unique_ptr<PitchShiftEditAction> commitPitchShiftEdit(
         ContentKey key,
         const PitchShiftSettings& newSettings);
 private:
+    VolumeEnvelopeRegionEditResult commitVolumeEnvelopeRegionPlan(
+        ContentKey key,
+        ContentCommitSnapshot snapshot,
+        VolumeEnvelopeRegionEditPlan plan,
+        juce::String undoDescription);
     ContentCommitSnapshot commitContentNotesAndSegmentsInternal(
         ContentKey key,
         std::vector<Note> notes,

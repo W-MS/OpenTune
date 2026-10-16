@@ -518,6 +518,16 @@ void TrackPanelComponent::resized()
 
 void TrackPanelComponent::mouseDown(const juce::MouseEvent& event)
 {
+    if (event.mods.isMiddleButtonDown()
+        && dispatchPointerBinding({ KeyShortcutConfig::BindingType::MiddleMouseButton, event.mods }))
+        return;
+    if (event.mods.isBackButtonDown()
+        && dispatchPointerBinding({ KeyShortcutConfig::BindingType::MouseBack, event.mods }))
+        return;
+    if (event.mods.isForwardButtonDown()
+        && dispatchPointerBinding({ KeyShortcutConfig::BindingType::MouseForward, event.mods }))
+        return;
+
     // Right-click is handled in mouseUp; don't select track on right-click
     if (event.mods.isRightButtonDown())
         return;
@@ -575,27 +585,19 @@ void TrackPanelComponent::mouseUp(const juce::MouseEvent& event)
         });
 }
 
-// Shift + 鼠标滚轮：Y轴缩放（与ArrangementView同步）
-// 普通滚轮：垂直滚动（与ArrangementView同步）
+// Unmodified vertical scrolling is synchronized with ArrangementView.
 void TrackPanelComponent::mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel)
 {
-    // Shift + 滚轮 = Y轴缩放
-    if (event.mods.isShiftDown() && wheel.deltaY != 0.0f)
-    {
-        // 计算新高度
-        int change = (wheel.deltaY > 0.0f) ? 50 : -50;  // 垂直缩放步长50px
-        int newHeight = juce::jlimit(MIN_TRACK_HEIGHT, MAX_TRACK_HEIGHT, trackHeight_ + change);
-        
-        if (newHeight != trackHeight_)
-        {
-            setTrackHeight(newHeight);
-            // 通知监听器高度变化（PluginEditor会同步到ArrangementView）
-            listeners_.call([newHeight](Listener& l) { l.trackHeightChanged(newHeight); });
-        }
+    KeyShortcutConfig::BindingType wheelType;
+    if (KeyShortcutConfig::getWheelBindingType(wheel, event.mods, wheelType)
+        && dispatchPointerBinding({ wheelType, event.mods }))
         return;
-    }
+
+    if (event.mods.isCtrlDown() || event.mods.isCommandDown()
+        || event.mods.isShiftDown() || event.mods.isAltDown())
+        return;
     
-    // 普通滚轮 = 垂直滚动（与ArrangementView同步）
+    // Unmodified vertical scrolling is synchronized with ArrangementView.
     if (wheel.deltaY != 0.0f)
     {
         // 计算总内容高度（可见轨道数量）
@@ -633,6 +635,18 @@ void TrackPanelComponent::mouseWheelMove(const juce::MouseEvent& event, const ju
     
     // 其他情况传递给父类
     juce::Component::mouseWheelMove(event, wheel);
+}
+
+bool TrackPanelComponent::dispatchPointerBinding(const KeyShortcutConfig::KeyBinding& binding)
+{
+    if (KeyShortcutConfig::findShortcutForBinding(shortcutSettings_, binding)
+        == KeyShortcutConfig::ShortcutId::Count)
+        return false;
+
+    listeners_.call([&](Listener& listener) {
+        listener.pointerShortcutBindingRequested(binding);
+    });
+    return true;
 }
 
 // 设置轨道高度（由外部调用以保持同步）

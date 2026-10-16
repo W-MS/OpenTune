@@ -4,6 +4,7 @@
 #include <functional>
 #include "ComponentListenerSubscription.h"
 #include "../Standalone/UI/UIColors.h"
+#include "../Utils/KeyShortcutConfig.h"
 #include "../Utils/LocalizationManager.h"
 
 namespace OpenTune
@@ -14,21 +15,21 @@ namespace OpenTune
  *
  * 普通 juce::Component（不依赖 JUCE 默认消息框，也不依赖 KeyShortcutConfig），
  * 标题 / 说明 / 取消按钮全部使用 UIColors 主题绘制。
- * 任意按键（含 Esc、Tab）都会被捕获为绑定并回调 onCaptured，不会移焦或取消；
+ * 键盘按键（含 Esc、Tab）、滚轮方向、中键和侧键都会作为绑定捕获；
  * 取消（显式取消按钮 / Alt+F4 / 关闭按钮）回调 onCancelled，且最多执行一次；
  * 父组件销毁只关闭窗口，不回调 onCancelled。
  *
  * 用法：
  *   ShortcutCaptureDialogContent::launch (parent, u8"设置快捷键", u8"按下要绑定的按键",
- *       [this] (const juce::KeyPress& key) { ... },
+ *       [this] (const KeyShortcutConfig::KeyBinding& binding) { ... },
  *       [this] { ... });
  */
 class ShortcutCaptureDialogContent final : public juce::Component,
                                            private juce::ComponentListener
 {
 public:
-    /** 捕获回调：返回用户按下的完整 KeyPress（含修饰键）。 */
-    using CaptureCallback = std::function<void (const juce::KeyPress&)>;
+    /** 捕获回调：返回键盘或鼠标绑定及修饰键。 */
+    using CaptureCallback = std::function<void (const KeyShortcutConfig::KeyBinding&)>;
 
     /** 取消回调：仅在点击取消按钮时调用。 */
     using CancelCallback = std::function<void()>;
@@ -156,7 +157,7 @@ public:
     bool keyPressed (const juce::KeyPress& key) override
     {
         // 任意键（含 Esc、Tab）都作为绑定捕获；取消只能通过取消按钮
-        capture (key);
+        capture (KeyShortcutConfig::KeyBinding (key.getKeyCode(), key.getModifiers()));
         return true;
     }
 
@@ -167,9 +168,30 @@ public:
         return false;
     }
 
-    void mouseDown (const juce::MouseEvent&) override
+    void mouseDown (const juce::MouseEvent& event) override
     {
+        using KeyShortcutConfig::BindingType;
+        if (event.mods.isMiddleButtonDown()) {
+            capture (KeyShortcutConfig::KeyBinding (BindingType::MiddleMouseButton, event.mods));
+            return;
+        }
+        if (event.mods.isBackButtonDown()) {
+            capture (KeyShortcutConfig::KeyBinding (BindingType::MouseBack, event.mods));
+            return;
+        }
+        if (event.mods.isForwardButtonDown()) {
+            capture (KeyShortcutConfig::KeyBinding (BindingType::MouseForward, event.mods));
+            return;
+        }
         grabKeyboardFocus();
+    }
+
+    void mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override
+    {
+        KeyShortcutConfig::BindingType type;
+        if (!KeyShortcutConfig::getWheelBindingType (wheel, event.mods, type))
+            return;
+        capture (KeyShortcutConfig::KeyBinding (type, event.mods));
     }
 
     void focusGained (FocusChangeType) override
@@ -289,14 +311,14 @@ private:
                                    : modifiers + juce::String::fromUTF8 (u8" + …");
     }
 
-    void capture (const juce::KeyPress& key)
+    void capture (const KeyShortcutConfig::KeyBinding& binding)
     {
         // 先移出回调并结束 modal，再在局部副本上调用，避免组件销毁后访问成员
         auto callback = std::move (onCaptured_);
         closeDialog();
 
         if (callback)
-            callback (key);
+            callback (binding);
     }
 
     void cancel()

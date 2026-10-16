@@ -17,12 +17,16 @@
 #include "../../../Utils/AutomationLane.h"
 #include "Utils/PitchCurve.h"
 #include "Utils/NoteGeneratorTypes.h"   // ScaleSnapConfig — OpenDyne Pitch 吸附
-#include "Utils/UndoManager.h"          // UndoAction — OpenDyne Scissors undo
 #include "UI/ToolIds.h"
 #include "InteractionState.h"
 #include "UI/ViewMapper.h"
 #include "../../../Content/ContentEditCommands.h"
 #include "../../../Content/EditableContentSnapshot.h"
+#include "../../../Utils/SelectedNoteDeleteEdit.h"
+#include "../../../Utils/VolumeEnvelopeRegionEdit.h"
+#include "../../../Utils/EraserStrokeEdit.h"
+#include "../../../Utils/ManualCorrectionEdit.h"
+#include "../../../Utils/DrawNoteEdit.h"
 #include <vector>
 #include <functional>
 #include <cstdint>
@@ -78,15 +82,7 @@ struct SourceEditRange
 class PianoRollToolHandler
 {
 public:
-    // 手动修正操作描述：帧范围 + F0 数据 + 来源类型
-    struct ManualCorrectionOp
-    {
-        int startFrame = 0;
-        int endFrameExclusive = 0;
-        std::vector<float> f0Data;
-        PitchCorrectionSegment::Source source = PitchCorrectionSegment::Source::HandDraw;
-        PitchCorrectionSegment::ParameterSnapshot parameterSnapshot;
-    };
+    using ManualCorrectionOp = OpenTune::ManualCorrectionOp;
 
     // PianoRoll 组件提供的回调上下文。
     // 所有数据读写均通过这些 std::function 回调完成，
@@ -106,30 +102,35 @@ public:
         std::function<void()> beginNoteDraft;
         std::function<bool()> commitNoteDraft;
         std::function<void()> clearNoteDraft;
+        std::function<DrawNoteCommitResult(const DrawNoteEditInput&, uint64_t, juce::String)> commitDrawNote;
+        std::function<void(const DrawNoteCommitResult&, const std::vector<Note>&, int)> applyDrawNoteResult;
         // 第三参 affectedRange 来自 ToolHandler 编辑时计算的精确范围，用于
         // undo/redo 时只重渲染该范围（而不是 segments 列表反推的并集 = 全长）。
         std::function<ContentCommitSnapshot(const std::vector<Note>&, const std::vector<PitchCorrectionSegment>&, F0FrameRange)> commitNotesAndSegments;
-        std::function<ContentCommitSnapshot(const std::vector<Note>&,
-                                             const std::vector<PitchCorrectionSegment>&,
-                                             F0FrameRange,
-                                             const std::vector<float>&,
-                                             const std::optional<std::vector<F0FrameRange>>&)> commitNotesAndSegmentsWithOriginalF0;
-
+        std::function<bool(uint64_t, int, NoteResizeEdge, double, double,
+                           const std::vector<PitchCorrectionSegment>&, F0FrameRange, juce::String)>
+            commitNoteResize;
         // === OpenDyne（NotesPrimary）提交与配置回调 ===
-        // Volume Envelope 提交：整体替换 AutomationLane，推进 outputGain/content
-        // revision，内部 republish，零 render。
-        std::function<ContentCommitSnapshot(AutomationLane, AutomationLane)> commitVolumeEnvelope;
-        // 全量替换 notes（Scissors 分割）：只推进 notes/content revision，零 render。
-        std::function<bool(const std::vector<Note>&)> replaceContentNotesForFullMutation;
-        // 无渲染发布 playback source。
-        std::function<void()> republishPlaybackSource;
+        // Volume Envelope 事务：Processor 消息线程读 snapshot → planner 校验
+        // expectedNotesRevision → commitVolumeEnvelope + undo（固定 ContentKey）。
+        // NoChange 不提交/不 undo；StaleRevision 返回 snapshot 供 UI 刷新。
+        std::function<VolumeEnvelopeRegionEditResult(const std::vector<int>&, uint64_t, float, juce::String)>
+            editVolumeEnvelopeRegions;
+        std::function<VolumeEnvelopeRegionEditResult(int, uint64_t, juce::String)>
+            resetVolumeEnvelopeRegion;
+        // Scissors 事务：Processor 读一次 snapshot 校验 revision → 全量替换 notes →
+        // republish + 记录 undo（固定 ContentKey）。失败/StaleRevision 返回 false（由 UI 刷新）。
+        std::function<bool(const std::vector<Note>& afterNotes, juce::String undoDescription)> commitScissorsNotes;
         // Pitch Tool 拖拽吸附配置；nullopt = 无配置（默认 Chromatic，即 round 半音）。
         std::function<std::optional<ScaleSnapConfig>()> getActiveScaleSnap;
         std::function<bool()> shouldSnapWholeNoteMoveToStandardPitch;
-        // 把 undo action 推入组件 UndoManager。
-        std::function<void(std::unique_ptr<UndoAction>)> pushUndoAction;
 
         std::function<std::shared_ptr<const EditableContentSnapshot>()> getEditableContentSnapshot;
+        std::function<uint64_t()> getNotesRevision;
+        std::function<SelectedNoteDeleteResult(const std::vector<int>&, uint64_t, juce::String)>
+            deleteSelectedPianoRollNotes;
+        std::function<EraserStrokeEditResult(F0FrameRange, const std::vector<int>&, uint64_t, juce::String)>
+            editEraserStroke;
 
         std::function<int()> getPianoKeyWidth;
         std::function<ContentTimelineProjection()> getContentProjection;
@@ -143,8 +144,6 @@ public:
         std::function<float()> getVibratoRate;
         std::function<AudioEditingScheme::Scheme()> getAudioEditingScheme;
         std::function<const KeyShortcutConfig::KeyShortcutSettings&()> getShortcutSettings;
-        std::function<float(Note&)> calculateEffectivePIP;
-
         std::function<double()> getDirtyStartTime;
         std::function<void(double)> setDirtyStartTime;
         std::function<double()> getDirtyEndTime;
@@ -188,7 +187,8 @@ public:
         // EQ 工具专属光标（组件侧构造一次，值拷贝共享 handle）。
         juce::MouseCursor eqCursor;
 
-        std::function<bool(std::vector<ManualCorrectionOp>, int, int, bool)> applyManualCorrection;
+        std::function<ManualCorrectionEditResult(
+            std::vector<ManualCorrectionOp>, int, int, juce::String)> editManualCorrection;
         std::function<bool(int, int)> selectNotesOverlappingFrames;
         std::function<std::vector<float>()> getOriginalF0;
         std::function<F0Timeline()> getF0Timeline;
@@ -231,7 +231,8 @@ public:
     // ⚡️ §8.4 — double-click insert (Time tool only)
     void mouseDoubleClick(const juce::MouseEvent& e);
 
-    bool keyPressed(const juce::KeyPress& key);
+    bool keyPressed(const juce::KeyPress& key,
+                    const KeyShortcutConfig::KeyBinding* pointerShortcut = nullptr);
     // 删除键命令入口（Delete/Backspace/'1'/Cut 共用）：删除选中音符与选区内容
     void handleDeleteKey();
 
@@ -283,11 +284,6 @@ private:
     bool handleScissorsToolMerge(const juce::MouseEvent& e);
     // Scissors 切割/合并共用：加载 effective (corrected) F0 数组（不可用返回空）。
     std::vector<float> loadEffectiveF0() const;
-    // Scissors 切割/合并共用：区间 [tStart, tEnd) 内有效 F0 帧的算术平均，无有效帧返回 0。
-    float computeAvgF0InRange(const F0Timeline& f0tl,
-                              const std::vector<float>& effectiveF0,
-                              double tStart,
-                              double tEnd) const;
     
     // === EQ Tool ===
     void handleEqToolMouseDown(const juce::MouseEvent& e);
@@ -304,6 +300,8 @@ private:
     void handleTimeToolMouseDoubleClick(const juce::MouseEvent& e);
     // §8.4: Delete key removes selected handle (non-endpoint).
     bool handleTimeToolDeleteSelected();
+    bool handleNoteArrowKey(const juce::KeyPress& key);
+    void moveSelectedNotesPitchByKeyboard(int direction);
     // Hit-test handles within ±5 px of a TimeGrid handle's output_seconds.
     // Returns 0 if no hit.
     uint64_t hitTestTimeGridHandle(const juce::MouseEvent& e) const;
@@ -324,7 +322,6 @@ private:
     void beginEmptySpaceIntent(const juce::MouseEvent& e);
     void cancelActiveMouseGesture();
 
-    void deleteSelectedNotes(std::vector<Note>& notes);
 
     // === Note 选择辅助 ===
     struct NoteHitResult
@@ -385,6 +382,8 @@ private:
     double lastDrawTime_ = 0.0;
     float lastDrawF0_ = 0.0f;
     AutomationLane volumeDragBaselineEnvelope_;
+    std::vector<int> volumeDragSelectedIndices_;
+    uint64_t volumeDragExpectedNotesRevision_ = 0;
 };
 
 } // namespace OpenTune

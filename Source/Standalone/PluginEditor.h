@@ -141,6 +141,7 @@ public:
     void trackDeleteRequested(int trackId) override;
     void trackColorRandomizeRequested(int trackId) override;
     void visibleTrackCountChanged(int newCount) override;
+    bool pointerShortcutBindingRequested(const KeyShortcutConfig::KeyBinding& binding) override;
 
     // ArrangementViewComponent::Listener
     void placementSelectionChanged(int trackId, uint64_t placementId) override;
@@ -157,6 +158,7 @@ public:
     bool playheadPositionChangeRequested(double timeSeconds) override;
     void playPauseToggleRequested() override;
     void stopPlaybackRequested() override;
+    bool pointerShortcutRequested(KeyShortcutConfig::ShortcutId id) override;
     void autoTuneRequested() override;
     void pitchCurveEdited(int startFrame, int endFrame) override;
     void contentEdited() override;
@@ -345,10 +347,11 @@ private:
     // Original F0 阻塞事务锁：提取开始后 latch，直到"提取成功且当前钢琴卷帘可见"才释放
     bool originalF0OverlayLatched_ = false;
     ContentKey originalF0OverlayTargetContentKey_;
-    uint64_t lastObservedF0FailureGeneration_ = 0;
     juce::ThreadPool projectWorkerPool_{1};
     // Message-thread only; includes the posted completion and direct continuation.
     bool projectOperationBusy_{false};
+    // 加载工程回写轨道头时，避免把恢复动作记成新的未保存修改。
+    bool applyingLoadedProjectUi_{false};
     // Export worker thread management (independent: export may be long-running)
     std::thread exportWorker_;
     // Export running flag. NOT derivable from exportWorker_.joinable(): a

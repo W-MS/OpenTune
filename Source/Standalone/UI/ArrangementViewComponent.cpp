@@ -2393,6 +2393,16 @@ void ArrangementViewComponent::mouseDown(const juce::MouseEvent& e)
 {
     grabKeyboardFocus();
 
+    if (e.mods.isMiddleButtonDown()
+        && handlePointerShortcut({ KeyShortcutConfig::BindingType::MiddleMouseButton, e.mods }))
+        return;
+    if (e.mods.isBackButtonDown()
+        && handlePointerShortcut({ KeyShortcutConfig::BindingType::MouseBack, e.mods }))
+        return;
+    if (e.mods.isForwardButtonDown()
+        && handlePointerShortcut({ KeyShortcutConfig::BindingType::MouseForward, e.mods }))
+        return;
+
     // Ctrl+drag panning 鈥?only on empty area (not on a placement, to avoid
     // conflicting with Ctrl+click toggle placement selection).
     if (e.mods.isCtrlDown()) {
@@ -2818,70 +2828,17 @@ void ArrangementViewComponent::mouseDoubleClick(const juce::MouseEvent& e)
 void ArrangementViewComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
 {
     const auto& settings = zoomSensitivity_;
-    
-    // Shift + Wheel = Vertical Zoom (Track Height) - 与TrackPanel同步
-    if (e.mods.isShiftDown())
-    {
-        if (wheel.deltaY != 0.0f)
-        {
-            int currentHeight = processor_.getTrackHeight();
-            int change = static_cast<int>(wheel.deltaY * settings.verticalZoomFactor * 150);
-            change = (change == 0) ? ((wheel.deltaY > 0) ? 10 : -10) : change;
-            
-            int newHeight = juce::jlimit(70, 300, currentHeight + change);
-            
-            if (newHeight != currentHeight)
-            {
-                processor_.setTrackHeight(newHeight);
-                listeners_.call([newHeight](Listener& l) { l.trackHeightChanged(newHeight); });
-                invalidateStableScene();
-            }
-        }
+
+    KeyShortcutConfig::BindingType wheelType;
+    if (KeyShortcutConfig::getWheelBindingType(wheel, e.mods, wheelType)
+        && handlePointerShortcut({ wheelType, e.mods }))
         return;
-    }
 
-    // Ctrl + Wheel = Horizontal Zoom at Pointer
-    if (e.mods.isCtrlDown())
-    {
-        if (wheel.deltaY != 0.0f)
-        {
-            double zoomFactor = 1.0 + wheel.deltaY * settings.horizontalZoomFactor * 1.7;
-            zoomFactor = juce::jlimit(0.5, 1.5, zoomFactor);
-            const double oldPps = camera_.pixelsPerSecond;
-            const double newPps = oldPps * zoomFactor;
-
-            if (std::abs(newPps - oldPps) > 0.001)
-            {
-                const double mouseTime = viewportXToAbsoluteTime(e.x);
-                userHasManuallyZoomed_ = true;
-                const auto req = makeViewportRequest(
-                    TimelineViewportRequest::Kind::Zoom,
-                    mouseTime,
-                    static_cast<double>(e.x - kArrangementContentStartX),
-                    newPps);
-                commitViewportRequest(req);
-                }
-        }
+    if (e.mods.isCtrlDown() || e.mods.isCommandDown()
+        || e.mods.isShiftDown() || e.mods.isAltDown())
         return;
-    }
 
-    // Alt + Wheel = Horizontal Scroll (Time)
-    if (e.mods.isAltDown())
-    {
-        if (wheel.deltaY != 0.0f)
-        {
-            const double deltaTime = static_cast<double>(-wheel.deltaY * settings.scrollSpeed * 10.0f) / camera_.pixelsPerSecond;
-            const auto req = makeViewportRequest(
-                TimelineViewportRequest::Kind::Manual,
-                camera_.visibleStartSeconds + deltaTime,
-                0.0,
-                camera_.pixelsPerSecond);
-            commitViewportRequest(req);
-        }
-        return;
-    }
-
-    // Default: Vertical Scroll (Tracks)
+    // Unmodified vertical and horizontal wheel scrolling.
     if (wheel.deltaY != 0.0f)
     {
         int scrollDelta = static_cast<int>(wheel.deltaY * settings.scrollSpeed);
@@ -2903,9 +2860,152 @@ void ArrangementViewComponent::mouseWheelMove(const juce::MouseEvent& e, const j
     }
 }
 
+void ArrangementViewComponent::handleVerticalZoomWheel(float deltaY, bool keepViewportCentre)
+{
+    if (deltaY == 0.0f)
+        return;
+
+    int currentHeight = processor_.getTrackHeight();
+    const int viewportHeight = getContentViewportBounds().getHeight();
+    const double centreTrack = keepViewportCentre
+        ? (verticalScrollOffset_ + viewportHeight * 0.5) / currentHeight
+        : 0.0;
+    int change = static_cast<int>(deltaY * zoomSensitivity_.verticalZoomFactor * 150);
+    change = (change == 0) ? ((deltaY > 0) ? 10 : -10) : change;
+    const int newHeight = juce::jlimit(70, 300, currentHeight + change);
+
+    if (newHeight != currentHeight)
+    {
+        processor_.setTrackHeight(newHeight);
+        listeners_.call([newHeight](Listener& l) { l.trackHeightChanged(newHeight); });
+        if (keepViewportCentre) {
+            setVerticalScrollOffset(juce::roundToInt(centreTrack * newHeight - viewportHeight * 0.5));
+            listeners_.call([this](Listener& l) { l.verticalScrollChanged(verticalScrollOffset_); });
+        }
+        invalidateStableScene();
+    }
+}
+
+void ArrangementViewComponent::handleHorizontalZoomWheel(float deltaY,
+                                                           double anchorTime,
+                                                           double anchorViewportX)
+{
+    if (deltaY == 0.0f)
+        return;
+
+    const double zoomFactor = 1.0 + deltaY * zoomSensitivity_.horizontalZoomFactor * 1.7;
+    applyHorizontalZoom(zoomFactor, anchorTime, anchorViewportX);
+}
+
+void ArrangementViewComponent::applyHorizontalZoom(double zoomFactor,
+                                                     double anchorTime,
+                                                     double anchorViewportX)
+{
+    zoomFactor = juce::jlimit(0.5, 1.5, zoomFactor);
+    const double oldPps = camera_.pixelsPerSecond;
+    const double newPps = oldPps * zoomFactor;
+
+    if (std::abs(newPps - oldPps) > 0.001)
+    {
+        userHasManuallyZoomed_ = true;
+        commitViewportRequest(makeViewportRequest(
+            TimelineViewportRequest::Kind::Zoom,
+            anchorTime,
+            anchorViewportX,
+            newPps));
+    }
+}
+
+void ArrangementViewComponent::handleHorizontalScrollWheel(float deltaY)
+{
+    if (deltaY == 0.0f)
+        return;
+
+    const double deltaTime = static_cast<double>(-deltaY * zoomSensitivity_.scrollSpeed * 10.0f)
+        / camera_.pixelsPerSecond;
+    commitViewportRequest(makeViewportRequest(
+        TimelineViewportRequest::Kind::Manual,
+        camera_.visibleStartSeconds + deltaTime,
+        0.0,
+        camera_.pixelsPerSecond));
+}
+
+bool ArrangementViewComponent::handleViewportShortcut(const juce::KeyPress& key)
+{
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ScrollHorizontalLeft, key))
+    {
+        handleHorizontalScrollWheel(1.0f);
+        return true;
+    }
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ScrollHorizontalRight, key))
+    {
+        handleHorizontalScrollWheel(-1.0f);
+        return true;
+    }
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, key))
+    {
+        const double anchorX = getVisibleViewportWidth() * 0.5;
+        const double zoomFactor = juce::jlimit(0.5, 1.5,
+                                               1.0 + zoomSensitivity_.horizontalZoomFactor * 1.7);
+        applyHorizontalZoom(zoomFactor,
+                            camera_.visibleStartSeconds + anchorX / camera_.pixelsPerSecond,
+                            anchorX);
+        return true;
+    }
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomHorizontalOut, key))
+    {
+        const double anchorX = getVisibleViewportWidth() * 0.5;
+        const double zoomFactor = juce::jlimit(0.5, 1.5,
+                                               1.0 + zoomSensitivity_.horizontalZoomFactor * 1.7);
+        applyHorizontalZoom(1.0 / zoomFactor,
+                            camera_.visibleStartSeconds + anchorX / camera_.pixelsPerSecond,
+                            anchorX);
+        return true;
+    }
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomVerticalIn, key))
+    {
+        handleVerticalZoomWheel(1.0f, true);
+        return true;
+    }
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomVerticalOut, key))
+    {
+        handleVerticalZoomWheel(-1.0f, true);
+        return true;
+    }
+    return false;
+}
+
+bool ArrangementViewComponent::matchesShortcut(KeyShortcutConfig::ShortcutId id,
+                                                const juce::KeyPress& key) const
+{
+    if (pointerShortcutBinding_ != nullptr)
+        return KeyShortcutConfig::matchesShortcut(shortcutSettings_, id, *pointerShortcutBinding_);
+    return KeyShortcutConfig::matchesShortcut(shortcutSettings_, id, key);
+}
+
+bool ArrangementViewComponent::handlePointerShortcut(const KeyShortcutConfig::KeyBinding& binding)
+{
+    const auto id = KeyShortcutConfig::findShortcutForBinding(shortcutSettings_, binding);
+    if (id == KeyShortcutConfig::ShortcutId::Count)
+        return false;
+
+    pointerShortcutBinding_ = &binding;
+    const bool handled = keyPressed(juce::KeyPress(0, binding.modifiers, 0));
+    pointerShortcutBinding_ = nullptr;
+    if (!handled)
+        listeners_.call([&](Listener& listener) { listener.pointerShortcutRequested(id); });
+    return true;
+}
+
 bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
 {
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::SelectAll, key))
+    const bool placementNudge =
+        matchesShortcut(KeyShortcutConfig::ShortcutId::NudgeLeft, key)
+        || matchesShortcut(KeyShortcutConfig::ShortcutId::NudgeRight, key);
+    if (!placementNudge && handleViewportShortcut(key))
+        return true;
+
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::SelectAll, key))
     {
         selectAllPlacementsInTrack(selectedTrack_);
         if (!selectedPlacements_.empty()) {
@@ -2920,7 +3020,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
     }
 
     // CopyClips 鈥?Ctrl+C
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Copy, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Copy, key))
     {
         if (!selectedPlacements_.empty())
         {
@@ -2948,7 +3048,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
     }
 
     // PasteClips 鈥?Ctrl+V (at playhead)
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Paste, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Paste, key))
     {
         auto& clipboard = processor_.getClipClipboard();
         if (clipboard.hasEntries())
@@ -2991,7 +3091,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
     }
 
     // DuplicateClip 鈥?Ctrl+D
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::DuplicateClip, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::DuplicateClip, key))
     {
         if (selectedPlacementId_ != 0 && selectedTrack_ >= 0)
         {
@@ -3034,7 +3134,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
         return true;
     }
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::SplitClip, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::SplitClip, key))
     {
         if (selectedTrack_ < 0 || selectedTrack_ >= OpenTuneAudioProcessor::MAX_TRACKS)
             return true;
@@ -3097,7 +3197,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
         return true;
     }
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::MergeClips, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::MergeClips, key))
     {
         if (selectedTrack_ < 0 || selectedTrack_ >= OpenTuneAudioProcessor::MAX_TRACKS)
             return true;
@@ -3133,7 +3233,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
         return true;
     }
 
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::Delete, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::Delete, key))
     {
         bool anyDeleted = false;
 
@@ -3165,7 +3265,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
     }
 
     // Nudge Left 鈥?move selected placements earlier by 10ms
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::NudgeLeft, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::NudgeLeft, key))
     {
         auto* arr = processor_.getStandaloneArrangement();
         if (!arr) return true;
@@ -3202,7 +3302,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
     }
 
     // Nudge Right 鈥?move selected placements later by 10ms
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::NudgeRight, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::NudgeRight, key))
     {
         auto* arr = processor_.getStandaloneArrangement();
         if (!arr) return true;
@@ -3239,7 +3339,7 @@ bool ArrangementViewComponent::keyPressed(const juce::KeyPress& key)
     }
 
     // ToggleSnap 鈥?Ctrl+Shift+S
-    if (KeyShortcutConfig::matchesShortcut(shortcutSettings_, KeyShortcutConfig::ShortcutId::ToggleSnap, key))
+    if (matchesShortcut(KeyShortcutConfig::ShortcutId::ToggleSnap, key))
     {
         auto snap = processor_.getSnapSettings();
         snap.enabled = !snap.enabled;

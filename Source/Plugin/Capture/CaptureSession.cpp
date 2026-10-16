@@ -470,6 +470,7 @@ void CaptureSession::onRenderComplete(ContentKey segmentContentKey)
 
 void CaptureSession::onRenderFailed(ContentKey segmentContentKey, const juce::String& reason)
 {
+    bool failed = false;
     {
         std::lock_guard<std::mutex> lock(mutableMutex_);
         for (auto& seg : mutableSegments_) {
@@ -477,10 +478,13 @@ void CaptureSession::onRenderFailed(ContentKey segmentContentKey, const juce::St
                 if (seg->state.load(std::memory_order_acquire) != SegmentState::Processing)
                     return;
                 seg->state.store(SegmentState::Failed, std::memory_order_release);
+                failed = true;
                 break;
             }
         }
     }
+    if (!failed)
+        return;
 
     AppLogger::warn("CaptureSession: segment render failed -> Failed id="
         + juce::String(static_cast<juce::int64>(segmentContentKey.objectId))
@@ -491,7 +495,8 @@ void CaptureSession::onRenderFailed(ContentKey segmentContentKey, const juce::St
 bool CaptureSession::commitSegmentF0Result(
     ContentKey segmentContentKey,
     std::shared_ptr<PitchCurve> pitchCurve,
-    OriginalF0State state)
+    OriginalF0State state,
+    std::string failureReason)
 {
     std::lock_guard<std::mutex> lock(mutableMutex_);
 
@@ -523,6 +528,9 @@ bool CaptureSession::commitSegmentF0Result(
     // F0 analysis failure: mark segment as Failed. Content is preserved (not
     // deleted) and the segment does not block the next capture.
     if (state == OriginalF0State::Failed) {
+        if (failureReason.empty())
+            failureReason = "OriginalF0 extraction failed without an error detail";
+        seg->content->applyOriginalF0FailureReason(std::move(failureReason));
         seg->state.store(SegmentState::Failed, std::memory_order_release);
         return true;
     }

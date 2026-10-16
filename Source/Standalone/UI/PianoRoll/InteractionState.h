@@ -4,21 +4,16 @@
 #include <vector>
 #include <utility>
 #include <memory>
+#include <cstdint>
 #include "Utils/Note.h"
 #include "Utils/F0Timeline.h"
 #include "Utils/AutomationLane.h"
+#include "../../../Utils/NoteResizeEdit.h"
 #include "UI/ToolIds.h"
 #include "Utils/TimeGrid.h"   // vocal-time-stretch §8.3 — Time tool
 #include "../../../Content/EditableContentSnapshot.h"   // NoteDragState::previewSnapshot
 
 namespace OpenTune {
-
-enum class NoteResizeEdge
-{
-    None,
-    Left,
-    Right
-};
 
 // F0 帧选择：存储选中的帧范围集合（排序、不重叠、不相邻）
 struct FrameSelection
@@ -92,8 +87,8 @@ struct NoteResizeState
     bool isDirty = false;
     int noteIndex = -1;
     NoteResizeEdge edge = NoteResizeEdge::None;
-    double originalStartTime = 0.0;
-    double originalEndTime = 0.0;
+    double clampedTime = 0.0;
+    uint64_t expectedNotesRevision = 0;
     
     void clear();
 };
@@ -132,6 +127,7 @@ struct EraserState
     juce::Point<float> cursorPosition;
     int startFrame = -1;
     int endFrameExclusive = -1;
+    uint64_t expectedNotesRevision = 0;
     std::vector<int> noteIndices;
 
     void clear()
@@ -141,6 +137,7 @@ struct EraserState
         cursorPosition = {};
         startFrame = -1;
         endFrameExclusive = -1;
+        expectedNotesRevision = 0;
         noteIndices.clear();
     }
 };

@@ -41,14 +41,27 @@ std::shared_ptr<RenderCache> RenderCacheRegistry::get(ContentKey key) const
 
 void RenderCacheRegistry::remove(ContentKey key)
 {
-    const juce::ScopedWriteLock writeLock(lock_);
-    caches_.erase(key);
+    std::shared_ptr<RenderCache> cache;
+    {
+        const juce::ScopedWriteLock writeLock(lock_);
+        const auto it = caches_.find(key);
+        if (it == caches_.end())
+            return;
+        cache = std::move(it->second);
+        caches_.erase(it);
+    }
+    cache->clear();
 }
 
 void RenderCacheRegistry::clear()
 {
-    const juce::ScopedWriteLock writeLock(lock_);
-    caches_.clear();
+    std::map<ContentKey, std::shared_ptr<RenderCache>> cachesToClear;
+    {
+        const juce::ScopedWriteLock writeLock(lock_);
+        cachesToClear.swap(caches_);
+    }
+    for (auto& entry : cachesToClear)
+        entry.second->clear();
 }
 
 bool RenderCacheRegistry::preparePlaybackSampleRate(double targetSr)
