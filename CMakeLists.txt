@@ -1332,16 +1332,15 @@ if(APPLE AND TARGET OpenTuneAU_AU)
         COMMENT "Copying AI models to AU component Resources..."
     )
 
-    # ARA SDK 2.3.0's ARAAudioUnit.h AUv2 example lists both "Effect" and
-    # "ARA" in AudioComponents.tags. This is an ARA example requirement, not
-    # a general Apple Audio Unit requirement for tags. JUCE currently emits
-    # only "ARA", so patch the AU artifact after generation and before the
-    # packaging script signs the final bundle.
+    # JUCE emits only "ARA", while the ARA SDK AUv2 example lists both
+    # "Effect" and "ARA". Also advance only AudioComponents.version, so Logic
+    # refreshes cached channel layouts without changing other formats' versions
+    # or the ARA factory ID. Apply metadata before packaging signs the AU.
     add_custom_command(TARGET OpenTuneAU_AU POST_BUILD
         COMMAND ${CMAKE_COMMAND}
             "-DAU_INFO_PLIST=$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Info.plist"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SetAUV2ARATags.cmake"
-        COMMENT "Patching AUv2 ARA AudioComponents tags..."
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SetAUV2Metadata.cmake"
+        COMMENT "Patching AUv2 ARA AudioComponents metadata..."
     )
 endif()
 

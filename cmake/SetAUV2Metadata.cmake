@@ -1,15 +1,15 @@
 # ==============================================================================
-# Set the AUv2 ARA metadata required by the ARA SDK 2.3.0 AU example.
+# Set AUv2 metadata required by the ARA SDK 2.3.0 AU example and Logic refresh.
 # ==============================================================================
 
 if(NOT DEFINED AU_INFO_PLIST OR "${AU_INFO_PLIST}" STREQUAL "")
     message(FATAL_ERROR
-        "SetAUV2ARATags.cmake requires AU_INFO_PLIST")
+        "SetAUV2Metadata.cmake requires AU_INFO_PLIST")
 endif()
 
 if(NOT IS_ABSOLUTE "${AU_INFO_PLIST}")
     message(FATAL_ERROR
-        "SetAUV2ARATags.cmake requires an absolute AU_INFO_PLIST path: ${AU_INFO_PLIST}")
+        "SetAUV2Metadata.cmake requires an absolute AU_INFO_PLIST path: ${AU_INFO_PLIST}")
 endif()
 
 if(NOT EXISTS "${AU_INFO_PLIST}")
@@ -30,7 +30,10 @@ endif()
 
 # JUCE's current AUv2 ARA generator creates AudioComponents[0].tags=[ARA].
 # Replace only that existing key so the final value is exactly [Effect, ARA].
+# Bump the AU registration version only, so Logic drops its cached channel
+# layouts. Keep the project and other plug-in format versions unchanged.
 set(_opentune_plistbuddy_commands
+    "Set :AudioComponents:0:version 67586"
     "Delete :AudioComponents:0:tags"
     "Add :AudioComponents:0:tags array"
     "Add :AudioComponents:0:tags: string Effect"
