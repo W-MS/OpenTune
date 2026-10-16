@@ -938,6 +938,11 @@ public:
         : appPreferences_(appPreferences)
         , onPreferencesChanged_(std::move(onPreferencesChanged))
         , settings_(appPreferences_.getState().shared.shortcuts)
+        , activeScopes_(isVst3Plugin
+              ? KeyShortcutConfig::kPluginEditorGeneralScope
+                    | KeyShortcutConfig::kPianoRollOpenTuneScope
+                    | KeyShortcutConfig::kPianoRollOpenDyneScope
+              : KeyShortcutConfig::kStandaloneShortcutScopes)
     {
         // 三段式布局：通用 → OpenTune 专属 → OpenDyne 参考
         // 通用: PlayPause, Stop, PlayFromStart, Undo, Redo, Cut, Copy, Paste, SelectAll,
@@ -946,6 +951,7 @@ public:
         if (isVst3Plugin) {
             generalIds_ = {
                 KeyShortcutConfig::ShortcutId::PlayPause, KeyShortcutConfig::ShortcutId::Stop,
+                KeyShortcutConfig::ShortcutId::PlayFromStart,
                 KeyShortcutConfig::ShortcutId::ScrollHorizontalLeft, KeyShortcutConfig::ShortcutId::ScrollHorizontalRight,
                 KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, KeyShortcutConfig::ShortcutId::ZoomHorizontalOut,
                 KeyShortcutConfig::ShortcutId::ZoomVerticalIn, KeyShortcutConfig::ShortcutId::ZoomVerticalOut,
@@ -955,6 +961,7 @@ public:
                 KeyShortcutConfig::ShortcutId::Paste, KeyShortcutConfig::ShortcutId::SelectAll,
                 KeyShortcutConfig::ShortcutId::Delete,
                 KeyShortcutConfig::ShortcutId::DuplicateClip,
+                KeyShortcutConfig::ShortcutId::ToolTimeTool,
                 KeyShortcutConfig::ShortcutId::ToolAutoTune,
                 KeyShortcutConfig::ShortcutId::CancelSelection,
                 KeyShortcutConfig::ShortcutId::Eq,
@@ -980,18 +987,15 @@ public:
                 KeyShortcutConfig::ShortcutId::Eq,
             };
         }
-        // OpenTune/OpenDyne tool shortcuts have no execution path in VST3.
-        if (!isVst3Plugin) {
-            opentuneIds_ = {
-                KeyShortcutConfig::ShortcutId::ToolDrawNote, KeyShortcutConfig::ShortcutId::ToolSelect,
-                KeyShortcutConfig::ShortcutId::ToolLineAnchor, KeyShortcutConfig::ShortcutId::ToolHandDraw,
-            };
-            opendyneIds_ = {
-                KeyShortcutConfig::ShortcutId::ToolODSelect, KeyShortcutConfig::ShortcutId::ToolODPitch,
-                KeyShortcutConfig::ShortcutId::ToolODPitchModulation, KeyShortcutConfig::ShortcutId::ToolODPitchDrift,
-                KeyShortcutConfig::ShortcutId::ToolODVolumeEnvelope, KeyShortcutConfig::ShortcutId::ToolODScissors,
-            };
-        }
+        opentuneIds_ = {
+            KeyShortcutConfig::ShortcutId::ToolDrawNote, KeyShortcutConfig::ShortcutId::ToolSelect,
+            KeyShortcutConfig::ShortcutId::ToolLineAnchor, KeyShortcutConfig::ShortcutId::ToolHandDraw,
+        };
+        opendyneIds_ = {
+            KeyShortcutConfig::ShortcutId::ToolODSelect, KeyShortcutConfig::ShortcutId::ToolODPitch,
+            KeyShortcutConfig::ShortcutId::ToolODPitchModulation, KeyShortcutConfig::ShortcutId::ToolODPitchDrift,
+            KeyShortcutConfig::ShortcutId::ToolODVolumeEnvelope, KeyShortcutConfig::ShortcutId::ToolODScissors,
+        };
 
         // 内容高度，与 resized() 布局一一对应：
         // reduced(20) 的顶部+底部 40 + 每段(header 24 + gap 4 + rows*32 + gap 6) + 段间 10 + 底部 12 + 重置按钮 28
@@ -1164,24 +1168,30 @@ private:
             return;
         }
 
-        const auto conflict = KeyShortcutConfig::findConflictingShortcut(settings_, currentEditingId_, binding);
-        if (conflict == KeyShortcutConfig::ShortcutId::Count) {
+        const auto conflicts = KeyShortcutConfig::findConflictingShortcuts(
+            settings_, currentEditingId_, binding, getEditableShortcutIds(), activeScopes_);
+        if (conflicts.empty()) {
             applyBinding(binding);
             return;
         }
+
+        juce::StringArray conflictNames;
+        for (const auto id : conflicts)
+            conflictNames.add(KeyShortcutConfig::getShortcutDisplayName(id));
 
         juce::Component::SafePointer<ShortcutSettingsPage> safeThis(this);
         ConfirmDialogContent::launch(
             new ConfirmDialogContent(
                 LOC(kShortcutConflict),
                 Loc::format(LOC_RAW(Loc::Keys::kShortcutConflictMessage),
-                            KeyShortcutConfig::getShortcutDisplayName(conflict)),
-                { { LOC(kYes), [safeThis, binding, conflict] {
+                            conflictNames.joinIntoString(", ")),
+                { { LOC(kYes), [safeThis, binding, conflicts] {
                         if (safeThis == nullptr) {
                             return;
                         }
 
-                        safeThis->settings_.bindings[static_cast<size_t>(conflict)].removeBinding(binding);
+                        for (const auto conflict : conflicts)
+                            safeThis->settings_.bindings[static_cast<size_t>(conflict)].removeBinding(binding);
                         safeThis->applyBinding(binding);
                     }, true },
                   { LOC(kNo), [safeThis] {
@@ -1204,6 +1214,14 @@ private:
         persist();
         refreshButtons();
         cancelCapture();
+    }
+
+    std::vector<KeyShortcutConfig::ShortcutId> getEditableShortcutIds() const
+    {
+        auto ids = generalIds_;
+        ids.insert(ids.end(), opentuneIds_.begin(), opentuneIds_.end());
+        ids.insert(ids.end(), opendyneIds_.begin(), opendyneIds_.end());
+        return ids;
     }
 
     void cancelCapture()
@@ -1240,6 +1258,7 @@ private:
     AppPreferences& appPreferences_;
     std::function<void()> onPreferencesChanged_;
     KeyShortcutConfig::KeyShortcutSettings settings_;
+    KeyShortcutConfig::ShortcutScopeMask activeScopes_ = 0;
     int contentHeight_ = 0;
     std::vector<KeyShortcutConfig::ShortcutId> generalIds_;
     std::vector<KeyShortcutConfig::ShortcutId> opentuneIds_;

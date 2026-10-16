@@ -969,6 +969,9 @@ bool OpenTuneAudioProcessorEditor::handleEditorShortcut(const juce::KeyPress& ke
         return true;
     }
 
+    if (KeyShortcutConfig::matchesShortcut(shortcutSettings, KeyShortcutConfig::ShortcutId::PlayFromStart, key))
+        return pointerShortcutRequested(KeyShortcutConfig::ShortcutId::PlayFromStart);
+
     return false;
 }
 

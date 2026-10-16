@@ -639,7 +639,8 @@ void TrackPanelComponent::mouseWheelMove(const juce::MouseEvent& event, const ju
 
 bool TrackPanelComponent::dispatchPointerBinding(const KeyShortcutConfig::KeyBinding& binding)
 {
-    if (KeyShortcutConfig::findShortcutForBinding(shortcutSettings_, binding)
+    if (KeyShortcutConfig::findShortcutForBinding(
+            shortcutSettings_, binding, KeyShortcutConfig::kStandaloneArrangementScope)
         == KeyShortcutConfig::ShortcutId::Count)
         return false;
 

@@ -5104,7 +5104,10 @@ bool PianoRollComponent::matchesShortcut(KeyShortcutConfig::ShortcutId id,
 
 bool PianoRollComponent::handlePointerShortcut(const KeyShortcutConfig::KeyBinding& binding)
 {
-    const auto id = KeyShortcutConfig::findShortcutForBinding(shortcutSettings_, binding);
+    const auto scope = AudioEditingScheme::usesNotesPrimaryScheme(audioEditingScheme_)
+        ? KeyShortcutConfig::kPianoRollOpenDyneScope
+        : KeyShortcutConfig::kPianoRollOpenTuneScope;
+    const auto id = KeyShortcutConfig::findShortcutForBinding(shortcutSettings_, binding, scope);
     if (id == KeyShortcutConfig::ShortcutId::Count)
         return false;
 

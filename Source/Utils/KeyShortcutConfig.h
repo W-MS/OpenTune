@@ -3,6 +3,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <initializer_list>
 #include <vector>
 #include "LocalizationManager.h"
@@ -53,6 +54,32 @@ enum class ShortcutId {
     FitAllNotes,
     Count
 };
+
+enum class ShortcutScope : std::uint8_t {
+    PluginEditorGeneral = 1 << 0,
+    StandaloneArrangement = 1 << 1,
+    PianoRollOpenTune = 1 << 2,
+    PianoRollOpenDyne = 1 << 3
+};
+
+using ShortcutScopeMask = std::uint8_t;
+
+constexpr ShortcutScopeMask scopeMask(ShortcutScope scope)
+{
+    return static_cast<ShortcutScopeMask>(scope);
+}
+
+inline constexpr ShortcutScopeMask kPluginEditorGeneralScope = scopeMask(ShortcutScope::PluginEditorGeneral);
+inline constexpr ShortcutScopeMask kStandaloneArrangementScope = scopeMask(ShortcutScope::StandaloneArrangement);
+inline constexpr ShortcutScopeMask kPianoRollOpenTuneScope = scopeMask(ShortcutScope::PianoRollOpenTune);
+inline constexpr ShortcutScopeMask kPianoRollOpenDyneScope = scopeMask(ShortcutScope::PianoRollOpenDyne);
+inline constexpr ShortcutScopeMask kStandaloneShortcutScopes =
+    kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope;
+
+constexpr bool scopesIntersect(ShortcutScopeMask lhs, ShortcutScopeMask rhs)
+{
+    return (lhs & rhs) != 0;
+}
 
 enum class BindingType {
     Keyboard,
@@ -141,16 +168,19 @@ struct ShortcutInfo {
     ShortcutId id;
     const char* storageKey;
     const char* displayNameKey;
+    ShortcutScopeMask scopes;
     std::vector<KeyBinding> defaultBindings;
 
     template <size_t StorageKeySize>
     ShortcutInfo(ShortcutId shortcutId,
                  const char (&key)[StorageKeySize],
                  const char* displayName,
+                 ShortcutScopeMask shortcutScopes,
                  std::initializer_list<KeyBinding> defaults)
         : id(shortcutId)
         , storageKey(key)
         , displayNameKey(displayName)
+        , scopes(shortcutScopes)
         , defaultBindings(defaults)
     {
         static_assert(StorageKeySize > 1, "Shortcut storage key must not be empty");
@@ -289,84 +319,193 @@ private:
 };
 
 inline const ShortcutInfo kShortcutInfos[] = {
-    { ShortcutId::PlayPause, "shared.shortcuts.playPause", Loc::Keys::kPlayPause, { KeyBinding(juce::KeyPress::spaceKey, {}) } },
+    { ShortcutId::PlayPause, "shared.shortcuts.playPause", Loc::Keys::kPlayPause,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
 #if JUCE_MAC
-    { ShortcutId::Stop, "shared.shortcuts.stop", Loc::Keys::kStop, { KeyBinding('.', {}) } },
-    { ShortcutId::PlayFromStart, "shared.shortcuts.playFromStart", Loc::Keys::kPlayFromStart, { KeyBinding('.', juce::ModifierKeys::commandModifier) } },
+      { KeyBinding(juce::KeyPress::spaceKey,
+                   juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier) } },
 #else
-    { ShortcutId::Stop, "shared.shortcuts.stop", Loc::Keys::kStop, { KeyBinding(juce::KeyPress::returnKey, {}) } },
-    { ShortcutId::PlayFromStart, "shared.shortcuts.playFromStart", Loc::Keys::kPlayFromStart, { KeyBinding('A', {}) } },
+      { KeyBinding(juce::KeyPress::spaceKey, {}) } },
 #endif
-    { ShortcutId::Undo, "shared.shortcuts.undo", Loc::Keys::kUndo, { KeyBinding('Z', juce::ModifierKeys::commandModifier) } },
-    { ShortcutId::Redo, "shared.shortcuts.redo", Loc::Keys::kRedo, {
+#if JUCE_MAC
+    { ShortcutId::Stop, "shared.shortcuts.stop", Loc::Keys::kStop,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding('.', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier
+                                | juce::ModifierKeys::shiftModifier) } },
+    { ShortcutId::PlayFromStart, "shared.shortcuts.playFromStart", Loc::Keys::kPlayFromStart,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding(juce::KeyPress::returnKey,
+                   juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier) } },
+#else
+    { ShortcutId::Stop, "shared.shortcuts.stop", Loc::Keys::kStop,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding(juce::KeyPress::returnKey, {}) } },
+    { ShortcutId::PlayFromStart, "shared.shortcuts.playFromStart", Loc::Keys::kPlayFromStart,
+      kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding('A', {}) } },
+#endif
+    { ShortcutId::Undo, "shared.shortcuts.undo", Loc::Keys::kUndo,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding('Z', juce::ModifierKeys::commandModifier) } },
+    { ShortcutId::Redo, "shared.shortcuts.redo", Loc::Keys::kRedo,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope, {
         KeyBinding('Y', juce::ModifierKeys::commandModifier),
         KeyBinding('Z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier)
     } },
-    { ShortcutId::Cut, "shared.shortcuts.cut", Loc::Keys::kCut, { KeyBinding('X', juce::ModifierKeys::commandModifier) } },
-    { ShortcutId::Copy, "shared.shortcuts.copy", Loc::Keys::kCopy, { KeyBinding('C', juce::ModifierKeys::commandModifier) } },
-    { ShortcutId::Paste, "shared.shortcuts.paste", Loc::Keys::kPaste, { KeyBinding('V', juce::ModifierKeys::commandModifier) } },
-    { ShortcutId::SelectAll, "shared.shortcuts.selectAll", Loc::Keys::kSelectAll, { KeyBinding('A', juce::ModifierKeys::commandModifier) } },
-    { ShortcutId::Delete, "shared.shortcuts.delete", Loc::Keys::kDelete, {
+    { ShortcutId::Cut, "shared.shortcuts.cut", Loc::Keys::kCut,
+      kPluginEditorGeneralScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding('X', juce::ModifierKeys::commandModifier) } },
+    { ShortcutId::Copy, "shared.shortcuts.copy", Loc::Keys::kCopy,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding('C', juce::ModifierKeys::commandModifier) } },
+    { ShortcutId::Paste, "shared.shortcuts.paste", Loc::Keys::kPaste,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding('V', juce::ModifierKeys::commandModifier) } },
+    { ShortcutId::SelectAll, "shared.shortcuts.selectAll", Loc::Keys::kSelectAll,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding('A', juce::ModifierKeys::commandModifier) } },
+#if JUCE_MAC
+    { ShortcutId::Delete, "shared.shortcuts.delete", Loc::Keys::kDelete,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope, {
+        KeyBinding(juce::KeyPress::deleteKey, {}),
+        KeyBinding(juce::KeyPress::backspaceKey, {})
+    } },
+#else
+    { ShortcutId::Delete, "shared.shortcuts.delete", Loc::Keys::kDelete,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope, {
         KeyBinding(juce::KeyPress::deleteKey, {}),
         KeyBinding(juce::KeyPress::backspaceKey, {}),
         KeyBinding('1', {})
     } },
-#if JUCE_MAC
-    { ShortcutId::SplitClip, "shared.shortcuts.splitClip", Loc::Keys::kSplitClip, { KeyBinding('E', juce::ModifierKeys::commandModifier) } },
-    { ShortcutId::MergeClips, "shared.shortcuts.mergeClips", Loc::Keys::kMergeClips, { KeyBinding('J', juce::ModifierKeys::commandModifier) } },
-#else
-    { ShortcutId::SplitClip, "shared.shortcuts.splitClip", Loc::Keys::kSplitClip, { KeyBinding('S', {}) } },
-    { ShortcutId::MergeClips, "shared.shortcuts.mergeClips", Loc::Keys::kMergeClips, { KeyBinding('M', {}) } },
 #endif
-    { ShortcutId::DuplicateClip, "shared.shortcuts.duplicateClip", Loc::Keys::kDuplicateClip, { KeyBinding('D', juce::ModifierKeys::commandModifier) } },
-    { ShortcutId::NudgeLeft, "shared.shortcuts.nudgeLeft", Loc::Keys::kNudgeLeft, { KeyBinding(juce::KeyPress::leftKey, {}) } },
-    { ShortcutId::NudgeRight, "shared.shortcuts.nudgeRight", Loc::Keys::kNudgeRight, { KeyBinding(juce::KeyPress::rightKey, {}) } },
-    { ShortcutId::ToggleSnap, "shared.shortcuts.toggleSnap", Loc::Keys::kToggleSnap, { KeyBinding('S', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier) } },
-    { ShortcutId::ToolDrawNote, "shared.shortcuts.toolDrawNote", Loc::Keys::kToolDrawNote, { KeyBinding('2', {}) } },
-    { ShortcutId::ToolSelect, "shared.shortcuts.toolSelect", Loc::Keys::kToolSelect, { KeyBinding('3', {}) } },
-    { ShortcutId::ToolLineAnchor, "shared.shortcuts.toolLineAnchor", Loc::Keys::kToolLineAnchor, { KeyBinding('4', {}) } },
-    { ShortcutId::ToolHandDraw, "shared.shortcuts.toolHandDraw", Loc::Keys::kToolHandDraw, { KeyBinding('5', {}) } },
-    { ShortcutId::ToolAutoTune, "shared.shortcuts.toolAutoTune", Loc::Keys::kToolAutoTune, { KeyBinding('6', {}) } },
-    { ShortcutId::ToolTimeTool, "shared.shortcuts.toolTimeTool", Loc::Keys::kToolTimeTool, { KeyBinding('t', {}) } },
-    { ShortcutId::CancelSelection, "shared.shortcuts.cancelSelection", Loc::Keys::kCancelSelection, { KeyBinding(juce::KeyPress::escapeKey, {}) } },
+#if JUCE_MAC
+    { ShortcutId::SplitClip, "shared.shortcuts.splitClip", Loc::Keys::kSplitClip,
+      kStandaloneArrangementScope, { KeyBinding('E', juce::ModifierKeys::commandModifier) } },
+    { ShortcutId::MergeClips, "shared.shortcuts.mergeClips", Loc::Keys::kMergeClips,
+      kStandaloneArrangementScope, { KeyBinding('J', juce::ModifierKeys::commandModifier) } },
+#else
+    { ShortcutId::SplitClip, "shared.shortcuts.splitClip", Loc::Keys::kSplitClip,
+      kStandaloneArrangementScope, { KeyBinding('S', {}) } },
+    { ShortcutId::MergeClips, "shared.shortcuts.mergeClips", Loc::Keys::kMergeClips,
+      kStandaloneArrangementScope, { KeyBinding('M', {}) } },
+#endif
+    { ShortcutId::DuplicateClip, "shared.shortcuts.duplicateClip", Loc::Keys::kDuplicateClip,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding('D', juce::ModifierKeys::commandModifier) } },
+    { ShortcutId::NudgeLeft, "shared.shortcuts.nudgeLeft", Loc::Keys::kNudgeLeft,
+      kStandaloneArrangementScope, { KeyBinding(juce::KeyPress::leftKey, {}) } },
+    { ShortcutId::NudgeRight, "shared.shortcuts.nudgeRight", Loc::Keys::kNudgeRight,
+      kStandaloneArrangementScope, { KeyBinding(juce::KeyPress::rightKey, {}) } },
+    { ShortcutId::ToggleSnap, "shared.shortcuts.toggleSnap", Loc::Keys::kToggleSnap,
+      kStandaloneArrangementScope,
+      { KeyBinding('S', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier) } },
+    { ShortcutId::ToolDrawNote, "shared.shortcuts.toolDrawNote", Loc::Keys::kToolDrawNote,
+      kPianoRollOpenTuneScope, { KeyBinding('2', {}) } },
+    { ShortcutId::ToolSelect, "shared.shortcuts.toolSelect", Loc::Keys::kToolSelect,
+      kPianoRollOpenTuneScope, { KeyBinding('3', {}) } },
+    { ShortcutId::ToolLineAnchor, "shared.shortcuts.toolLineAnchor", Loc::Keys::kToolLineAnchor,
+      kPianoRollOpenTuneScope, { KeyBinding('4', {}) } },
+#if JUCE_MAC
+    { ShortcutId::ToolHandDraw, "shared.shortcuts.toolHandDraw", Loc::Keys::kToolHandDraw,
+      kPianoRollOpenTuneScope | kPianoRollOpenDyneScope, { KeyBinding('H', {}) } },
+    { ShortcutId::ToolAutoTune, "shared.shortcuts.toolAutoTune", Loc::Keys::kToolAutoTune,
+      kPluginEditorGeneralScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding('A', {}) } },
+#else
+    { ShortcutId::ToolHandDraw, "shared.shortcuts.toolHandDraw", Loc::Keys::kToolHandDraw,
+      kPianoRollOpenTuneScope | kPianoRollOpenDyneScope, { KeyBinding('5', {}) } },
+    { ShortcutId::ToolAutoTune, "shared.shortcuts.toolAutoTune", Loc::Keys::kToolAutoTune,
+      kPluginEditorGeneralScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding('6', {}) } },
+#endif
+    { ShortcutId::ToolTimeTool, "shared.shortcuts.toolTimeTool", Loc::Keys::kToolTimeTool,
+      kPianoRollOpenTuneScope | kPianoRollOpenDyneScope, { KeyBinding('t', {}) } },
+    { ShortcutId::CancelSelection, "shared.shortcuts.cancelSelection", Loc::Keys::kCancelSelection,
+      kPluginEditorGeneralScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding(juce::KeyPress::escapeKey, {}) } },
 #if JUCE_MAC
     // OpenDyne工具按界面顺序分配数字键1-6
-    { ShortcutId::ToolODSelect, "shared.shortcuts.toolODSelect", Loc::Keys::kToolODSelect, { KeyBinding('1', {}) } },
-    { ShortcutId::ToolODPitch, "shared.shortcuts.toolODPitch", Loc::Keys::kToolODPitch, { KeyBinding('2', {}) } },
-    { ShortcutId::ToolODPitchModulation, "shared.shortcuts.toolODPitchModulation", Loc::Keys::kToolODPitchModulation, { KeyBinding('3', {}) } },
-    { ShortcutId::ToolODPitchDrift, "shared.shortcuts.toolODPitchDrift", Loc::Keys::kToolODPitchDrift, { KeyBinding('4', {}) } },
-    { ShortcutId::ToolODVolumeEnvelope, "shared.shortcuts.toolODVolumeEnvelope", Loc::Keys::kToolODVolumeEnvelope, { KeyBinding('5', {}) } },
-    { ShortcutId::ToolODScissors, "shared.shortcuts.toolODScissors", Loc::Keys::kToolODScissors, { KeyBinding('6', {}) } },
+    { ShortcutId::ToolODSelect, "shared.shortcuts.toolODSelect", Loc::Keys::kToolODSelect,
+      kPianoRollOpenDyneScope, { KeyBinding('1', {}) } },
+    { ShortcutId::ToolODPitch, "shared.shortcuts.toolODPitch", Loc::Keys::kToolODPitch,
+      kPianoRollOpenDyneScope, { KeyBinding('2', {}) } },
+    { ShortcutId::ToolODPitchModulation, "shared.shortcuts.toolODPitchModulation", Loc::Keys::kToolODPitchModulation,
+      kPianoRollOpenDyneScope, { KeyBinding('3', {}) } },
+    { ShortcutId::ToolODPitchDrift, "shared.shortcuts.toolODPitchDrift", Loc::Keys::kToolODPitchDrift,
+      kPianoRollOpenDyneScope, { KeyBinding('4', {}) } },
+    { ShortcutId::ToolODVolumeEnvelope, "shared.shortcuts.toolODVolumeEnvelope", Loc::Keys::kToolODVolumeEnvelope,
+      kPianoRollOpenDyneScope, { KeyBinding('5', {}) } },
+    { ShortcutId::ToolODScissors, "shared.shortcuts.toolODScissors", Loc::Keys::kToolODScissors,
+      kPianoRollOpenDyneScope, { KeyBinding('6', {}) } },
 #else
-    { ShortcutId::ToolODSelect, "shared.shortcuts.toolODSelect", Loc::Keys::kToolODSelect, { KeyBinding(juce::KeyPress::F1Key, {}) } },
-    { ShortcutId::ToolODPitch, "shared.shortcuts.toolODPitch", Loc::Keys::kToolODPitch, { KeyBinding(juce::KeyPress::F2Key, {}) } },
-    { ShortcutId::ToolODPitchModulation, "shared.shortcuts.toolODPitchModulation", Loc::Keys::kToolODPitchModulation, {} },
-    { ShortcutId::ToolODPitchDrift, "shared.shortcuts.toolODPitchDrift", Loc::Keys::kToolODPitchDrift, {} },
-    { ShortcutId::ToolODVolumeEnvelope, "shared.shortcuts.toolODVolumeEnvelope", Loc::Keys::kToolODVolumeEnvelope, { KeyBinding(juce::KeyPress::F4Key, {}) } },
-    { ShortcutId::ToolODScissors, "shared.shortcuts.toolODScissors", Loc::Keys::kToolODScissors, { KeyBinding(juce::KeyPress::F6Key, {}) } },
+    { ShortcutId::ToolODSelect, "shared.shortcuts.toolODSelect", Loc::Keys::kToolODSelect,
+      kPianoRollOpenDyneScope, { KeyBinding(juce::KeyPress::F1Key, {}) } },
+    { ShortcutId::ToolODPitch, "shared.shortcuts.toolODPitch", Loc::Keys::kToolODPitch,
+      kPianoRollOpenDyneScope, { KeyBinding(juce::KeyPress::F2Key, {}) } },
+    { ShortcutId::ToolODPitchModulation, "shared.shortcuts.toolODPitchModulation", Loc::Keys::kToolODPitchModulation,
+      kPianoRollOpenDyneScope, {} },
+    { ShortcutId::ToolODPitchDrift, "shared.shortcuts.toolODPitchDrift", Loc::Keys::kToolODPitchDrift,
+      kPianoRollOpenDyneScope, {} },
+    { ShortcutId::ToolODVolumeEnvelope, "shared.shortcuts.toolODVolumeEnvelope", Loc::Keys::kToolODVolumeEnvelope,
+      kPianoRollOpenDyneScope, { KeyBinding(juce::KeyPress::F4Key, {}) } },
+    { ShortcutId::ToolODScissors, "shared.shortcuts.toolODScissors", Loc::Keys::kToolODScissors,
+      kPianoRollOpenDyneScope, { KeyBinding(juce::KeyPress::F6Key, {}) } },
 #endif
-    { ShortcutId::Eq, "shared.shortcuts.toolEq", Loc::Keys::kToolEq, { KeyBinding('E', {}) } },
+    { ShortcutId::Eq, "shared.shortcuts.toolEq", Loc::Keys::kToolEq,
+      kPluginEditorGeneralScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding('E', {}) } },
     { ShortcutId::ScrollHorizontalLeft, "shared.shortcuts.scrollHorizontalLeft", Loc::Keys::kScrollHorizontalLeft,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding(juce::KeyPress::leftKey, juce::ModifierKeys::altModifier),
         KeyBinding(BindingType::WheelUp, juce::ModifierKeys::altModifier) } },
     { ShortcutId::ScrollHorizontalRight, "shared.shortcuts.scrollHorizontalRight", Loc::Keys::kScrollHorizontalRight,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding(juce::KeyPress::rightKey, juce::ModifierKeys::altModifier),
         KeyBinding(BindingType::WheelDown, juce::ModifierKeys::altModifier) } },
+#if JUCE_MAC
     { ShortcutId::ZoomHorizontalIn, "shared.shortcuts.zoomHorizontalIn", Loc::Keys::kZoomHorizontalIn,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding(juce::KeyPress::rightKey,
+                   juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier),
+        KeyBinding(BindingType::WheelUp, juce::ModifierKeys::ctrlModifier) } },
+    { ShortcutId::ZoomHorizontalOut, "shared.shortcuts.zoomHorizontalOut", Loc::Keys::kZoomHorizontalOut,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding(juce::KeyPress::leftKey,
+                   juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier),
+        KeyBinding(BindingType::WheelDown, juce::ModifierKeys::ctrlModifier) } },
+    { ShortcutId::ZoomVerticalIn, "shared.shortcuts.zoomVerticalIn", Loc::Keys::kZoomVerticalIn,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding(juce::KeyPress::upKey,
+                   juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier),
+        KeyBinding(BindingType::WheelUp, juce::ModifierKeys::shiftModifier) } },
+    { ShortcutId::ZoomVerticalOut, "shared.shortcuts.zoomVerticalOut", Loc::Keys::kZoomVerticalOut,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
+      { KeyBinding(juce::KeyPress::downKey,
+                   juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier),
+        KeyBinding(BindingType::WheelDown, juce::ModifierKeys::shiftModifier) } },
+#else
+    { ShortcutId::ZoomHorizontalIn, "shared.shortcuts.zoomHorizontalIn", Loc::Keys::kZoomHorizontalIn,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding(juce::KeyPress::rightKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier),
         KeyBinding(BindingType::WheelUp, juce::ModifierKeys::ctrlModifier) } },
     { ShortcutId::ZoomHorizontalOut, "shared.shortcuts.zoomHorizontalOut", Loc::Keys::kZoomHorizontalOut,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding(juce::KeyPress::leftKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier),
         KeyBinding(BindingType::WheelDown, juce::ModifierKeys::ctrlModifier) } },
     { ShortcutId::ZoomVerticalIn, "shared.shortcuts.zoomVerticalIn", Loc::Keys::kZoomVerticalIn,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding(juce::KeyPress::upKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier),
         KeyBinding(BindingType::WheelUp, juce::ModifierKeys::shiftModifier) } },
     { ShortcutId::ZoomVerticalOut, "shared.shortcuts.zoomVerticalOut", Loc::Keys::kZoomVerticalOut,
+      kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding(juce::KeyPress::downKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier),
         KeyBinding(BindingType::WheelDown, juce::ModifierKeys::shiftModifier) } },
+#endif
     { ShortcutId::FitSelectedNotes, "shared.shortcuts.fitSelectedNotes", Loc::Keys::kFitSelectedNotes,
+      kPluginEditorGeneralScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding('0', juce::ModifierKeys::commandModifier) } },
     { ShortcutId::FitAllNotes, "shared.shortcuts.fitAllNotes", Loc::Keys::kFitAllNotes,
+      kPluginEditorGeneralScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding('0', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier) } },
 };
 
@@ -420,9 +559,16 @@ inline juce::String toCanonicalString(const KeyBinding& binding)
     const auto modifierFlags = binding.modifiers.getRawFlags();
 
     if (binding.type == BindingType::Keyboard) {
+#if JUCE_MAC
+        if ((modifierFlags & juce::ModifierKeys::ctrlModifier) != 0)
+            text << "Ctrl+";
+        if ((modifierFlags & juce::ModifierKeys::commandModifier) != 0)
+            text << "Cmd+";
+#else
         if ((modifierFlags & juce::ModifierKeys::ctrlModifier) != 0
             || (modifierFlags & juce::ModifierKeys::commandModifier) != 0)
             text << "Ctrl+";
+#endif
     } else {
 #if JUCE_MAC
         if ((modifierFlags & juce::ModifierKeys::ctrlModifier) != 0)
@@ -569,26 +715,35 @@ inline void resetAllShortcutBindings(KeyShortcutSettings& settings)
     settings = KeyShortcutSettings::getDefault();
 }
 
-inline ShortcutId findConflictingShortcut(const KeyShortcutSettings& settings, ShortcutId excludeId, const KeyBinding& binding)
+inline std::vector<ShortcutId> findConflictingShortcuts(
+    const KeyShortcutSettings& settings,
+    ShortcutId excludeId,
+    const KeyBinding& binding,
+    const std::vector<ShortcutId>& candidates,
+    ShortcutScopeMask activeScopes)
 {
-    for (size_t i = 0; i < kShortcutCount; ++i)
-    {
-        auto id = static_cast<ShortcutId>(i);
-        if (id == excludeId)
+    std::vector<ShortcutId> conflicts;
+    const auto editableScopes = static_cast<ShortcutScopeMask>(
+        getShortcutInfo(excludeId).scopes & activeScopes);
+    for (const auto id : candidates) {
+        if (id == excludeId || !scopesIntersect(editableScopes, getShortcutInfo(id).scopes))
             continue;
-        
+
         const auto& shortcutBinding = getShortcutBinding(settings, id);
         if (shortcutBinding.hasBinding(binding))
-            return id;
+            conflicts.push_back(id);
     }
-    return ShortcutId::Count;
+    return conflicts;
 }
 
-inline ShortcutId findShortcutForBinding(const KeyShortcutSettings& settings, const KeyBinding& binding)
+inline ShortcutId findShortcutForBinding(const KeyShortcutSettings& settings,
+                                         const KeyBinding& binding,
+                                         ShortcutScopeMask activeScopes)
 {
     for (size_t i = 0; i < kShortcutCount; ++i) {
         const auto id = static_cast<ShortcutId>(i);
-        if (getShortcutBinding(settings, id).hasBinding(binding))
+        if (scopesIntersect(getShortcutInfo(id).scopes, activeScopes)
+            && getShortcutBinding(settings, id).hasBinding(binding))
             return id;
     }
     return ShortcutId::Count;

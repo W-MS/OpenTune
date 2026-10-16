@@ -2985,7 +2985,8 @@ bool ArrangementViewComponent::matchesShortcut(KeyShortcutConfig::ShortcutId id,
 
 bool ArrangementViewComponent::handlePointerShortcut(const KeyShortcutConfig::KeyBinding& binding)
 {
-    const auto id = KeyShortcutConfig::findShortcutForBinding(shortcutSettings_, binding);
+    const auto id = KeyShortcutConfig::findShortcutForBinding(
+        shortcutSettings_, binding, KeyShortcutConfig::kStandaloneArrangementScope);
     if (id == KeyShortcutConfig::ShortcutId::Count)
         return false;
 
