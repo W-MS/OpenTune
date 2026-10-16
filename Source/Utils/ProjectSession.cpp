@@ -11,6 +11,7 @@
 #include "ProjectPersistence.h"
 #include "LocalizationManager.h"
 #include "TimeCoordinate.h"
+#include "VisibleTrackCount.h"
 #include <set>
 
 namespace OpenTune {
@@ -247,6 +248,7 @@ ProjectSnapshot ProjectSession::captureSnapshot() const
 
     // Selected track/placement for session state
     snap.settings.selectedTrackId = arrangement->getActiveTrackId();
+    snap.settings.visibleTrackCount = arrangement->getVisibleTrackCount();
 
     // Reference bindings
     for (int trackId = 0; trackId < numTracks; ++trackId) {
@@ -507,9 +509,17 @@ Result<void> ProjectSession::commitPreparedOpen(PreparedOpen&& preparedOpen)
         auto pitchCurve = std::make_shared<PitchCurve>();
         for (const auto& seg : contentEntry.correctionSegments) {
             if (!seg.f0Data.empty()) {
+                // 此时原始音高尚未重新提取。修音段先按保存的 f0 保留，
+                // 提取完成后再按新的有声帧切开。
+                PitchCorrectionSegment::ParameterSnapshot parameters;
+                parameters.retuneSpeed = seg.retuneSpeed;
+                parameters.pitchDriftScale = seg.pitchDriftScale;
+                parameters.vibratoDepth = seg.vibratoDepth;
+                parameters.vibratoRate = seg.vibratoRate;
                 pitchCurve->setManualCorrectionRange(
                     seg.startFrame, seg.endFrame, seg.f0Data,
-                    static_cast<PitchCorrectionSegment::Source>(seg.source));
+                    static_cast<PitchCorrectionSegment::Source>(seg.source),
+                    parameters);
             }
         }
         clip->applyPitchCurve(pitchCurve);
@@ -637,6 +647,22 @@ Result<void> ProjectSession::commitPreparedOpen(PreparedOpen&& preparedOpen)
     }
 
     arrangement->setActiveTrack(snapshot.settings.selectedTrackId);
+
+    std::vector<LoadedTrackVisibilityHint> visibilityHints;
+    visibilityHints.reserve(snapshot.tracks.size());
+    for (const auto& trackEntry : snapshot.tracks) {
+        LoadedTrackVisibilityHint hint;
+        hint.trackId = trackEntry.trackId;
+        hint.hasPlacements = !trackEntry.placements.empty();
+        hint.mute = trackEntry.mute;
+        hint.solo = trackEntry.solo;
+        hint.gain = trackEntry.gain;
+        visibilityHints.push_back(hint);
+    }
+    arrangement->setVisibleTrackCount(resolveLoadedVisibleTrackCount(
+        snapshot.settings.visibleTrackCount,
+        snapshot.settings.selectedTrackId,
+        visibilityHints));
 
     // Restore reference bindings (不触发analysis)
     bool anyBindingLost = false;
