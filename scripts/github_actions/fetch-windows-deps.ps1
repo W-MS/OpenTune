@@ -11,7 +11,7 @@ function Invoke-Checked {
     param([string]$File, [string[]]$CommandArguments)
     & $File @CommandArguments
     if ($LASTEXITCODE -ne 0) {
-        throw "$File 失败，退出码 $LASTEXITCODE"
+        throw "$File failed with exit code $LASTEXITCODE"
     }
 }
 
@@ -34,7 +34,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $Root "JUCE-master\CMakeLists.txt"))
 
 $Python = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $Python) {
-    throw "虚拟机上没有 python，无法应用 JUCE ARA 补丁或下载模型"
+    throw "python was not found; cannot patch JUCE or download models"
 }
 Invoke-Checked $Python @((Join-Path $Root "scripts\github_actions\patch-juce-ara.py"))
 
@@ -96,7 +96,7 @@ New-Item -ItemType Directory -Force -Path $OrtExtract | Out-Null
 Invoke-Checked "tar.exe" @("-xf", $OrtZip, "-C", $OrtExtract)
 $header = Get-ChildItem -Path $OrtExtract -Recurse -Filter "onnxruntime_cxx_api.h" | Select-Object -First 1
 if (-not $header) {
-    throw "ONNX Runtime CPU 包中没有 include/onnxruntime_cxx_api.h"
+    throw "ONNX Runtime CPU package has no include/onnxruntime_cxx_api.h"
 }
 $packageRoot = $header.Directory.Parent.FullName
 $ortTarget = Join-Path $Root "ThirdParty\onnxruntime-win-x64-1.24.4"
@@ -127,7 +127,7 @@ $required = @(
 foreach ($relative in $required) {
     $path = Join-Path $Root $relative
     if (-not (Test-Path -LiteralPath $path)) {
-        throw "依赖未放到 BUILDING.md 要求的路径: $relative"
+        throw "Missing dependency required by BUILDING.md: $relative"
     }
 }
-Write-Host "Windows 依赖已下载到虚拟机。"
+Write-Host "Windows dependencies are ready."

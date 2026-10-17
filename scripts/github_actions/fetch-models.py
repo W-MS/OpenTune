@@ -16,10 +16,13 @@ FCPE_URL = (
     "d68808c37dede264d80d2d1050dce27af34ad654/Resources/models/fcpe.onnx"
 )
 FCPE_SHA256 = "013b507acd406de122b61ee497300ac6be082511101bc2136b886e48d9737e5d"
+# BUILDING.md links the .zip, but that archive only contains the PyTorch checkpoint.
+# The ONNX file with the documented name is in the sibling .oudep package from the
+# same release. OpenVPI's release notes say to rename .oudep to .zip and unzip it.
 HIFIGAN_URL = (
     "https://github.com/openvpi/vocoders/releases/download/"
     "pc-nsf-hifigan-44.1k-hop512-128bin-2025.02/"
-    "pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.zip"
+    "pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.oudep"
 )
 HIFIGAN_NAME = "pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx"
 GAME_URL = "https://github.com/openvpi/GAME/releases/download/v1.0.3/GAME-1.0.3-small-onnx.zip"
@@ -82,7 +85,10 @@ def fetch_hifigan() -> None:
                 if pathlib.PurePosixPath(name).name == HIFIGAN_NAME and not name.endswith("/")
             ]
             if len(matches) != 1:
-                raise SystemExit(f"HifiGAN 压缩包中 {HIFIGAN_NAME} 出现 {len(matches)} 次")
+                names = "\n".join(archive.namelist())
+                raise SystemExit(
+                    f"HifiGAN 包中 {HIFIGAN_NAME} 出现 {len(matches)} 次。包内文件:\n{names}"
+                )
             dest.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(matches[0]) as src, dest.open("wb") as output:
                 shutil.copyfileobj(src, output)

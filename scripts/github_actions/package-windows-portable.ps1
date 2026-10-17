@@ -4,11 +4,11 @@ $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $cmake = Get-Content -LiteralPath (Join-Path $Root "CMakeLists.txt") -Raw
 if ($cmake -notmatch 'project\(OpenTune VERSION (\d+\.\d+\.\d+)') {
-    throw "无法从 CMakeLists.txt 解析版本号"
+    throw "Could not parse the version from CMakeLists.txt"
 }
 $Version = $Matches[1]
 if ($cmake -notmatch 'set\(OPENTUNE_ORT_DLL_NAME "([^"]+)"\)') {
-    throw "无法从 CMakeLists.txt 解析 OPENTUNE_ORT_DLL_NAME"
+    throw "Could not parse OPENTUNE_ORT_DLL_NAME from CMakeLists.txt"
 }
 $OrtDll = $Matches[1]
 
@@ -18,7 +18,7 @@ $Vst3 = Join-Path $Root "build-ara-overlay-vs18-clean\OpenTune_artefacts\Release
 function Assert-File {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) {
-        throw "缺少产物: $Path"
+        throw "Missing build output: $Path"
     }
 }
 
@@ -32,12 +32,12 @@ Assert-File (Join-Path $Standalone "models\hifigan.onnx")
 Assert-File $Vst3
 $vstOrt = Get-ChildItem -LiteralPath $Vst3 -Recurse -Filter $OrtDll | Select-Object -First 1
 if (-not $vstOrt) {
-    throw "VST3 中缺少 $OrtDll"
+    throw "VST3 is missing $OrtDll"
 }
 
 $exeVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $Standalone "OpenTune.exe")).ProductVersion
 if ($exeVersion -notlike "$Version*") {
-    throw "OpenTune.exe 产品版本 '$exeVersion' 与 CMakeLists.txt 的 $Version 不一致"
+    throw "OpenTune.exe product version '$exeVersion' does not match CMakeLists.txt version $Version"
 }
 
 $Stage = Join-Path $Root "dist\windows-stage"
@@ -62,6 +62,6 @@ if (Test-Path -LiteralPath $zip) {
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 & tar.exe -a -c -f $zip -C $Stage .
 if ($LASTEXITCODE -ne 0) {
-    throw "打包 zip 失败"
+    throw "Failed to create the zip package"
 }
-Write-Host "已生成 $zip"
+Write-Host "Created $zip"
