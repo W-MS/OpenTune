@@ -88,6 +88,32 @@ if [ ! -d "$EIGEN_DIR" ]; then
     mv "${THIRDPARTY_DIR}/eigen-${EIGEN_REV}" "$EIGEN_DIR"
 fi
 
+# NCols4 is fixed at 4, but discarded "if constexpr (NCols4 == 8)" branches still
+# index acc[4..7]. Apple Clang reports that as -Werror,-Warray-bounds.
+python3 - "${SOURCE_DIR}/onnxruntime/core/mlas/lib/sqnbitgemm_kernel_avx2_int8_blklen32.h" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+marker = "OpenTune suppresses clang -Warray-bounds"
+if marker in text:
+    raise SystemExit(0)
+anchor = '#include "sqnbitgemm_kernel_avx_common.h"\n'
+pragma = (
+    anchor
+    + "\n// "
+    + marker
+    + " in discarded NCols4 == 8 branches.\n"
+    + "#if defined(__clang__)\n"
+    + '#pragma clang diagnostic ignored "-Warray-bounds"\n'
+    + "#endif\n"
+)
+if anchor not in text:
+    raise SystemExit(f"MLAS header layout changed: {path}")
+path.write_text(text.replace(anchor, pragma, 1))
+PY
+
 build_arch() {
     local arch="$1"
     local build_dir="${BUILD_ROOT}/${arch}"
