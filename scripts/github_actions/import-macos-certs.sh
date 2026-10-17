@@ -2,11 +2,11 @@
 # Decode the Developer ID PKCS#12 secrets into a temporary keychain on this runner.
 set -euo pipefail
 
-: "${MACOS_APPLICATION_P12_BASE64:?缺少 Secret MACOS_APPLICATION_P12_BASE64}"
-: "${MACOS_APPLICATION_P12_PASSWORD:?缺少 Secret MACOS_APPLICATION_P12_PASSWORD}"
-: "${MACOS_INSTALLER_P12_BASE64:?缺少 Secret MACOS_INSTALLER_P12_BASE64}"
-: "${MACOS_INSTALLER_P12_PASSWORD:?缺少 Secret MACOS_INSTALLER_P12_PASSWORD}"
-: "${APPLE_TEAM_ID:?缺少 Secret APPLE_TEAM_ID}"
+: "${MACOS_APPLICATION_P12_BASE64:?Missing secret MACOS_APPLICATION_P12_BASE64}"
+: "${MACOS_APPLICATION_P12_PASSWORD:?Missing secret MACOS_APPLICATION_P12_PASSWORD}"
+: "${MACOS_INSTALLER_P12_BASE64:?Missing secret MACOS_INSTALLER_P12_BASE64}"
+: "${MACOS_INSTALLER_P12_PASSWORD:?Missing secret MACOS_INSTALLER_P12_PASSWORD}"
+: "${APPLE_TEAM_ID:?Missing secret APPLE_TEAM_ID}"
 
 APPLE_TEAM_ID="$(printf '%s' "${APPLE_TEAM_ID}" | tr -d '[:space:]')"
 KEYCHAIN_PATH="${RUNNER_TEMP}/opentune-signing.keychain-db"
@@ -19,7 +19,7 @@ decode_p12() {
     local magic
     magic="$(od -An -tx1 -N 1 "$2" | tr -d '[:space:]')"
     if [ "${magic}" != "30" ]; then
-        echo "解码后的证书不是 PKCS#12: $2"
+        echo "Decoded certificate is not PKCS#12: $2"
         exit 1
     fi
 }
@@ -42,18 +42,18 @@ SIGN_IDENTITY="$(security find-identity -v -p codesigning "${KEYCHAIN_PATH}" | s
 PKG_SIGN_IDENTITY="$(security find-identity -v "${KEYCHAIN_PATH}" | sed -n 's/.*"\(Developer ID Installer:[^"]*\)"/\1/p' | head -n 1)"
 
 if [ -z "${SIGN_IDENTITY}" ] || [ -z "${PKG_SIGN_IDENTITY}" ]; then
-    echo "钥匙串中没有同时找到 Developer ID Application 和 Developer ID Installer"
+    echo "Keychain is missing Developer ID Application or Developer ID Installer"
     security find-identity -v "${KEYCHAIN_PATH}" || true
     exit 1
 fi
 
 case "${SIGN_IDENTITY}" in
     *"($APPLE_TEAM_ID)"*) ;;
-    *) echo "Application 证书的 Team ID 与 APPLE_TEAM_ID 不一致"; exit 1 ;;
+    *) echo "Application certificate Team ID does not match APPLE_TEAM_ID"; exit 1 ;;
 esac
 case "${PKG_SIGN_IDENTITY}" in
     *"($APPLE_TEAM_ID)"*) ;;
-    *) echo "Installer 证书的 Team ID 与 APPLE_TEAM_ID 不一致"; exit 1 ;;
+    *) echo "Installer certificate Team ID does not match APPLE_TEAM_ID"; exit 1 ;;
 esac
 
 echo "Application: ${SIGN_IDENTITY}"
