@@ -11,7 +11,7 @@ if [ ! -f JUCE-master/CMakeLists.txt ]; then
     rm -rf JUCE-master
     git clone --depth 1 https://github.com/juce-framework/JUCE.git JUCE-master
 fi
-python3 .github/scripts/patch-juce-ara.py
+python3 scripts/github_actions/patch-juce-ara.py
 
 if [ ! -d ThirdParty/ARA_SDK-releases-2.3.0/.git ]; then
     rm -rf ThirdParty/ARA_SDK-releases-2.3.0
@@ -26,7 +26,7 @@ if [ ! -f ThirdParty/soundtouch-2.3.3/source/SoundTouch/SoundTouch.cpp ]; then
         https://codeberg.org/soundtouch/soundtouch.git ThirdParty/soundtouch-2.3.3
 fi
 
-python3 .github/scripts/fetch-models.py
+python3 scripts/github_actions/fetch-models.py
 
 test -f Installer/NOTICE.md
 test -f ThirdParty/r8brain-free-src-master/r8bbase.h

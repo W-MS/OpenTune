@@ -1,9 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # OpenTune - macOS 打包脚本
-# 功能：构建 + 签名 + 生成 DMG / PKG 安装包
-# 未设置 SIGN_IDENTITY 时使用 ad-hoc。CI 将其设为 Developer ID Application，
-# 并用 PKG_SIGN_IDENTITY（Developer ID Installer）签名 PKG。
+# 功能：构建 + ad-hoc 签名 + 生成 DMG / PKG 安装包
 # 用法：
 #   ./scripts/package-macos.sh                     # 构建 Universal2 并生成 PKG
 #   ./scripts/package-macos.sh --format dmg        # 生成 Universal2 DMG
@@ -21,8 +19,7 @@ PKG_BUILD_DIR="${ROOT_DIR}/dist/pkg-build"
 APP_NAME="OpenTune"
 BUNDLE_ID="com.daya.opentune"
 VERSION=$(sed -n 's/.*project(OpenTune VERSION \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "${ROOT_DIR}/CMakeLists.txt")
-SIGN_IDENTITY="${SIGN_IDENTITY:--}"
-ENTITLEMENTS="${ROOT_DIR}/scripts/macos-entitlements.plist"
+SIGN_IDENTITY="-"
 
 # ── 参数解析 ──────────────────────────────────────────────────────────────────
 SKIP_BUILD=false
@@ -117,22 +114,6 @@ if [ "$FORMAT" != "dmg" ]; then
     fi
 fi
 
-if [ "${SIGN_IDENTITY}" != "-" ]; then
-    if [ ! -f "${ENTITLEMENTS}" ]; then
-        echo "❌ 缺少 entitlements: ${ENTITLEMENTS}"
-        exit 1
-    fi
-    if [ "$FORMAT" != "dmg" ] && [ -z "${PKG_SIGN_IDENTITY:-}" ]; then
-        echo "❌ 已设置 SIGN_IDENTITY，生成 PKG 还需要 PKG_SIGN_IDENTITY（Developer ID Installer）"
-        exit 1
-    fi
-    if ! security find-identity -v -p codesigning | grep -F -- "${SIGN_IDENTITY}" >/dev/null; then
-        echo "❌ 钥匙串中找不到 Developer ID Application: ${SIGN_IDENTITY}"
-        security find-identity -v -p codesigning || true
-        exit 1
-    fi
-fi
-
 # ── 构建 ──────────────────────────────────────────────────────────────────────
 if [ "$SKIP_BUILD" = false ]; then
     echo "▶ 构建 OpenTune ${VERSION} (Universal2: x86_64 + arm64, Release, Ninja)"
@@ -142,13 +123,8 @@ if [ "$SKIP_BUILD" = false ]; then
         rm -rf "${BUILD_DIR}"
     fi
 
-    if [ -n "${CI:-}" ]; then
-        cmake --preset "${PRESET}" --warn-uninitialized
-        cmake --build "${BUILD_DIR}" --parallel
-    else
-        cmake --preset "${PRESET}" --warn-uninitialized 2>&1 | tail -5
-        cmake --build "${BUILD_DIR}" --parallel 2>&1 | tail -10
-    fi
+    cmake --preset "${PRESET}" --warn-uninitialized 2>&1 | tail -5
+    cmake --build "${BUILD_DIR}" --parallel 2>&1 | tail -10
 
     echo "✅ 构建完成"
 fi
@@ -658,21 +634,12 @@ fi
 cp -R "${AU_SRC}" "${AU_DEST}"
 echo "  ✓ ${AU_DEST}"
 
-# ── 签名 ──────────────────────────────────────────────────────────────────────
-# 复制后仍然有效的 Developer ID / ad-hoc 签名不能再用 ad-hoc 覆盖。
-sign_if_needed() {
-    local target="$1"
-    local label="$2"
-    if codesign --verify --deep --strict "${target}" >/dev/null 2>&1; then
-        echo "  ✓ ${label} 签名有效"
-        return
-    fi
-    echo "▶ Ad-hoc 签名 ${label}"
-    codesign --force --deep --sign - "${target}"
-    echo "  ✓ ${label} 已签名"
-}
-sign_if_needed "${APP_DEST}" "${APP_NAME}.app"
-sign_if_needed "${VST3_DEST}" "${APP_NAME}.vst3"
+# ── Ad-hoc 签名 ──────────────────────────────────────────────────────────────
+echo "▶ Ad-hoc 签名（绕过 Gatekeeper）"
+codesign --force --deep --sign - "${APP_DEST}" 2>/dev/null
+echo "  ✓ ${APP_NAME}.app 已签名"
+codesign --force --deep --sign - "${VST3_DEST}" 2>/dev/null
+echo "  ✓ ${APP_NAME}.vst3 已签名"
 codesign --verify --deep --strict --verbose=2 "${AU_DEST}"
 echo "  ✓ ${APP_NAME}.component 签名有效"
 
@@ -757,21 +724,12 @@ fi
 cp -R "${AU_SRC}" "${AU_DEST}"
 echo "  ✓ ${AU_DEST}"
 
-# ── Code signing ─────────────────────────────────────────────────────────────
-# Keep a Developer ID or ad-hoc signature that is still valid after copying.
-sign_if_needed() {
-    local target="$1"
-    local label="$2"
-    if codesign --verify --deep --strict "${target}" >/dev/null 2>&1; then
-        echo "  ✓ ${label} signature is valid"
-        return
-    fi
-    echo "▶ Ad-hoc signing ${label}"
-    codesign --force --deep --sign - "${target}"
-    echo "  ✓ ${label} signed"
-}
-sign_if_needed "${APP_DEST}" "${APP_NAME}.app"
-sign_if_needed "${VST3_DEST}" "${APP_NAME}.vst3"
+# ── Ad-hoc code signing ──────────────────────────────────────────────────────
+echo "▶ Ad-hoc signing (bypass Gatekeeper)"
+codesign --force --deep --sign - "${APP_DEST}" 2>/dev/null
+echo "  ✓ ${APP_NAME}.app signed"
+codesign --force --deep --sign - "${VST3_DEST}" 2>/dev/null
+echo "  ✓ ${APP_NAME}.vst3 signed"
 codesign --verify --deep --strict --verbose=2 "${AU_DEST}"
 echo "  ✓ ${APP_NAME}.component signature valid"
 
@@ -820,55 +778,27 @@ for model in hifigan.onnx fcpe.onnx; do
     fi
 done
 
-# ── 在最终双架构产物合并、复制和校验后签名 ────────────────────────────────────
-sign_developer_id_bundle() {
+# ── 在最终双架构产物合并、复制和校验后进行 ad-hoc 签名 ─────────────────────────
+echo "▶ Ad-hoc 签名所有 bundle"
+codesign --force --deep --sign - "${STAGING}/${APP_NAME}.app" 2>/dev/null
+echo "  ✓ ${APP_NAME}.app"
+codesign --force --deep --sign - "${STAGING}/${APP_NAME}.vst3" 2>/dev/null
+echo "  ✓ ${APP_NAME}.vst3"
+sign_au_component() {
     local bundle="$1"
-    local label="$2"
-    local path
-    local main="${bundle}/Contents/MacOS/${APP_NAME}"
-
-    echo "▶ Developer ID 签名 ${label}"
-    while IFS= read -r -d '' path; do
-        if [[ "$(file -b "${path}")" != *Mach-O* ]] || [ "${path}" = "${main}" ]; then
-            continue
-        fi
-        codesign --force --timestamp --options runtime --sign "${SIGN_IDENTITY}" "${path}" || exit 1
-    done < <(find "${bundle}" -type f -print0)
-
-    codesign --force --timestamp --options runtime \
-        --entitlements "${ENTITLEMENTS}" \
-        --sign "${SIGN_IDENTITY}" \
-        "${bundle}"
+    local binary="${bundle}/Contents/MacOS/${APP_NAME}"
+    local dependency library
+    dependency="$(otool -L "${binary}" | awk '$1 ~ /^@rpath\/libonnxruntime\.[0-9].*\.dylib$/ { print $1; exit }')"
+    library="${bundle}/Contents/Frameworks/${dependency#@rpath/}"
+    codesign --force --sign - "${library}"
+    codesign --force --sign - "${bundle}"
+    codesign --verify --strict --verbose=2 "${library}"
     codesign --verify --deep --strict --verbose=2 "${bundle}"
-    echo "  ✓ ${label}"
 }
-
-if [ "${SIGN_IDENTITY}" = "-" ]; then
-    echo "▶ Ad-hoc 签名所有 bundle"
-    codesign --force --deep --sign - "${STAGING}/${APP_NAME}.app" 2>/dev/null
-    echo "  ✓ ${APP_NAME}.app"
-    codesign --force --deep --sign - "${STAGING}/${APP_NAME}.vst3" 2>/dev/null
-    echo "  ✓ ${APP_NAME}.vst3"
-    sign_au_component() {
-        local bundle="$1"
-        local binary="${bundle}/Contents/MacOS/${APP_NAME}"
-        local dependency library
-        dependency="$(otool -L "${binary}" | awk '$1 ~ /^@rpath\/libonnxruntime\.[0-9].*\.dylib$/ { print $1; exit }')"
-        library="${bundle}/Contents/Frameworks/${dependency#@rpath/}"
-        codesign --force --sign - "${library}"
-        codesign --force --sign - "${bundle}"
-        codesign --verify --strict --verbose=2 "${library}"
-        codesign --verify --deep --strict --verbose=2 "${bundle}"
-    }
-    sign_au_component "${STAGING}/${APP_NAME}.component"
-    echo "  ✓ ${APP_NAME}.component"
-    codesign --verify --deep --strict --verbose=2 "${STAGING}/${APP_NAME}.app"
-    codesign --verify --deep --strict --verbose=2 "${STAGING}/${APP_NAME}.vst3"
-else
-    sign_developer_id_bundle "${STAGING}/${APP_NAME}.app" "${APP_NAME}.app"
-    sign_developer_id_bundle "${STAGING}/${APP_NAME}.vst3" "${APP_NAME}.vst3"
-    sign_developer_id_bundle "${STAGING}/${APP_NAME}.component" "${APP_NAME}.component"
-fi
+sign_au_component "${STAGING}/${APP_NAME}.component"
+echo "  ✓ ${APP_NAME}.component"
+codesign --verify --deep --strict --verbose=2 "${STAGING}/${APP_NAME}.app"
+codesign --verify --deep --strict --verbose=2 "${STAGING}/${APP_NAME}.vst3"
 
 # ── 统计 staging 大小 ─────────────────────────────────────────────────────────
 STAGING_SIZE=$(du -sh "${STAGING}" | cut -f1)
@@ -907,10 +837,6 @@ if [ "$FORMAT" != "pkg" ]; then
     rm -f "${DMG_PATH}"
 
     # 直接从 staging 创建压缩只读 DMG（跳过 AppleScript 美化，终端环境不稳定）
-    hdiutil_log="/dev/null"
-    if [ -n "${CI:-}" ]; then
-        hdiutil_log="/dev/stderr"
-    fi
     hdiutil create \
         -srcfolder "${STAGING}" \
         -volname "${APP_NAME} ${VERSION} Universal2" \
@@ -919,13 +845,7 @@ if [ "$FORMAT" != "pkg" ]; then
         -format UDZO \
         -imagekey zlib-level=9 \
         "${DMG_PATH}" \
-        2>"${hdiutil_log}"
-
-    if [ "${SIGN_IDENTITY}" != "-" ]; then
-        codesign --force --timestamp --sign "${SIGN_IDENTITY}" "${DMG_PATH}"
-        codesign --verify --verbose=2 "${DMG_PATH}"
-        echo "  ✓ DMG 已使用 Developer ID Application 签名"
-    fi
+        2>/dev/null
 
     # ── 最终结果 ──
     DMG_SIZE=$(du -sh "${DMG_PATH}" | cut -f1)

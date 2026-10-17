@@ -36,7 +36,7 @@ $Python = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $Python) {
     throw "虚拟机上没有 python，无法应用 JUCE ARA 补丁或下载模型"
 }
-Invoke-Checked $Python @((Join-Path $Root ".github\scripts\patch-juce-ara.py"))
+Invoke-Checked $Python @((Join-Path $Root "scripts\github_actions\patch-juce-ara.py"))
 
 $AraDir = Join-Path $Root "ThirdParty\ARA_SDK-releases-2.3.0"
 if (-not (Test-Path -LiteralPath (Join-Path $AraDir ".git"))) {
@@ -105,7 +105,7 @@ if (Test-Path -LiteralPath $ortTarget) {
 }
 Move-Item -LiteralPath $packageRoot -Destination $ortTarget
 
-Invoke-Checked $Python @((Join-Path $Root ".github\scripts\fetch-models.py"))
+Invoke-Checked $Python @((Join-Path $Root "scripts\github_actions\fetch-models.py"))
 
 $required = @(
     "ThirdParty\onnxruntime-win-x64-1.24.4\include\onnxruntime_cxx_api.h",

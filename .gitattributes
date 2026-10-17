@@ -2,4 +2,4 @@
 *.sh text eol=lf
 *.command text eol=lf
 .github/** text eol=lf
-scripts/*.plist text eol=lf
+scripts/github_actions/** text eol=lf
