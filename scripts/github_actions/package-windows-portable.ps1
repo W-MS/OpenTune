@@ -1,5 +1,6 @@
 # Pack the Windows Release layout described in INSTALL.md.
-# The Inno Setup scripts are not in this repository, so the CI artifact is the portable zip.
+# The Inno Setup scripts are not in this repository, so CI publishes this portable layout.
+# Actions uploads the staged directory; uploading the zip as well would wrap it in a second zip.
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $cmake = Get-Content -LiteralPath (Join-Path $Root "CMakeLists.txt") -Raw
@@ -60,8 +61,20 @@ if (Test-Path -LiteralPath $zip) {
     Remove-Item -LiteralPath $zip -Force
 }
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
-& tar.exe -a -c -f $zip -C $Stage .
+# Passing "." makes bsdtar store every name as "./file", which archives show as ".\".
+$names = @(Get-ChildItem -LiteralPath $Stage -Force | ForEach-Object { $_.Name })
+if ($names.Count -eq 0) {
+    throw "Windows staging directory is empty"
+}
+& tar.exe -a -c -f $zip -C $Stage -- @names
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to create the zip package"
+}
+$prefixed = & tar.exe -tf $zip | Where-Object { $_ -like "./*" -or $_ -like ".\*" }
+if ($prefixed) {
+    throw "Zip entries must not start with ./ : $($prefixed -join ', ')"
+}
+if ($env:GITHUB_OUTPUT) {
+    [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$Version`n")
 }
 Write-Host "Created $zip"

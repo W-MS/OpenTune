@@ -164,14 +164,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package the portable build
+        id: package
         shell: powershell
         run: scripts/github_actions/package-windows-portable.ps1
 
       - name: Upload the Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: OpenTune-Windows-x64
-          path: dist/*.zip
+          name: OpenTune-${{ steps.package.outputs.version }}-Windows-x64
+          path: dist/windows-stage/**
           if-no-files-found: error
 
   publish:
@@ -186,17 +187,46 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true
 
       - name: Create or update the Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${GITHUB_REF_NAME}"
+          shopt -s nullglob
+          assets=()
+          for file in artifacts/OpenTune-macOS-Universal2/*; do
+            if [ -f "${file}" ]; then
+              assets+=("${file}")
+            fi
+          done
+          for dir in artifacts/OpenTune-*-Windows-x64; do
+            if [ ! -d "${dir}" ]; then
+              continue
+            fi
+            archive="artifacts/$(basename "${dir}").zip"
+            python3 - "${dir}" "${archive}" <<'PY'
+          import pathlib
+          import sys
+          import zipfile
+
+          root = pathlib.Path(sys.argv[1])
+          dest = pathlib.Path(sys.argv[2])
+          with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+              for path in sorted(root.rglob("*")):
+                  if path.is_file():
+                      archive.write(path, path.relative_to(root).as_posix())
+          PY
+            assets+=("${archive}")
+          done
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No release assets found"
+            exit 1
+          fi
           if gh release view "${tag}" >/dev/null 2>&1; then
-            gh release upload "${tag}" artifacts/* --clobber
+            gh release upload "${tag}" "${assets[@]}" --clobber
           else
-            gh release create "${tag}" artifacts/* \
+            gh release create "${tag}" "${assets[@]}" \
               --title "OpenTune ${tag}" \
               --notes "The macOS Universal2 packages are signed with Developer ID and notarized. The Windows package is a portable zip containing Standalone, its runtime libraries, and VST3."
           fi
