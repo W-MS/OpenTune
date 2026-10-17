@@ -109,7 +109,7 @@ build_arch() {
             CMAKE_POLICY_VERSION_MINIMUM=3.5 \
             onnxruntime_USE_PREINSTALLED_EIGEN=ON \
             eigen_SOURCE_PATH="$EIGEN_DIR" \
-            CMAKE_CXX_FLAGS="-Wno-deprecated-literal-operator -Wno-dangling-capture"
+            CMAKE_CXX_FLAGS="-Wno-unknown-warning-option -Wno-deprecated-literal-operator -Wno-dangling-capture"
 
     library="$(find "$build_dir" -type f \
         \( -name "libonnxruntime.${VERSION}.dylib" -o -name "libonnxruntime.dylib" \) \
