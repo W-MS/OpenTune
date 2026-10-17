@@ -23,7 +23,7 @@ git clone -b standalone https://github.com/YuFeng926/OpenTune.git
 cd OpenTune
 ```
 
-> **Important: All third-party dependencies are not included in the Git repository** (`JUCE-master/` and `ThirdParty/` are added to `.gitignore` to avoid hundreds of MB of binary blobs in history). Please follow the steps below to obtain and place them in the specified paths.
+> **Important: Except for the r8brain source included in this repository, build dependencies and models must be obtained from the third-party sources linked below** and placed at the specified paths.
 >
 > **CMake auto-detection:** After dependencies are placed according to the specifications below, no `-D` overrides are needed during configuration. CMakeLists.txt will automatically fall back to the bundled default paths under `ThirdParty/<dep>/` when cache paths are invalid.
 
@@ -50,12 +50,14 @@ cd ..
 > After cloning the SDK, change that line to `#include <ARA_Library/Utilities/ARAChannelFormat.cpp>`,
 > otherwise compiling `juce_audio_plugin_client_ARA.cpp` fails with C1083 (include file not found).
 
-### 3. r8brain Resampler
+### 3. r8brain and SoundTouch
+
+`ThirdParty/r8brain-free-src-master/` is tracked in the Git repository; no separate download or clone is needed.
+
+Obtain SoundTouch 2.3.3 from the [official source repository](https://codeberg.org/soundtouch/soundtouch) and clone it to the path expected by CMake:
 
 ```bash
-cd ThirdParty
-git clone https://github.com/avaneev/r8brain-free-src.git r8brain-free-src-master
-cd ..
+git clone --branch 2.3.3 https://codeberg.org/soundtouch/soundtouch.git ThirdParty/soundtouch-2.3.3
 ```
 
 ### 4. ONNX Runtime (Windows v1.24.4 / macOS v1.20.0 universal2)
@@ -146,13 +148,30 @@ ThirdParty/microsoft.direct3d.d3d12.1.619.5/
 
 Model files need to be placed in specified locations under the project root directory and will be automatically copied to the output directory during build:
 
-| Model | Source Path | Build Location |
-|-------|-------------|----------------|
-| FCPE (F0 extraction) | `models/fcpe.onnx` | `<output>/models/fcpe.onnx` |
-| PC-NSF HifiGAN (vocoder) | `pc_nsf_hifigan_44.1k_ONNX/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` | `<output>/models/hifigan.onnx` |
-| GAME note generator (optional) | `models/GAME/` | `<output>/models/GAME/` |
+| Model | Official weight source | Local source path → build location |
+|-------|------------------------|-----------------------------------|
+| FCPE (F0 extraction) | [KCKT0112/HachiTune: `fcpe.onnx` (pinned commit)](https://github.com/KCKT0112/HachiTune/blob/d68808c37dede264d80d2d1050dce27af34ad654/Resources/models/fcpe.onnx); upstream model author: [CNChTu/FCPE](https://github.com/CNChTu/FCPE) | `models/fcpe.onnx` → `<output>/models/fcpe.onnx` |
+| PC-NSF HifiGAN (vocoder) | [OpenVPI official 2025.02 release ZIP](https://github.com/openvpi/vocoders/releases/download/pc-nsf-hifigan-44.1k-hop512-128bin-2025.02/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.zip) | `pc_nsf_hifigan_44.1k_ONNX/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` → `<output>/models/hifigan.onnx` |
+| GAME note generator (optional) | [OpenVPI official GAME 1.0.3 small ONNX](https://github.com/openvpi/GAME/releases/download/v1.0.3/GAME-1.0.3-small-onnx.zip) | `models/GAME/` → `<output>/models/GAME/` |
 
-> Model files are not included in the Git repository. Please download from the [Releases](https://github.com/YuFeng926/OpenTune/releases) page or contact the maintainer. The GAME model bundle is optional; when absent, the runtime falls back to the Legacy workflow.
+> GAME and HifiGAN use OpenVPI's official releases. OpenTune's current `models/fcpe.onnx` is byte-for-byte identical to the HachiTune file linked above (SHA-256: `013b507acd406de122b61ee497300ac6be082511101bc2136b886e48d9737e5d`). CNChTu is the upstream FCPE author and provides a `.pt` checkpoint, but HachiTune does not document how that checkpoint was exported to this ONNX file. The GAME model bundle is optional; when absent, the runtime falls back to the Legacy workflow.
+
+### External Dependencies Required by a macOS Buildbot
+
+Except for the r8brain source included in the repository, obtain the following dependencies and models from the third-party sources listed in the table. ONNX Runtime is built from its official source by the script:
+
+| Path | Required? | Setup / purpose |
+|------|----------|-----------------|
+| `JUCE-master/` | Yes | Clone JUCE at the repository root; apply the ARA 2.3.0 include-path edit to `juce_audio_plugin_client_ARA.cpp` described above. |
+| `ThirdParty/ARA_SDK-releases-2.3.0/` | Yes | Clone the ARA SDK `releases/2.3.0` branch with submodules. |
+| `ThirdParty/r8brain-free-src-master/` | Yes | Included in the Git repository; no separate download is needed. |
+| `ThirdParty/soundtouch-2.3.3/` | Yes | Clone the `2.3.3` tag from the official SoundTouch repository linked above. |
+| `ThirdParty/onnxruntime-osx-universal2-1.20.0/` | Yes | Generate it with `./scripts/build-onnxruntime-macos.sh`. The script builds from [Microsoft ONNX Runtime v1.20.0](https://github.com/microsoft/onnxruntime/tree/v1.20.0) and fetches Eigen at [this official repository revision](https://gitlab.com/libeigen/eigen/-/archive/e7248b26a1ed53fa030c5c459f7ea095dfd276ac/eigen-e7248b26a1ed53fa030c5c459f7ea095dfd276ac.zip), then builds arm64 and x86_64 separately. The packaging script does not invoke this builder. |
+| `models/fcpe.onnx` | Yes | Download from this [pinned KCKT0112/HachiTune commit](https://raw.githubusercontent.com/KCKT0112/HachiTune/d68808c37dede264d80d2d1050dce27af34ad654/Resources/models/fcpe.onnx); verify SHA-256 `013b507acd406de122b61ee497300ac6be082511101bc2136b886e48d9737e5d`. The upstream model author is [CNChTu/FCPE](https://github.com/CNChTu/FCPE). |
+| `pc_nsf_hifigan_44.1k_ONNX/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` | Yes | Download and extract the OpenVPI official release ZIP linked above; the build copies it to `models/hifigan.onnx`. |
+| `models/GAME/` | No | Download and extract the OpenVPI GAME 1.0.3 small ONNX ZIP linked above; the runtime falls back to the Legacy workflow if absent. |
+
+Recommended macOS Buildbot order: obtain the required dependencies and models above from their third-party sources; run `./scripts/build-onnxruntime-macos.sh` if the ORT package is not cached; then run `./scripts/package-macos.sh --format pkg`. The packaging script configures and builds Universal2, validates the artifacts, and creates the PKG. `Installer/NOTICE.md` is included in the repository.
 
 ## Complete Directory Structure Overview
 

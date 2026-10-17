@@ -23,7 +23,7 @@ git clone -b standalone https://github.com/YuFeng926/OpenTune.git
 cd OpenTune
 ```
 
-> **重要：所有三方依赖均不在 Git 仓库中**（`JUCE-master/` 与 `ThirdParty/` 已加入 `.gitignore`，避免数百 MB 二进制 blob 进入历史）。请按下列步骤分别获取并放置到指定路径。
+> **重要：除仓库已提供的 r8brain 外，其他构建依赖和模型均需从下方列出的第三方来源获取**，并放置到指定路径。
 >
 > **CMake 自动检测：** 依赖按下方规范放置后，配置时**无需任何 `-D` 覆盖**。CMakeLists.txt 在缓存路径失效时会自动 fallback 到 `ThirdParty/<dep>/` 的 bundled 默认路径。
 
@@ -49,12 +49,14 @@ cd ..
 > 克隆 SDK 后必须把该行改为 `#include <ARA_Library/Utilities/ARAChannelFormat.cpp>`，
 > 否则编译 `juce_audio_plugin_client_ARA.cpp` 时报 C1083 找不到包含文件。
 
-### 3. r8brain Resampler
+### 3. r8brain 与 SoundTouch
+
+`ThirdParty/r8brain-free-src-master/` 已跟踪在 Git 仓库中，clone OpenTune 后无需另行下载或克隆。
+
+SoundTouch 2.3.3 从[官方源码仓库](https://codeberg.org/soundtouch/soundtouch)获取，克隆到 CMake 要求的目录：
 
 ```bash
-cd ThirdParty
-git clone https://github.com/avaneev/r8brain-free-src.git r8brain-free-src-master
-cd ..
+git clone --branch 2.3.3 https://codeberg.org/soundtouch/soundtouch.git ThirdParty/soundtouch-2.3.3
 ```
 
 ### 4. ONNX Runtime（Windows v1.24.4 / macOS v1.20.0 universal2）
@@ -153,13 +155,30 @@ ThirdParty/microsoft.direct3d.d3d12.1.619.5/
 
 模型文件需放在项目根目录下的指定位置，构建时会自动复制到输出目录：
 
-| 模型 | 源路径 | 构建后位置 |
-|------|--------|-----------|
-| FCPE (F0 提取) | `models/fcpe.onnx` | `<output>/models/fcpe.onnx` |
-| PC-NSF HifiGAN (声码器) | `pc_nsf_hifigan_44.1k_ONNX/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` | `<output>/models/hifigan.onnx` |
-| GAME 音符生成（可选） | `models/GAME/` | `<output>/models/GAME/` |
+| 模型 | 官方权重来源 | 本地源路径 → 构建后位置 |
+|------|--------------|------------------------|
+| FCPE (F0 提取) | [KCKT0112/HachiTune：`fcpe.onnx`（固定提交）](https://github.com/KCKT0112/HachiTune/blob/d68808c37dede264d80d2d1050dce27af34ad654/Resources/models/fcpe.onnx)；上游模型作者为 [CNChTu/FCPE](https://github.com/CNChTu/FCPE) | `models/fcpe.onnx` → `<output>/models/fcpe.onnx` |
+| PC-NSF HifiGAN (声码器) | [OpenVPI 官方 2025.02 release ZIP](https://github.com/openvpi/vocoders/releases/download/pc-nsf-hifigan-44.1k-hop512-128bin-2025.02/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.zip) | `pc_nsf_hifigan_44.1k_ONNX/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` → `<output>/models/hifigan.onnx` |
+| GAME 音符生成（可选） | [OpenVPI 官方 GAME 1.0.3 small ONNX](https://github.com/openvpi/GAME/releases/download/v1.0.3/GAME-1.0.3-small-onnx.zip) | `models/GAME/` → `<output>/models/GAME/` |
 
-> 模型文件不包含在 Git 仓库中，请从 [Releases](https://github.com/YuFeng926/OpenTune/releases) 页面下载或联系维护者获取。GAME 模型包为可选，缺失时运行时回退到 Legacy 流程。
+> GAME 与 HifiGAN 使用 OpenVPI 官方发布的权重。OpenTune 当前 `models/fcpe.onnx` 与上述 HachiTune 文件逐字节一致（SHA-256：`013b507acd406de122b61ee497300ac6be082511101bc2136b886e48d9737e5d`）；CNChTu 是 FCPE 上游作者，提供 `.pt` checkpoint，但该 checkpoint 到此 ONNX 文件的导出过程未在 HachiTune 仓库中说明。GAME 模型包可选，缺失时运行时回退到 Legacy 流程。
+
+### macOS Buildbot 所需的外部依赖
+
+除已随仓库提供的 r8brain 外，下列依赖和模型需从表中列出的第三方来源获取；ONNX Runtime 则由脚本从其官方源码构建：
+
+| 路径 | 必需性 | 准备方式 / 用途 |
+|------|--------|----------------|
+| `JUCE-master/` | 必需 | 克隆 JUCE 到仓库根目录；按上文 ARA 2.3.0 说明修改 `juce_audio_plugin_client_ARA.cpp` 的 include 路径。 |
+| `ThirdParty/ARA_SDK-releases-2.3.0/` | 必需 | 克隆 ARA SDK `releases/2.3.0` 分支并包含子模块。 |
+| `ThirdParty/r8brain-free-src-master/` | 必需 | 已随 Git 仓库提供，无需另行下载。 |
+| `ThirdParty/soundtouch-2.3.3/` | 必需 | 从上文链接的 SoundTouch 官方仓库克隆 `2.3.3` tag。 |
+| `ThirdParty/onnxruntime-osx-universal2-1.20.0/` | 必需 | 运行 `./scripts/build-onnxruntime-macos.sh` 生成。该脚本从 [Microsoft ONNX Runtime v1.20.0](https://github.com/microsoft/onnxruntime/tree/v1.20.0) 源码构建，并从 [Eigen 官方仓库固定 revision](https://gitlab.com/libeigen/eigen/-/archive/e7248b26a1ed53fa030c5c459f7ea095dfd276ac/eigen-e7248b26a1ed53fa030c5c459f7ea095dfd276ac.zip) 获取 Eigen；分别构建 arm64、x86_64。打包脚本不会调用此脚本。 |
+| `models/fcpe.onnx` | 必需 | 从 [KCKT0112/HachiTune 固定提交](https://raw.githubusercontent.com/KCKT0112/HachiTune/d68808c37dede264d80d2d1050dce27af34ad654/Resources/models/fcpe.onnx) 下载；核对 SHA-256 为 `013b507acd406de122b61ee497300ac6be082511101bc2136b886e48d9737e5d`。模型上游作者为 [CNChTu/FCPE](https://github.com/CNChTu/FCPE)。 |
+| `pc_nsf_hifigan_44.1k_ONNX/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` | 必需 | 下载并解压上方链接的 OpenVPI 官方 release ZIP；构建时复制为 `models/hifigan.onnx`。 |
+| `models/GAME/` | 可选 | 下载并解压上方链接的 OpenVPI GAME 1.0.3 small ONNX ZIP；缺失时回退到 Legacy 流程。 |
+
+推荐的 macOS Buildbot 顺序：从第三方来源获取以上必需依赖和模型；依赖未缓存时运行 `./scripts/build-onnxruntime-macos.sh`；随后运行 `./scripts/package-macos.sh --format pkg`。打包脚本会配置并构建 Universal2，再验证和生成 PKG。`Installer/NOTICE.md` 随仓库提供。
 
 ## 完整目录结构概览
 
