@@ -32,7 +32,7 @@ FORMAT="pkg"
 PREV_ARG=""
 for arg in "$@"; do
     if [ "${PREV_ARG}" = "--format" ] && [[ "${arg}" == -* ]]; then
-        echo "❌ --format 缺少值（仅支持 dmg|pkg|both）"
+        echo "Missing value for --format (expected dmg, pkg, or both)"
         exit 1
     fi
 
@@ -52,14 +52,14 @@ for arg in "$@"; do
             FORMAT="both"
             ;;
         --format=*)
-            echo "❌ 未知打包格式: ${arg#--format=}（仅支持 dmg|pkg|both）"
+            echo "Unknown package format: ${arg#--format=} (expected dmg, pkg, or both)"
             exit 1
             ;;
         -h|--help)
-            echo "用法: $0 [--format dmg|pkg|both] [--skip-build] [--clean]"
-            echo "  --format FMT   指定打包格式: dmg、pkg 或 both（默认 pkg）"
-            echo "  --skip-build   跳过构建，直接打包已有产物"
-            echo "  --clean        清空构建目录后重新构建"
+            echo "Usage: $0 [--format dmg|pkg|both] [--skip-build] [--clean]"
+            echo "  --format FMT   Package format: dmg, pkg, or both (default pkg)"
+            echo "  --skip-build   Package existing build outputs"
+            echo "  --clean        Delete the build directory before building"
             exit 0
             ;;
         *)
@@ -67,19 +67,19 @@ for arg in "$@"; do
             if [ "${PREV_ARG:-}" = "--format" ]; then
                 case "$arg" in
                     dmg|pkg|both) FORMAT="$arg" ;;
-                    *) echo "❌ 未知打包格式: $arg（仅支持 dmg|pkg|both）"; exit 1 ;;
+                    *) echo "Unknown package format: $arg (expected dmg, pkg, or both)"; exit 1 ;;
                 esac
                 PREV_ARG=""
                 continue
             fi
-            echo "未知参数: $arg"; exit 1
+            echo "Unknown argument: $arg"; exit 1
             ;;
     esac
     PREV_ARG="$arg"
 done
 
 if [ "${PREV_ARG}" = "--format" ]; then
-    echo "❌ --format 缺少值（仅支持 dmg|pkg|both）"
+    echo "Missing value for --format (expected dmg, pkg, or both)"
     exit 1
 fi
 
@@ -100,7 +100,7 @@ PKG_NAME="${APP_NAME}-${VERSION}-macOS-${DMG_ARCH_LABEL}"
 # ── 工具检查 ──────────────────────────────────────────────────────────────────
 for cmd in cmake ninja hdiutil codesign xattr otool lipo file; do
     if ! command -v "$cmd" &>/dev/null; then
-        echo "❌ 缺少工具: $cmd"
+        echo "Missing tool: $cmd"
         exit 1
     fi
 done
@@ -108,27 +108,27 @@ done
 if [ "$FORMAT" != "dmg" ]; then
     for cmd in pkgbuild productbuild; do
         if ! command -v "$cmd" &>/dev/null; then
-            echo "❌ 缺少工具: $cmd（生成 PKG 需要 macOS 自带命令行工具）"
+            echo "Missing tool: $cmd (PKG builds need the macOS command line tools)"
             exit 1
         fi
     done
     if [ ! -f "${ROOT_DIR}/Installer/NOTICE.md" ]; then
-        echo "❌ 生成 PKG 需要文案文件: Installer/NOTICE.md"
+        echo "PKG builds need Installer/NOTICE.md"
         exit 1
     fi
 fi
 
 if [ "${SIGN_IDENTITY}" != "-" ]; then
     if [ ! -f "${ENTITLEMENTS}" ]; then
-        echo "❌ 缺少 entitlements: ${ENTITLEMENTS}"
+        echo "Missing entitlements: ${ENTITLEMENTS}"
         exit 1
     fi
     if [ "$FORMAT" != "dmg" ] && [ -z "${PKG_SIGN_IDENTITY:-}" ]; then
-        echo "❌ 已设置 SIGN_IDENTITY，生成 PKG 还需要 PKG_SIGN_IDENTITY（Developer ID Installer）"
+        echo "SIGN_IDENTITY is set, but PKG builds also need PKG_SIGN_IDENTITY (Developer ID Installer)"
         exit 1
     fi
     if ! security find-identity -v -p codesigning | grep -F -- "${SIGN_IDENTITY}" >/dev/null; then
-        echo "❌ 钥匙串中找不到 Developer ID Application: ${SIGN_IDENTITY}"
+        echo "Developer ID Application was not found in the keychain: ${SIGN_IDENTITY}"
         security find-identity -v -p codesigning || true
         exit 1
     fi
@@ -136,10 +136,10 @@ fi
 
 # ── 构建 ──────────────────────────────────────────────────────────────────────
 if [ "$SKIP_BUILD" = false ]; then
-    echo "▶ 构建 OpenTune ${VERSION} (Universal2: x86_64 + arm64, Release, Ninja)"
+    echo "Building OpenTune ${VERSION} (Universal2: x86_64 + arm64, Release, Ninja)"
 
     if [ "$CLEAN" = true ] && [ -d "${BUILD_DIR}" ]; then
-        echo "  清空构建目录..."
+        echo "  Cleaning the build directory..."
         rm -rf "${BUILD_DIR}"
     fi
 
@@ -151,7 +151,7 @@ if [ "$SKIP_BUILD" = false ]; then
         cmake --build "${BUILD_DIR}" --parallel 2>&1 | tail -10
     fi
 
-    echo "✅ 构建完成"
+    echo "Build finished"
 fi
 
 # ── 验证产物 ──────────────────────────────────────────────────────────────────
@@ -160,19 +160,19 @@ VST3_BUNDLE="${VST3_ARTIFACTS}/VST3/${APP_NAME}.vst3"
 AU_BUNDLE="${AU_ARTIFACTS}/AU/${APP_NAME}.component"
 
 if [ ! -d "${APP_BUNDLE}" ]; then
-    echo "❌ Standalone 产物不存在: ${APP_BUNDLE}"
+    echo "Standalone artifact is missing: ${APP_BUNDLE}"
     exit 1
 fi
 if [ ! -d "${VST3_BUNDLE}" ]; then
-    echo "❌ VST3 产物不存在: ${VST3_BUNDLE}"
+    echo "VST3 artifact is missing: ${VST3_BUNDLE}"
     exit 1
 fi
 if [ ! -d "${AU_BUNDLE}" ]; then
-    echo "❌ AU 产物不存在: ${AU_BUNDLE}"
+    echo "AU artifact is missing: ${AU_BUNDLE}"
     exit 1
 fi
 
-echo "▶ 产物验证"
+echo "Checking artifacts"
 echo "  Standalone.app: $(du -sh "${APP_BUNDLE}" | cut -f1)"
 echo "  VST3.vst3:      $(du -sh "${VST3_BUNDLE}" | cut -f1)"
 echo "  AU.component:   $(du -sh "${AU_BUNDLE}" | cut -f1)"
@@ -184,7 +184,7 @@ validate_macho_architectures() {
 
     actual_archs="$(lipo -archs "${binary}" | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
     if [ "${actual_archs}" != "${OSX_ARCHS}" ]; then
-        echo "❌ ${label} 架构不是 Universal2: ${actual_archs}（期望 ${OSX_ARCHS}）"
+        echo "${label} is not Universal2: ${actual_archs} (expected ${OSX_ARCHS})"
         exit 1
     fi
 }
@@ -204,7 +204,7 @@ validate_bundle_macho_architectures() {
         fi
     done < <(find "${bundle}" -type f -print0)
 
-    echo "  ✓ ${label}: ${count} Mach-O 文件均含 x86_64 + arm64"
+    echo "  ${label}: ${count} Mach-O files contain x86_64 and arm64"
 }
 
 validate_bundle_linkage() {
@@ -219,7 +219,7 @@ validate_bundle_linkage() {
     local ort_min_os
 
     if [ ! -f "${binary}" ]; then
-        echo "❌ ${label} 二进制不存在: ${binary}"
+        echo "${label} binary is missing: ${binary}"
         exit 1
     fi
 
@@ -235,8 +235,8 @@ validate_bundle_linkage() {
         $0 == expected { found = 1 }
         END { exit found ? 0 : 1 }
     '; then
-        echo "❌ ${label} 缺少 LC_RPATH: ${expected_rpath}"
-        printf '  当前 RPATH:\n%s\n' "${rpaths}"
+        echo "${label} is missing LC_RPATH: ${expected_rpath}"
+        printf '  Current RPATH:\n%s\n' "${rpaths}"
         exit 1
     fi
 
@@ -244,8 +244,8 @@ validate_bundle_linkage() {
         substr($0, 1, 1) == "/" { found = 1 }
         END { exit found ? 0 : 1 }
     '; then
-        echo "❌ ${label} 包含构建机绝对 LC_RPATH"
-        printf '  当前 RPATH:\n%s\n' "${rpaths}"
+        echo "${label} contains an absolute build-machine LC_RPATH"
+        printf '  Current RPATH:\n%s\n' "${rpaths}"
         exit 1
     fi
 
@@ -256,20 +256,20 @@ validate_bundle_linkage() {
         }
     ')"
     if [ -z "${ort_dependency}" ]; then
-        echo "❌ ${label} 未通过 @rpath 链接版本化 ONNX Runtime"
+        echo "${label} does not link a versioned ONNX Runtime through @rpath"
         exit 1
     fi
 
     ort_filename="${ort_dependency#@rpath/}"
     ort_library="${bundle}/Contents/Frameworks/${ort_filename}"
     if [ ! -f "${ort_library}" ]; then
-        echo "❌ ${label} 缺少嵌入式运行库: ${ort_library}"
+        echo "${label} is missing the embedded runtime: ${ort_library}"
         exit 1
     fi
 
     ort_min_os="$(otool -l "${ort_library}" | awk '$1 == "minos" { print $2 }' | sort -u)"
     if [ -z "${ort_min_os}" ] || printf '%s\n' "${ort_min_os}" | grep -vFxq "${PKG_MIN_OS}"; then
-        echo "❌ ${label} ORT 最低系统版本不符合 macOS ${PKG_MIN_OS}: ${ort_min_os}"
+        echo "${label} ORT minimum OS is not macOS ${PKG_MIN_OS}: ${ort_min_os}"
         exit 1
     fi
 
@@ -332,7 +332,7 @@ render_welcome_html() {
     title="${title%\*\*}"
 
     if [ -z "${title}" ] || [ -z "${fraud}" ] || [ -z "${license}" ]; then
-        echo "❌ 无法从 Installer/NOTICE.md 提取「${marker}」完整版文案"
+        echo "Could not extract the full notice for '${marker}' from Installer/NOTICE.md"
         exit 1
     fi
 
@@ -359,7 +359,7 @@ WELCOME_EOF
 
 # ── PKG：组装产品包 ───────────────────────────────────────────────────────────
 build_pkg() {
-    echo "▶ 准备 PKG staging"
+    echo "Preparing PKG staging"
 
     local payload_dir="${PKG_BUILD_DIR}/payload"
     local packages_dir="${PKG_BUILD_DIR}/packages"
@@ -372,13 +372,13 @@ build_pkg() {
     mkdir -p "${payload_dir}/Library/Audio/Plug-Ins/VST3"
     mkdir -p "${payload_dir}/Library/Audio/Plug-Ins/Components"
 
-    echo "  复制 Standalone.app（含模型）"
+    echo "  Copying Standalone.app (including models)"
     cp -R "${STAGING}/${APP_NAME}.app" "${payload_dir}/Applications/${APP_NAME}.app"
 
-    echo "  复制 VST3（无模型副本）"
+    echo "  Copying VST3 (without a model copy)"
     cp -R "${STAGING}/${APP_NAME}.vst3" "${payload_dir}/Library/Audio/Plug-Ins/VST3/${APP_NAME}.vst3"
 
-    echo "  复制 AU component（保留 bundle 自带模型）"
+    echo "  Copying AU component (keeping its bundled models)"
     cp -R "${STAGING}/${APP_NAME}.component" "${payload_dir}/Library/Audio/Plug-Ins/Components/${APP_NAME}.component"
     codesign --verify --deep --strict --verbose=2 "${payload_dir}/Library/Audio/Plug-Ins/Components/${APP_NAME}.component"
 
@@ -386,11 +386,11 @@ build_pkg() {
     # /Applications/OpenTune.app/Contents/Resources/models 回退路径直接读取。
     local models_src="${payload_dir}/Applications/${APP_NAME}.app/Contents/Resources/models"
     if [ ! -d "${models_src}" ]; then
-        echo "❌ 未找到模型目录: ${models_src}"
+        echo "Model directory not found: ${models_src}"
         exit 1
     fi
 
-    echo "  复制许可证与声明文件"
+    echo "  Copying license and notice files"
     for doc in LICENSE NOTICE.txt NOTICE.zh-CN.txt STATEMENTS.txt; do
         cp "${ROOT_DIR}/${doc}" "${payload_dir}/Applications/${APP_NAME}/" 2>/dev/null || true
     done
@@ -416,7 +416,7 @@ exit 0
 PREINSTALL_EOF
     chmod +x "${scripts_dir}/preinstall"
 
-    echo "  渲染欢迎页文案（Installer/NOTICE.md 完整版）"
+    echo "  Rendering the welcome page from Installer/NOTICE.md"
     # 根文件是 Installer 未命中本地化资源时的回退内容。项目主要面向中文用户，
     # 因此使用中文作为回退；英文放入 en.lproj，避免英文系统显示中文。
     render_welcome_html "${resources_dir}/welcome.html" "中文（zh）"
@@ -502,7 +502,7 @@ DISTRIBUTION_EOF
 </plist>
 COMPONENT_PLIST_EOF
 
-    echo "  构建组件包"
+    echo "  Building component packages"
     pkgbuild --root "${payload_dir}" \
              --identifier "${BUNDLE_ID}.pkg" \
              --version "${VERSION}" \
@@ -523,12 +523,12 @@ COMPONENT_PLIST_EOF
     ' "${verify_dir}/PackageInfo")"
     if [ -n "${relocate_marked}" ]; then
         rm -rf "${verify_dir}"
-        echo "❌ 组件包仍包含可重定位 bundle，安装后主程序可能不会出现在 /Applications"
+        echo "Component package still marks a bundle as relocatable, so the app may not land in /Applications"
         exit 1
     fi
     rm -rf "${verify_dir}"
 
-    echo "  组装产品包"
+    echo "  Assembling the product package"
     if [ -n "${PKG_SIGN_IDENTITY:-}" ]; then
         productbuild --distribution "${PKG_BUILD_DIR}/Distribution.xml" \
                      --resources "${resources_dir}" \
@@ -544,7 +544,7 @@ COMPONENT_PLIST_EOF
 }
 
 # ── 清理 staging ─────────────────────────────────────────────────────────────
-echo "▶ 准备安装包 staging"
+echo "Preparing installer staging"
 rm -rf "${STAGING}"
 mkdir -p "${STAGING}"
 
@@ -564,7 +564,7 @@ VST3_RESOURCES="${STAGING}/${APP_NAME}.vst3/Contents/Resources"
 if [ -d "${VST3_RESOURCES}/models" ]; then
     MODELS_SIZE=$(du -sh "${VST3_RESOURCES}/models" | cut -f1)
     rm -rf "${VST3_RESOURCES}/models"
-    echo "  VST3 剥离重复模型: -${MODELS_SIZE}"
+    echo "  Removed duplicate VST3 models: -${MODELS_SIZE}"
 fi
 
 # ── 清理 bundle 中未引用的旧版 ONNX Runtime 动态库 ────────────────────────────
@@ -593,7 +593,7 @@ prune_stale_ort_dylibs() {
         if [ "${name}" != "${keep}" ]; then
             size="$(du -sh "${lib}" | cut -f1)"
             rm -f "${lib}"
-            echo "  ${label} 移除未引用的 ONNX Runtime 动态库: ${name} (-${size})"
+            echo "  ${label} removed unreferenced ONNX Runtime library: ${name} (-${size})"
         fi
     done
 }
@@ -816,7 +816,7 @@ validate_bundle_linkage "${STAGING}/${APP_NAME}.component" "@loader_path/../Fram
 
 for model in hifigan.onnx fcpe.onnx; do
     if [ ! -f "${STAGING}/${APP_NAME}.component/Contents/Resources/models/${model}" ]; then
-        echo "❌ AU bundle 缺少自带模型: ${model}"
+        echo "AU bundle is missing bundled model: ${model}"
         exit 1
     fi
 done
@@ -828,7 +828,7 @@ sign_developer_id_bundle() {
     local path
     local main="${bundle}/Contents/MacOS/${APP_NAME}"
 
-    echo "▶ Developer ID 签名 ${label}"
+    echo "Developer ID signing ${label}"
     while IFS= read -r -d '' path; do
         if [[ "$(file -b "${path}")" != *Mach-O* ]] || [ "${path}" = "${main}" ]; then
             continue
@@ -845,7 +845,7 @@ sign_developer_id_bundle() {
 }
 
 if [ "${SIGN_IDENTITY}" = "-" ]; then
-    echo "▶ Ad-hoc 签名所有 bundle"
+    echo "Ad-hoc signing every bundle"
     codesign --force --deep --sign - "${STAGING}/${APP_NAME}.app" 2>/dev/null
     echo "  ✓ ${APP_NAME}.app"
     codesign --force --deep --sign - "${STAGING}/${APP_NAME}.vst3" 2>/dev/null
@@ -874,7 +874,7 @@ fi
 # ── 统计 staging 大小 ─────────────────────────────────────────────────────────
 STAGING_SIZE=$(du -sh "${STAGING}" | cut -f1)
 echo ""
-echo "▶ Staging 总大小: ${STAGING_SIZE}"
+echo "Staging size: ${STAGING_SIZE}"
 
 # ── 生成 PKG（--format pkg|both）─────────────────────────────────────────────
 if [ "$FORMAT" != "dmg" ]; then
@@ -882,26 +882,26 @@ if [ "$FORMAT" != "dmg" ]; then
 
     PKG_PATH="${DMG_DIR}/${PKG_NAME}.pkg"
     if [ ! -f "${PKG_PATH}" ]; then
-        echo "❌ PKG 生成失败: ${PKG_PATH}"
+        echo "PKG was not created: ${PKG_PATH}"
         exit 1
     fi
     PKG_SIZE=$(du -sh "${PKG_PATH}" | cut -f1)
     echo ""
     echo "══════════════════════════════════════════════"
-    echo "  ✅ PKG 安装包生成完成"
+    echo "  PKG created"
     echo "══════════════════════════════════════════════"
-    echo "  文件: ${PKG_PATH}"
-    echo "  大小: ${PKG_SIZE}"
-    echo "  版本: ${VERSION}"
-    echo "  架构: Universal2 (x86_64 + arm64)"
-    echo "  欢迎页: 防诈声明 + 许可/版权警示（文案来自 Installer/NOTICE.md）"
-    echo "  安装方式：双击 PKG，按提示完成安装"
+    echo "  File: ${PKG_PATH}"
+    echo "  Size: ${PKG_SIZE}"
+    echo "  Version: ${VERSION}"
+    echo "  Architectures: Universal2 (x86_64 + arm64)"
+    echo "  Welcome page: notice text from Installer/NOTICE.md"
+    echo "  Install: open the PKG and follow the prompts"
     echo "══════════════════════════════════════════════"
 fi
 
 # ── 生成 DMG（--format dmg|both）─────────────────────────────────────────────
 if [ "$FORMAT" != "pkg" ]; then
-    echo "▶ 生成 DMG 安装包"
+    echo "Creating the DMG"
 
     DMG_PATH="${DMG_DIR}/${DMG_NAME}.dmg"
     # 如果已有同名 DMG，先删除
@@ -925,21 +925,21 @@ if [ "$FORMAT" != "pkg" ]; then
     if [ "${SIGN_IDENTITY}" != "-" ]; then
         codesign --force --timestamp --sign "${SIGN_IDENTITY}" "${DMG_PATH}"
         codesign --verify --verbose=2 "${DMG_PATH}"
-        echo "  ✓ DMG 已使用 Developer ID Application 签名"
+        echo "  DMG signed with Developer ID Application"
     fi
 
     # ── 最终结果 ──
     DMG_SIZE=$(du -sh "${DMG_PATH}" | cut -f1)
     echo ""
     echo "══════════════════════════════════════════════"
-    echo "  ✅ DMG 安装包生成完成"
+    echo "  DMG created"
     echo "══════════════════════════════════════════════"
-    echo "  文件: ${DMG_PATH}"
-    echo "  大小: ${DMG_SIZE}"
-    echo "  版本: ${VERSION}"
-    echo "  架构: Universal2 (x86_64 + arm64)"
+    echo "  File: ${DMG_PATH}"
+    echo "  Size: ${DMG_SIZE}"
+    echo "  Version: ${VERSION}"
+    echo "  Architectures: Universal2 (x86_64 + arm64)"
     echo ""
-    echo "  安装方式：双击 DMG → 双击「安装 OpenTune.command」"
-    echo "  或手动复制 .app 到 /Applications、.vst3 到 VST3、.component 到 Components 目录"
+    echo "  Install: open the DMG, then run \"Install OpenTune.command\" or \"安装 OpenTune.command\""
+    echo "  Or copy .app to /Applications, .vst3 to VST3, and .component to Components"
     echo "══════════════════════════════════════════════"
 fi

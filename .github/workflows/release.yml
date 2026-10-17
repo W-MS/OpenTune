@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       macos_format:
-        description: macOS 安装包格式
+        description: macOS package format
         type: choice
         options:
           - both
@@ -36,12 +36,12 @@ jobs:
     env:
       MACOS_FORMAT: ${{ github.event.inputs.macos_format || 'both' }}
     steps:
-      - name: 检出源码
+      - name: Check out source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: 确认签名 Secret 已配置
+      - name: Check signing secrets
         env:
           MACOS_APPLICATION_P12_BASE64: ${{ secrets.MACOS_APPLICATION_P12_BASE64 }}
           MACOS_APPLICATION_P12_PASSWORD: ${{ secrets.MACOS_APPLICATION_P12_PASSWORD }}
@@ -64,30 +64,30 @@ jobs:
               APPLE_TEAM_ID
           do
             if [ -z "${!name}" ]; then
-              echo "缺少 Secret: ${name}"
+              echo "Missing secret: ${name}"
               missing=1
             fi
           done
           exit "${missing}"
 
-      - name: 安装 Ninja
+      - name: Install Ninja
         run: brew install ninja
 
-      - name: 下载 macOS 依赖到虚拟机
+      - name: Download macOS dependencies
         run: bash scripts/github_actions/fetch-macos-deps.sh
 
-      - name: 恢复已缓存的 ONNX Runtime
+      - name: Restore cached ONNX Runtime
         id: ort-cache
         uses: actions/cache@v4
         with:
           path: ThirdParty/onnxruntime-osx-universal2-1.20.0
           key: onnxruntime-osx-universal2-1.20.0-${{ hashFiles('scripts/build-onnxruntime-macos.sh') }}
 
-      - name: 从源码构建 ONNX Runtime universal2
+      - name: Build ONNX Runtime universal2 from source
         if: steps.ort-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-onnxruntime-macos.sh
 
-      - name: 清理 ONNX Runtime 中间目录
+      - name: Remove ONNX Runtime intermediate directories
         if: always()
         run: |
           rm -rf \
@@ -96,7 +96,7 @@ jobs:
             ThirdParty/.eigen-e7248b26a1ed53fa030c5c459f7ea095dfd276ac \
             ThirdParty/.eigen-e7248b26a1ed53fa030c5c459f7ea095dfd276ac.zip
 
-      - name: 导入 Developer ID 证书
+      - name: Import Developer ID certificates
         env:
           MACOS_APPLICATION_P12_BASE64: ${{ secrets.MACOS_APPLICATION_P12_BASE64 }}
           MACOS_APPLICATION_P12_PASSWORD: ${{ secrets.MACOS_APPLICATION_P12_PASSWORD }}
@@ -105,10 +105,10 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash scripts/github_actions/import-macos-certs.sh
 
-      - name: 构建并签名安装包
+      - name: Build and sign packages
         run: bash scripts/github_actions/package-macos.sh --format "${MACOS_FORMAT}"
 
-      - name: 公证并装订
+      - name: Notarize and staple
         env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
@@ -117,12 +117,12 @@ jobs:
           shopt -s nullglob
           files=(dist/*.pkg dist/*.dmg)
           if [ "${#files[@]}" -eq 0 ]; then
-            echo "没有找到可公证的 pkg 或 dmg"
+            echo "No pkg or dmg found to notarize"
             exit 1
           fi
           bash scripts/github_actions/notarize-macos.sh "${files[@]}"
 
-      - name: 上传 macOS 安装包
+      - name: Upload macOS packages
         uses: actions/upload-artifact@v4
         with:
           name: OpenTune-macOS-Universal2
@@ -131,7 +131,7 @@ jobs:
             dist/*.dmg
           if-no-files-found: error
 
-      - name: 删除临时钥匙串和证书
+      - name: Delete the temporary keychain and certificates
         if: always()
         run: bash scripts/github_actions/cleanup-macos-signing.sh
 
@@ -140,22 +140,22 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 180
     steps:
-      - name: 检出源码
+      - name: Check out source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: 下载 Windows 依赖到虚拟机
+      - name: Download Windows dependencies
         shell: powershell
         run: scripts/github_actions/fetch-windows-deps.ps1
 
-      - name: 配置 Visual Studio 2022
+      - name: Configure Visual Studio 2022
         shell: powershell
         run: |
           cmake --preset windows-ara-vs2022
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: 编译 Release
+      - name: Build Release
         shell: powershell
         run: |
           cmake --build --preset windows-ara-release --target OpenTune_VST3
@@ -163,11 +163,11 @@ jobs:
           cmake --build --preset windows-ara-release --target OpenTuneStandalone_Standalone
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: 打包便携版
+      - name: Package the portable build
         shell: powershell
         run: scripts/github_actions/package-windows-portable.ps1
 
-      - name: 上传 Windows 安装包
+      - name: Upload the Windows package
         uses: actions/upload-artifact@v4
         with:
           name: OpenTune-Windows-x64
@@ -175,20 +175,20 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: 发布到 GitHub Release
+    name: Publish the GitHub Release
     needs: [macos, windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: 下载全部安装包
+      - name: Download all packages
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: 创建或更新 Release
+      - name: Create or update the Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -198,5 +198,5 @@ jobs:
           else
             gh release create "${tag}" artifacts/* \
               --title "OpenTune ${tag}" \
-              --notes "macOS Universal2 安装包已使用 Developer ID 签名并公证。Windows 包是便携版，包含 Standalone、运行库和 VST3。"
+              --notes "The macOS Universal2 packages are signed with Developer ID and notarized. The Windows package is a portable zip containing Standalone, its runtime libraries, and VST3."
           fi

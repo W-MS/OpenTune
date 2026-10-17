@@ -44,7 +44,7 @@ def download(url: str, dest: pathlib.Path) -> None:
             last_error = exc
             partial.unlink(missing_ok=True)
             time.sleep(2 * (attempt + 1))
-    raise SystemExit(f"下载失败 {url}: {last_error}")
+    raise SystemExit(f"Download failed {url}: {last_error}")
 
 
 def sha256(path: pathlib.Path) -> str:
@@ -58,25 +58,25 @@ def sha256(path: pathlib.Path) -> str:
 def fetch_fcpe() -> None:
     dest = ROOT / "models" / "fcpe.onnx"
     if dest.is_file() and sha256(dest) == FCPE_SHA256:
-        print(f"FCPE 已存在且校验通过: {dest}")
+        print(f"FCPE already present and checksum matches: {dest}")
         return
-    print(f"下载 FCPE: {FCPE_URL}")
+    print(f"Downloading FCPE: {FCPE_URL}")
     download(FCPE_URL, dest)
     actual = sha256(dest)
     if actual != FCPE_SHA256:
         dest.unlink(missing_ok=True)
-        raise SystemExit(f"FCPE SHA-256 不符: {actual}")
-    print(f"FCPE 校验通过: {dest}")
+        raise SystemExit(f"FCPE SHA-256 mismatch: {actual}")
+    print(f"FCPE checksum matches: {dest}")
 
 
 def fetch_hifigan() -> None:
     dest = ROOT / "pc_nsf_hifigan_44.1k_ONNX" / HIFIGAN_NAME
     if dest.is_file():
-        print(f"HifiGAN 已存在: {dest}")
+        print(f"HifiGAN already present: {dest}")
         return
     with tempfile.TemporaryDirectory() as temp_dir:
         archive_path = pathlib.Path(temp_dir) / "hifigan.zip"
-        print(f"下载 HifiGAN: {HIFIGAN_URL}")
+        print(f"Downloading HifiGAN: {HIFIGAN_URL}")
         download(HIFIGAN_URL, archive_path)
         with zipfile.ZipFile(archive_path) as archive:
             matches = [
@@ -87,28 +87,28 @@ def fetch_hifigan() -> None:
             if len(matches) != 1:
                 names = "\n".join(archive.namelist())
                 raise SystemExit(
-                    f"HifiGAN 包中 {HIFIGAN_NAME} 出现 {len(matches)} 次。包内文件:\n{names}"
+                    f"HifiGAN archive contains {HIFIGAN_NAME} {len(matches)} times. Archive entries:\n{names}"
                 )
             dest.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(matches[0]) as src, dest.open("wb") as output:
                 shutil.copyfileobj(src, output)
-    print(f"HifiGAN 已放到: {dest}")
+    print(f"HifiGAN written to: {dest}")
 
 
 def fetch_game() -> None:
     dest = ROOT / "models" / "GAME"
     if all((dest / name).is_file() for name in GAME_FILES):
-        print(f"GAME 已存在: {dest}")
+        print(f"GAME already present: {dest}")
         return
     with tempfile.TemporaryDirectory() as temp_dir:
         archive_path = pathlib.Path(temp_dir) / "game.zip"
-        print(f"下载 GAME: {GAME_URL}")
+        print(f"Downloading GAME: {GAME_URL}")
         download(GAME_URL, archive_path)
         with zipfile.ZipFile(archive_path) as archive:
             names = [name for name in archive.namelist() if not name.endswith("/")]
             encoders = [name for name in names if pathlib.PurePosixPath(name).name == "encoder.onnx"]
             if len(encoders) != 1:
-                raise SystemExit(f"GAME 压缩包中 encoder.onnx 出现 {len(encoders)} 次")
+                raise SystemExit(f"GAME archive contains encoder.onnx {len(encoders)} times")
             prefix = pathlib.PurePosixPath(encoders[0]).parent.as_posix()
             dest.mkdir(parents=True, exist_ok=True)
             copied = []
@@ -121,8 +121,8 @@ def fetch_game() -> None:
                 copied.append(path.name)
     missing = [name for name in GAME_FILES if name not in copied]
     if missing:
-        raise SystemExit("GAME 模型目录缺少: " + ", ".join(missing))
-    print(f"GAME 已放到: {dest}")
+        raise SystemExit("GAME model directory is missing: " + ", ".join(missing))
+    print(f"GAME written to: {dest}")
 
 
 def main() -> None:

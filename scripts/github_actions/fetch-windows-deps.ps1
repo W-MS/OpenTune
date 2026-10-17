@@ -36,6 +36,8 @@ $Python = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $Python) {
     throw "python was not found; cannot patch JUCE or download models"
 }
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 Invoke-Checked $Python @((Join-Path $Root "scripts\github_actions\patch-juce-ara.py"))
 
 $AraDir = Join-Path $Root "ThirdParty\ARA_SDK-releases-2.3.0"
@@ -52,18 +54,39 @@ if (-not (Test-Path -LiteralPath (Join-Path $AraDir ".git"))) {
 }
 Invoke-Checked "git" @("-C", $AraDir, "-c", "core.longpaths=true", "submodule", "update", "--init", "--recursive")
 
-$SoundTouch = Join-Path $Root "ThirdParty\soundtouch-2.3.3\source\SoundTouch\SoundTouch.cpp"
-if (-not (Test-Path -LiteralPath $SoundTouch)) {
-    $SoundTouchDir = Join-Path $Root "ThirdParty\soundtouch-2.3.3"
-    if (Test-Path -LiteralPath $SoundTouchDir) {
-        Remove-Item -LiteralPath $SoundTouchDir -Recurse -Force
+function Install-SoundTouch {
+    $dest = Join-Path $Root "ThirdParty\soundtouch-2.3.3"
+    $marker = Join-Path $dest "source\SoundTouch\SoundTouch.cpp"
+    if (Test-Path -LiteralPath $marker) { return }
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        if (Test-Path -LiteralPath $dest) {
+            Remove-Item -LiteralPath $dest -Recurse -Force
+        }
+        & git clone --depth 1 --branch 2.3.3 "https://codeberg.org/soundtouch/soundtouch.git" $dest
+        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $marker)) { return }
+        Write-Host "SoundTouch git clone failed (attempt $attempt/5)"
+        Start-Sleep -Seconds (5 * $attempt)
     }
-    Invoke-Checked "git" @(
-        "clone", "--depth", "1", "--branch", "2.3.3",
-        "https://codeberg.org/soundtouch/soundtouch.git",
-        $SoundTouchDir
-    )
+    Write-Host "Falling back to the SoundTouch 2.3.3 source archive"
+    if (Test-Path -LiteralPath $dest) {
+        Remove-Item -LiteralPath $dest -Recurse -Force
+    }
+    $archive = Join-Path $Work "soundtouch-2.3.3.tar.gz"
+    $extract = Join-Path $Work "soundtouch-extract"
+    if (Test-Path -LiteralPath $extract) {
+        Remove-Item -LiteralPath $extract -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $extract | Out-Null
+    Save-Url "https://codeberg.org/soundtouch/soundtouch/archive/2.3.3.tar.gz" $archive
+    Invoke-Checked "tar.exe" @("-xzf", $archive, "-C", $extract)
+    $unpacked = Join-Path $extract "soundtouch"
+    if (-not (Test-Path -LiteralPath (Join-Path $unpacked "source\SoundTouch\SoundTouch.cpp"))) {
+        throw "SoundTouch archive is missing source/SoundTouch/SoundTouch.cpp"
+    }
+    Move-Item -LiteralPath $unpacked -Destination $dest
 }
+
+Install-SoundTouch
 
 function Expand-Nupkg {
     param([string]$Url, [string]$Destination)
