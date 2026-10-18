@@ -4,6 +4,17 @@ $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $Root
 
+$JuceRef = "8.0.6"
+$JuceCommit = "51a8a6d7aeae7326956d747737ccf1575e61e209"
+$AraRef = "releases/2.3.0"
+$AraCommit = "0005c532bb03eb210e7bb490329fc6d7ba1792c7"
+$SoundTouchCommit = "e83424d5928ab8513d2d082779c275765dee31b9"
+$SoundTouchArchiveSha256 = "06c00f37d28e5984944951c20d0845c7931e691c59820922230915d205131a47"
+$OnnxRuntimeDirectMlSha256 = "57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681"
+$DirectMlSha256 = "c431d4a40fc935b3006fa1b93d116992e9974b9d60bffb743a94b0c570482931"
+$Direct3DSha256 = "0e9bcf32aac9a79343ede9b21e4864950ee54577e3d8e19bfcdf002bb4e9bfd6"
+$OnnxRuntimeCpuSha256 = "d2319fddfb6ea4db99ccc4b60c85c517bcd855721f5daa6a06d40d7cb2ee2357"
+
 $Work = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { Join-Path $env:TEMP "opentune-ci" }
 New-Item -ItemType Directory -Force -Path $Work, (Join-Path $Root "ThirdParty"), (Join-Path $Root "models") | Out-Null
 
@@ -20,16 +31,12 @@ function Save-Url {
     Invoke-Checked "curl.exe" @("-L", "--fail", "--retry", "5", "--retry-delay", "2", "-o", $Destination, $Url)
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $Root "JUCE-master\CMakeLists.txt"))) {
-    if (Test-Path -LiteralPath (Join-Path $Root "JUCE-master")) {
-        Remove-Item -LiteralPath (Join-Path $Root "JUCE-master") -Recurse -Force
+function Assert-Sha256 {
+    param([string]$Path, [string]$Expected, [string]$Label)
+    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $Expected) {
+        throw "$Label SHA-256 mismatch: expected $Expected, got $actual"
     }
-    Invoke-Checked "git" @(
-        "-c", "core.longpaths=true",
-        "clone", "--depth", "1",
-        "https://github.com/juce-framework/JUCE.git",
-        (Join-Path $Root "JUCE-master")
-    )
 }
 
 $Python = (Get-Command python -ErrorAction SilentlyContinue).Source
@@ -38,36 +45,139 @@ if (-not $Python) {
 }
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
-Invoke-Checked $Python @((Join-Path $Root "scripts\github_actions\patch-juce-ara.py"))
+$PatchJuce = Join-Path $Root "scripts\github_actions\patch-juce-ara.py"
 
-$AraDir = Join-Path $Root "ThirdParty\ARA_SDK-releases-2.3.0"
-if (-not (Test-Path -LiteralPath (Join-Path $AraDir ".git"))) {
-    if (Test-Path -LiteralPath $AraDir) {
-        Remove-Item -LiteralPath $AraDir -Recurse -Force
+function Install-Juce {
+    $JuceDir = Join-Path $Root "JUCE-master"
+    $ready = $false
+    if (Test-Path -LiteralPath $JuceDir) {
+        $head = & git -C $JuceDir rev-parse HEAD
+        if ($LASTEXITCODE -eq 0 -and $head.Trim() -eq $JuceCommit) {
+            & $Python $PatchJuce
+            if ($LASTEXITCODE -eq 0) { $ready = $true }
+        }
+        if (-not $ready) {
+            Remove-Item -LiteralPath $JuceDir -Recurse -Force
+        }
     }
-    Invoke-Checked "git" @(
-        "-c", "core.longpaths=true",
-        "clone", "--depth", "1", "--branch", "releases/2.3.0",
-        "https://github.com/Celemony/ARA_SDK.git",
-        $AraDir
-    )
+    if (-not $ready) {
+        Invoke-Checked "git" @(
+            "-c", "core.longpaths=true",
+            "clone", "--depth", "1", "--branch", $JuceRef,
+            "https://github.com/juce-framework/JUCE.git",
+            $JuceDir
+        )
+        $head = & git -C $JuceDir rev-parse HEAD
+        if ($LASTEXITCODE -ne 0) { throw "JUCE-master is not a readable Git checkout" }
+        if ($head.Trim() -ne $JuceCommit) {
+            Remove-Item -LiteralPath $JuceDir -Recurse -Force
+            throw "JUCE $JuceRef tag revision mismatch: expected $JuceCommit, got $($head.Trim())"
+        }
+        Invoke-Checked $Python @($PatchJuce)
+    }
 }
-Invoke-Checked "git" @("-C", $AraDir, "-c", "core.longpaths=true", "submodule", "update", "--init", "--recursive")
+
+function Test-CleanGitTree {
+    param([string]$Directory)
+    $status = & git -C $Directory status --porcelain --untracked-files=all --ignored=matching
+    if ($LASTEXITCODE -ne 0 -or @($status).Count -gt 0) { return $false }
+    return $true
+}
+
+function Test-AraCheckout {
+    param([string]$Directory)
+    if (-not (Test-CleanGitTree $Directory)) { return $false }
+    $submodules = & git -C $Directory -c core.longpaths=true submodule status --recursive
+    if ($LASTEXITCODE -ne 0) { return $false }
+    foreach ($line in @($submodules)) {
+        if ($line.Length -gt 0 -and $line[0] -ne " ") { return $false }
+    }
+    & git -C $Directory -c core.longpaths=true submodule foreach --quiet --recursive `
+        'test -z "$(git status --porcelain --untracked-files=all --ignored=matching)"'
+    if ($LASTEXITCODE -ne 0) { return $false }
+    return $true
+}
+
+function Install-Ara {
+    $AraDir = Join-Path $Root "ThirdParty\ARA_SDK-releases-2.3.0"
+    $ready = $false
+    if (Test-Path -LiteralPath $AraDir) {
+        $head = & git -C $AraDir rev-parse HEAD
+        if ($LASTEXITCODE -eq 0 -and $head.Trim() -eq $AraCommit -and (Test-AraCheckout $AraDir)) {
+            $ready = $true
+        } else {
+            Remove-Item -LiteralPath $AraDir -Recurse -Force
+        }
+    }
+    if (-not $ready) {
+        Invoke-Checked "git" @(
+            "-c", "core.longpaths=true",
+            "clone", "--depth", "1", "--branch", $AraRef,
+            "https://github.com/Celemony/ARA_SDK.git",
+            $AraDir
+        )
+        $head = & git -C $AraDir rev-parse HEAD
+        if ($LASTEXITCODE -ne 0) { throw "ARA_SDK-releases-2.3.0 is not a readable Git checkout" }
+        if ($head.Trim() -ne $AraCommit) {
+            Remove-Item -LiteralPath $AraDir -Recurse -Force
+            throw "ARA $AraRef tag revision mismatch: expected $AraCommit, got $($head.Trim())"
+        }
+        Invoke-Checked "git" @("-C", $AraDir, "-c", "core.longpaths=true", "submodule", "update", "--init", "--recursive")
+        if (-not (Test-AraCheckout $AraDir)) {
+            Remove-Item -LiteralPath $AraDir -Recurse -Force
+            throw "ARA SDK checkout or submodules are not clean at the pinned revisions"
+        }
+    }
+}
+
+Install-Juce
+
+Install-Ara
 
 function Install-SoundTouch {
     $dest = Join-Path $Root "ThirdParty\soundtouch-2.3.3"
     $marker = Join-Path $dest "source\SoundTouch\SoundTouch.cpp"
-    if (Test-Path -LiteralPath $marker) { return }
+    if (Test-Path -LiteralPath $dest) {
+        if (Test-Path -LiteralPath (Join-Path $dest ".git")) {
+            $head = & git -C $dest rev-parse HEAD
+            if ($LASTEXITCODE -eq 0 -and $head.Trim() -eq $SoundTouchCommit -and (Test-CleanGitTree $dest) -and (Test-Path -LiteralPath $marker)) {
+                return
+            }
+            Remove-Item -LiteralPath $dest -Recurse -Force
+        } else {
+            Remove-Item -LiteralPath $dest -Recurse -Force
+            Install-SoundTouchArchive
+            return
+        }
+    }
     for ($attempt = 1; $attempt -le 5; $attempt++) {
         if (Test-Path -LiteralPath $dest) {
             Remove-Item -LiteralPath $dest -Recurse -Force
         }
         & git clone --depth 1 --branch 2.3.3 "https://codeberg.org/soundtouch/soundtouch.git" $dest
-        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $marker)) { return }
+        if ($LASTEXITCODE -eq 0) {
+            $head = & git -C $dest rev-parse HEAD
+            if ($LASTEXITCODE -ne 0) { throw "SoundTouch checkout has no readable Git HEAD" }
+            if ($head.Trim() -ne $SoundTouchCommit) {
+                Remove-Item -LiteralPath $dest -Recurse -Force
+                throw "SoundTouch 2.3.3 tag revision mismatch: expected $SoundTouchCommit, got $($head.Trim())"
+            }
+            if (-not (Test-CleanGitTree $dest) -or -not (Test-Path -LiteralPath $marker)) {
+                Remove-Item -LiteralPath $dest -Recurse -Force
+                throw "SoundTouch checkout is not clean at the pinned revision"
+            }
+            return
+        }
         Write-Host "SoundTouch git clone failed (attempt $attempt/5)"
         Start-Sleep -Seconds (5 * $attempt)
     }
-    Write-Host "Falling back to the SoundTouch 2.3.3 source archive"
+    Install-SoundTouchArchive
+}
+
+function Install-SoundTouchArchive {
+    $dest = Join-Path $Root "ThirdParty\soundtouch-2.3.3"
+    $marker = Join-Path $dest "source\SoundTouch\SoundTouch.cpp"
+    Write-Host "Fetching the verified SoundTouch 2.3.3 source archive"
     if (Test-Path -LiteralPath $dest) {
         Remove-Item -LiteralPath $dest -Recurse -Force
     }
@@ -78,20 +188,26 @@ function Install-SoundTouch {
     }
     New-Item -ItemType Directory -Force -Path $extract | Out-Null
     Save-Url "https://codeberg.org/soundtouch/soundtouch/archive/2.3.3.tar.gz" $archive
+    Assert-Sha256 -Path $archive -Expected $SoundTouchArchiveSha256 -Label "SoundTouch archive"
     Invoke-Checked "tar.exe" @("-xzf", $archive, "-C", $extract)
     $unpacked = Join-Path $extract "soundtouch"
     if (-not (Test-Path -LiteralPath (Join-Path $unpacked "source\SoundTouch\SoundTouch.cpp"))) {
         throw "SoundTouch archive is missing source/SoundTouch/SoundTouch.cpp"
     }
     Move-Item -LiteralPath $unpacked -Destination $dest
+    if (-not (Test-Path -LiteralPath $marker)) {
+        Remove-Item -LiteralPath $dest -Recurse -Force
+        throw "SoundTouch archive is missing source/SoundTouch/SoundTouch.cpp"
+    }
 }
 
 Install-SoundTouch
 
 function Expand-Nupkg {
-    param([string]$Url, [string]$Destination)
+    param([string]$Url, [string]$Destination, [string]$Sha256)
     $zip = Join-Path $Work ((Split-Path $Destination -Leaf) + ".zip")
     Save-Url $Url $zip
+    Assert-Sha256 -Path $zip -Expected $Sha256 -Label $Destination
     if (Test-Path -LiteralPath $Destination) {
         Remove-Item -LiteralPath $Destination -Recurse -Force
     }
@@ -101,17 +217,21 @@ function Expand-Nupkg {
 
 Expand-Nupkg `
     "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/1.24.4" `
-    (Join-Path $Root "ThirdParty\onnxruntime-dml-1.24.4")
+    (Join-Path $Root "ThirdParty\onnxruntime-dml-1.24.4") `
+    $OnnxRuntimeDirectMlSha256
 Expand-Nupkg `
     "https://www.nuget.org/api/v2/package/Microsoft.AI.DirectML/1.15.4" `
-    (Join-Path $Root "ThirdParty\microsoft.ai.directml.1.15.4")
+    (Join-Path $Root "ThirdParty\microsoft.ai.directml.1.15.4") `
+    $DirectMlSha256
 Expand-Nupkg `
     "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/1.619.5" `
-    (Join-Path $Root "ThirdParty\microsoft.direct3d.d3d12.1.619.5")
+    (Join-Path $Root "ThirdParty\microsoft.direct3d.d3d12.1.619.5") `
+    $Direct3DSha256
 
 $OrtZip = Join-Path $Work "onnxruntime-win-x64-1.24.4.zip"
 $OrtExtract = Join-Path $Work "onnxruntime-win-x64-1.24.4"
 Save-Url "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip" $OrtZip
+Assert-Sha256 -Path $OrtZip -Expected $OnnxRuntimeCpuSha256 -Label "ONNX Runtime CPU archive"
 if (Test-Path -LiteralPath $OrtExtract) {
     Remove-Item -LiteralPath $OrtExtract -Recurse -Force
 }

@@ -25,7 +25,9 @@ HIFIGAN_URL = (
     "pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.oudep"
 )
 HIFIGAN_NAME = "pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx"
+HIFIGAN_SHA256 = "ba7d43142d41f6900c8264b5662ca7125a50feb8760bb8b9615c61a8f5e6902e"
 GAME_URL = "https://github.com/openvpi/GAME/releases/download/v1.0.3/GAME-1.0.3-small-onnx.zip"
+GAME_SHA256 = "00ba0c64115b6b874d9ea4afd3e6cf822abda2a04e52569233b0a044fd40e4e8"
 GAME_FILES = ("encoder.onnx", "segmenter.onnx", "estimator.onnx", "bd2dur.onnx", "config.json")
 
 
@@ -55,6 +57,12 @@ def sha256(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def verify_sha256(path: pathlib.Path, expected: str, label: str) -> None:
+    actual = sha256(path)
+    if actual != expected:
+        raise SystemExit(f"{label} SHA-256 mismatch: expected {expected}, got {actual}")
+
+
 def fetch_fcpe() -> None:
     dest = ROOT / "models" / "fcpe.onnx"
     if dest.is_file() and sha256(dest) == FCPE_SHA256:
@@ -71,13 +79,11 @@ def fetch_fcpe() -> None:
 
 def fetch_hifigan() -> None:
     dest = ROOT / "pc_nsf_hifigan_44.1k_ONNX" / HIFIGAN_NAME
-    if dest.is_file():
-        print(f"HifiGAN already present: {dest}")
-        return
     with tempfile.TemporaryDirectory() as temp_dir:
         archive_path = pathlib.Path(temp_dir) / "hifigan.zip"
         print(f"Downloading HifiGAN: {HIFIGAN_URL}")
         download(HIFIGAN_URL, archive_path)
+        verify_sha256(archive_path, HIFIGAN_SHA256, "HifiGAN archive")
         with zipfile.ZipFile(archive_path) as archive:
             matches = [
                 name
@@ -97,31 +103,29 @@ def fetch_hifigan() -> None:
 
 def fetch_game() -> None:
     dest = ROOT / "models" / "GAME"
-    if all((dest / name).is_file() for name in GAME_FILES):
-        print(f"GAME already present: {dest}")
-        return
     with tempfile.TemporaryDirectory() as temp_dir:
         archive_path = pathlib.Path(temp_dir) / "game.zip"
         print(f"Downloading GAME: {GAME_URL}")
         download(GAME_URL, archive_path)
+        verify_sha256(archive_path, GAME_SHA256, "GAME archive")
         with zipfile.ZipFile(archive_path) as archive:
             names = [name for name in archive.namelist() if not name.endswith("/")]
             encoders = [name for name in names if pathlib.PurePosixPath(name).name == "encoder.onnx"]
             if len(encoders) != 1:
                 raise SystemExit(f"GAME archive contains encoder.onnx {len(encoders)} times")
             prefix = pathlib.PurePosixPath(encoders[0]).parent.as_posix()
+            members = {}
+            for required in GAME_FILES:
+                matches = [name for name in names if pathlib.PurePosixPath(name).name == required]
+                if len(matches) != 1 or pathlib.PurePosixPath(matches[0]).parent.as_posix() != prefix:
+                    raise SystemExit(f"GAME archive must contain one {required} under {prefix}")
+                members[required] = matches[0]
+            if dest.exists():
+                shutil.rmtree(dest)
             dest.mkdir(parents=True, exist_ok=True)
-            copied = []
-            for name in names:
-                path = pathlib.PurePosixPath(name)
-                if path.parent.as_posix() != prefix:
-                    continue
-                with archive.open(name) as src, (dest / path.name).open("wb") as output:
+            for required in GAME_FILES:
+                with archive.open(members[required]) as src, (dest / required).open("wb") as output:
                     shutil.copyfileobj(src, output)
-                copied.append(path.name)
-    missing = [name for name in GAME_FILES if name not in copied]
-    if missing:
-        raise SystemExit("GAME model directory is missing: " + ", ".join(missing))
     print(f"GAME written to: {dest}")
 
 
