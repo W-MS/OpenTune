@@ -124,9 +124,13 @@ foreach ($name in @("WIN_SIGNER_CHAP", "WIN_SIGNER_ENDPOINT", "WIN_SIGNER_KEY", 
 }
 
 $EndpointHost = ($Endpoint -split ":", 2)[0]
-$ChapUser = ($Chap -split "\s+", 2)[0]
-$ChapSecret = ""
-if ($Chap -match "\s+(\S.*)$") { $ChapSecret = $Matches[1] }
+# The secret is "username password". login takes them as two arguments.
+$ChapParts = @($Chap.Trim() -split "\s+", 2)
+if ($ChapParts.Count -lt 2 -or [string]::IsNullOrWhiteSpace($ChapParts[0]) -or [string]::IsNullOrWhiteSpace($ChapParts[1])) {
+    throw "WIN_SIGNER_CHAP must contain a username and a password separated by a space"
+}
+$ChapUser = $ChapParts[0]
+$ChapSecret = $ChapParts[1]
 $ConnectArg = "$Key@$Endpoint"
 foreach ($secret in @($Chap, $ChapUser, $ChapSecret, $Endpoint, $EndpointHost, $Key, $Url, $ConnectArg)) {
     Register-GitHubMask $secret
@@ -175,7 +179,7 @@ try {
     Write-Host "Connected"
 
     Write-Host "Logging in to the Windows signer"
-    $loggedIn = Invoke-Captured $Signer @("login", $Chap)
+    $loggedIn = Invoke-Captured $Signer @("login", $ChapUser, $ChapSecret)
     if ($loggedIn.ExitCode -ne 0 -or -not (Test-TextOccurs -Raw $loggedIn.Raw -Text $LoggedInText -GbkPattern $LoggedInGbk)) {
         throw "Login failed"
     }
