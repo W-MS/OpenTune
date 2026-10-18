@@ -8,6 +8,17 @@ if ($cmake -notmatch 'project\(OpenTune VERSION (\d+\.\d+\.\d+)') {
     throw "Could not parse the version from CMakeLists.txt"
 }
 $Version = $Matches[1]
+$Label = ""
+if ($env:OPENTUNE_BUILD_LABEL) {
+    $Label = $env:OPENTUNE_BUILD_LABEL.Trim()
+}
+if ($Label -and $Label -notmatch '^[0-9A-Za-z._-]{1,40}$') {
+    throw "Invalid OPENTUNE_BUILD_LABEL: $Label"
+}
+$Stem = $Version
+if ($Label) {
+    $Stem = "$Version-$Label"
+}
 if ($cmake -notmatch 'set\(OPENTUNE_ORT_DLL_NAME "([^"]+)"\)') {
     throw "Could not parse OPENTUNE_ORT_DLL_NAME from CMakeLists.txt"
 }
@@ -56,7 +67,7 @@ foreach ($name in @("LICENSE", "NOTICE.txt", "NOTICE.zh-CN.txt", "STATEMENTS.txt
     }
 }
 
-$zip = Join-Path $Dist "OpenTune-$Version-Windows-x64.zip"
+$zip = Join-Path $Dist "OpenTune-$Stem-Windows-x64.zip"
 if (Test-Path -LiteralPath $zip) {
     Remove-Item -LiteralPath $zip -Force
 }
@@ -75,6 +86,6 @@ if ($prefixed) {
     throw "Zip entries must not start with ./ : $($prefixed -join ', ')"
 }
 if ($env:GITHUB_OUTPUT) {
-    [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$Version`n")
+    [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$Stem`n")
 }
 Write-Host "Created $zip"
