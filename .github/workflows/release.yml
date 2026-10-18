@@ -3,30 +3,26 @@ name: Release
 # Dependencies are downloaded into the runner workspace. They are not committed.
 # macOS also imports the Developer ID secrets into a temporary keychain, then deletes it.
 
-# Pull requests and standalone pushes always build. The package name gains a PR
-# number or a short commit id. A GitHub Release is published only when
-# project(OpenTune VERSION) changes on standalone or on a v* tag.
+# Only standalone is built. Other branches and pull requests do not start a run.
+# The package name gains a short commit id when project(OpenTune VERSION) is
+# unchanged. A GitHub Release is published only when that version changes.
 on:
   workflow_dispatch:
-  pull_request:
-    branches:
-      - standalone
   push:
     branches:
       - standalone
-    tags:
-      - "v*"
 
 permissions:
   contents: read
 
 concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
 
 jobs:
   prepare:
     name: Choose package label
+    if: github.ref == 'refs/heads/standalone'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
@@ -41,7 +37,6 @@ jobs:
       - name: Compare the CMake version
         id: meta
         env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
@@ -57,20 +52,16 @@ jobs:
 
           publish=false
           label=""
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            label="pr${PR_NUMBER}"
-          else
-            old=""
-            if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ -n "${BEFORE}" ] && [ "${BEFORE}" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-              old="$(git show "${BEFORE}:CMakeLists.txt" | sed -n 's/.*project(OpenTune VERSION \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)"
-              echo "Previous CMake version: ${old:-<missing>}"
-            elif git rev-parse --verify --quiet "HEAD^" >/dev/null; then
-              old="$(git show "HEAD^:CMakeLists.txt" | sed -n 's/.*project(OpenTune VERSION \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)"
-              echo "Parent CMake version: ${old:-<missing>}"
-            fi
-            if [ -n "${old}" ] && [ "${old}" != "${version}" ] && { [ "${GITHUB_REF}" = "refs/heads/standalone" ] || [ "${GITHUB_REF_TYPE}" = "tag" ]; }; then
-              publish=true
-            fi
+          old=""
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ -n "${BEFORE}" ] && [ "${BEFORE}" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            old="$(git show "${BEFORE}:CMakeLists.txt" | sed -n 's/.*project(OpenTune VERSION \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)"
+            echo "Previous CMake version: ${old:-<missing>}"
+          elif git rev-parse --verify --quiet "HEAD^" >/dev/null; then
+            old="$(git show "HEAD^:CMakeLists.txt" | sed -n 's/.*project(OpenTune VERSION \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)"
+            echo "Parent CMake version: ${old:-<missing>}"
+          fi
+          if [ -n "${old}" ] && [ "${old}" != "${version}" ] && [ "${GITHUB_REF}" = "refs/heads/standalone" ]; then
+            publish=true
           fi
 
           if [ "${publish}" != "true" ] && [ -z "${label}" ]; then

@@ -53,7 +53,7 @@ PKG_MIN_OS="12.0"
 STANDALONE_ARTIFACTS="${BUILD_DIR}/OpenTuneStandalone_artefacts/Release"
 VST3_ARTIFACTS="${BUILD_DIR}/OpenTune_artefacts/Release"
 AU_ARTIFACTS="${BUILD_DIR}/OpenTuneAU_artefacts/Release"
-# 非空时是 PR 号或短提交号，只加在文件名上。安装包内部版本仍是 CMake 的 VERSION。
+# 非空时是短提交号，只加在文件名上。安装包内部版本仍是 CMake 的 VERSION。
 BUILD_LABEL="${OPENTUNE_BUILD_LABEL:-}"
 if [ -n "${BUILD_LABEL}" ] && ! printf '%s' "${BUILD_LABEL}" | grep -Eq '^[0-9A-Za-z._-]{1,40}$'; then
     echo "Invalid OPENTUNE_BUILD_LABEL: ${BUILD_LABEL}"
