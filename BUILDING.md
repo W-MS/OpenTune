@@ -53,10 +53,10 @@ cd ..
 
 `ThirdParty/r8brain-free-src-master/` 已跟踪在 Git 仓库中，clone OpenTune 后无需另行下载或克隆。
 
-SoundTouch 2.3.3 从[官方源码仓库](https://codeberg.org/soundtouch/soundtouch)获取，克隆到 CMake 要求的目录：
+SoundTouch 2.3.2 从[官方源码仓库](https://codeberg.org/soundtouch/soundtouch)获取，克隆到 CMake 要求的目录：
 
 ```bash
-git clone --branch 2.3.3 https://codeberg.org/soundtouch/soundtouch.git ThirdParty/soundtouch-2.3.3
+git clone --branch 2.3.2 https://codeberg.org/soundtouch/soundtouch.git ThirdParty/soundtouch-2.3.2
 ```
 
 ### 4. ONNX Runtime（Windows v1.24.4 / macOS v1.20.0 universal2）
@@ -172,7 +172,7 @@ ThirdParty/microsoft.direct3d.d3d12.1.619.5/
 | `JUCE-master/` | 必需 | 克隆 JUCE 到仓库根目录；按上文 ARA 2.3.0 说明修改 `juce_audio_plugin_client_ARA.cpp` 的 include 路径。 |
 | `ThirdParty/ARA_SDK-releases-2.3.0/` | 必需 | 克隆 ARA SDK `releases/2.3.0` 分支并包含子模块。 |
 | `ThirdParty/r8brain-free-src-master/` | 必需 | 已随 Git 仓库提供，无需另行下载。 |
-| `ThirdParty/soundtouch-2.3.3/` | 必需 | 从上文链接的 SoundTouch 官方仓库克隆 `2.3.3` tag。 |
+| `ThirdParty/soundtouch-2.3.2/` | 必需 | 从上文链接的 SoundTouch 官方仓库克隆 `2.3.2` tag。 |
 | `ThirdParty/onnxruntime-osx-universal2-1.20.0/` | 必需 | 运行 `./scripts/build-onnxruntime-macos.sh` 生成。该脚本从 [Microsoft ONNX Runtime v1.20.0](https://github.com/microsoft/onnxruntime/tree/v1.20.0) 源码构建，并从 [Eigen 官方仓库固定 revision](https://gitlab.com/libeigen/eigen/-/archive/e7248b26a1ed53fa030c5c459f7ea095dfd276ac/eigen-e7248b26a1ed53fa030c5c459f7ea095dfd276ac.zip) 获取 Eigen；分别构建 arm64、x86_64。打包脚本不会调用此脚本。 |
 | `models/fcpe.onnx` | 必需 | 从 [KCKT0112/HachiTune 固定提交](https://raw.githubusercontent.com/KCKT0112/HachiTune/d68808c37dede264d80d2d1050dce27af34ad654/Resources/models/fcpe.onnx) 下载；核对 SHA-256 为 `013b507acd406de122b61ee497300ac6be082511101bc2136b886e48d9737e5d`。模型上游作者为 [CNChTu/FCPE](https://github.com/CNChTu/FCPE)。 |
 | `pc_nsf_hifigan_44.1k_ONNX/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` | 必需 | 下载上方的 `.oudep` 并按 zip 解压，把包内的 `pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` 放到该路径。构建时复制为 `models/hifigan.onnx`。 |

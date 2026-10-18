@@ -54,10 +54,10 @@ cd ..
 
 `ThirdParty/r8brain-free-src-master/` is tracked in the Git repository; no separate download or clone is needed.
 
-Obtain SoundTouch 2.3.3 from the [official source repository](https://codeberg.org/soundtouch/soundtouch) and clone it to the path expected by CMake:
+Obtain SoundTouch 2.3.2 from the [official source repository](https://codeberg.org/soundtouch/soundtouch) and clone it to the path expected by CMake:
 
 ```bash
-git clone --branch 2.3.3 https://codeberg.org/soundtouch/soundtouch.git ThirdParty/soundtouch-2.3.3
+git clone --branch 2.3.2 https://codeberg.org/soundtouch/soundtouch.git ThirdParty/soundtouch-2.3.2
 ```
 
 ### 4. ONNX Runtime (Windows v1.24.4 / macOS v1.20.0 universal2)
@@ -165,7 +165,7 @@ Except for the r8brain source included in the repository, obtain the following d
 | `JUCE-master/` | Yes | Clone JUCE at the repository root; apply the ARA 2.3.0 include-path edit to `juce_audio_plugin_client_ARA.cpp` described above. |
 | `ThirdParty/ARA_SDK-releases-2.3.0/` | Yes | Clone the ARA SDK `releases/2.3.0` branch with submodules. |
 | `ThirdParty/r8brain-free-src-master/` | Yes | Included in the Git repository; no separate download is needed. |
-| `ThirdParty/soundtouch-2.3.3/` | Yes | Clone the `2.3.3` tag from the official SoundTouch repository linked above. |
+| `ThirdParty/soundtouch-2.3.2/` | Yes | Clone the `2.3.2` tag from the official SoundTouch repository linked above. |
 | `ThirdParty/onnxruntime-osx-universal2-1.20.0/` | Yes | Generate it with `./scripts/build-onnxruntime-macos.sh`. The script builds from [Microsoft ONNX Runtime v1.20.0](https://github.com/microsoft/onnxruntime/tree/v1.20.0) and fetches Eigen at [this official repository revision](https://gitlab.com/libeigen/eigen/-/archive/e7248b26a1ed53fa030c5c459f7ea095dfd276ac/eigen-e7248b26a1ed53fa030c5c459f7ea095dfd276ac.zip), then builds arm64 and x86_64 separately. The packaging script does not invoke this builder. |
 | `models/fcpe.onnx` | Yes | Download from this [pinned KCKT0112/HachiTune commit](https://raw.githubusercontent.com/KCKT0112/HachiTune/d68808c37dede264d80d2d1050dce27af34ad654/Resources/models/fcpe.onnx); verify SHA-256 `013b507acd406de122b61ee497300ac6be082511101bc2136b886e48d9737e5d`. The upstream model author is [CNChTu/FCPE](https://github.com/CNChTu/FCPE). |
 | `pc_nsf_hifigan_44.1k_ONNX/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` | Yes | Download the `.oudep` linked above and unzip it. Place its `pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` at this path. The build copies it to `models/hifigan.onnx`. |

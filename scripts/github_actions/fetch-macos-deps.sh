@@ -7,12 +7,13 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"
 mkdir -p ThirdParty models
 
-JUCE_REF="8.0.6"
-JUCE_COMMIT="51a8a6d7aeae7326956d747737ccf1575e61e209"
+JUCE_REF="8.0.12"
+JUCE_COMMIT="29396c22c93392d6738e021b83196283d6e4d850"
 ARA_REF="releases/2.3.0"
 ARA_COMMIT="0005c532bb03eb210e7bb490329fc6d7ba1792c7"
-SOUNDTOUCH_COMMIT="e83424d5928ab8513d2d082779c275765dee31b9"
-SOUNDTOUCH_ARCHIVE_SHA256="06c00f37d28e5984944951c20d0845c7931e691c59820922230915d205131a47"
+SOUNDTOUCH_REF="2.3.2"
+SOUNDTOUCH_COMMIT="29fba832a7920a04eab956b3990c50e13d8c93f9"
+SOUNDTOUCH_ARCHIVE_SHA256="ed714f84a3e748de87b24f385ec69d3bdc51ca47b7f4710d2048b84b2761e7ff"
 
 juce_ready=0
 if [ -e JUCE-master ]; then
@@ -83,14 +84,14 @@ if [ "${ara_ready}" -eq 0 ]; then
 fi
 
 fetch_soundtouch_archive() {
-    local dest="ThirdParty/soundtouch-2.3.3"
+    local dest="ThirdParty/soundtouch-2.3.2"
     local marker="${dest}/source/SoundTouch/SoundTouch.cpp"
     local archive parent actual
     archive="$(mktemp)"
     parent="$(mktemp -d)"
     curl -fsSL --retry 5 --retry-delay 5 \
         -o "${archive}" \
-        "https://codeberg.org/soundtouch/soundtouch/archive/2.3.3.tar.gz"
+        "https://codeberg.org/soundtouch/soundtouch/archive/${SOUNDTOUCH_REF}.tar.gz"
     actual="$(shasum -a 256 "${archive}" | awk '{print $1}')"
     if [ "${actual}" != "${SOUNDTOUCH_ARCHIVE_SHA256}" ]; then
         echo "SoundTouch archive SHA-256 mismatch: expected ${SOUNDTOUCH_ARCHIVE_SHA256}, got ${actual}" >&2
@@ -112,15 +113,21 @@ fetch_soundtouch_archive() {
 
 soundtouch_git_clean() {
     local status
-    if ! status="$(git -C ThirdParty/soundtouch-2.3.3 status --porcelain --untracked-files=all --ignored=matching 2>/dev/null)" || \
+    if ! status="$(git -C ThirdParty/soundtouch-2.3.2 status --porcelain --untracked-files=all --ignored=matching 2>/dev/null)" || \
         [ -n "${status}" ]; then
         return 1
     fi
     return 0
 }
 
+soundtouch_source_matches() {
+    local dest="ThirdParty/soundtouch-2.3.2"
+    [ -f "${dest}/source/SoundTouch/SoundTouch.cpp" ] && \
+        grep -q 'AC_INIT(\[SoundTouch\],\[2\.3\.2\]' "${dest}/configure.ac"
+}
+
 fetch_soundtouch() {
-    local dest="ThirdParty/soundtouch-2.3.3"
+    local dest="ThirdParty/soundtouch-2.3.2"
     local marker="${dest}/source/SoundTouch/SoundTouch.cpp"
     local attempt actual
     if [ -e "${dest}" ]; then
@@ -132,6 +139,8 @@ fetch_soundtouch() {
                 fi
             fi
             rm -rf "${dest}"
+        elif soundtouch_source_matches; then
+            return 0
         else
             rm -rf "${dest}"
             fetch_soundtouch_archive
@@ -140,12 +149,12 @@ fetch_soundtouch() {
     fi
     for attempt in 1 2 3 4 5; do
         rm -rf "${dest}"
-        if git clone --depth 1 --branch 2.3.3 \
+        if git clone --depth 1 --branch "${SOUNDTOUCH_REF}" \
             https://codeberg.org/soundtouch/soundtouch.git "${dest}"; then
             actual="$(git -C "${dest}" rev-parse HEAD)"
             if [ "${actual}" != "${SOUNDTOUCH_COMMIT}" ]; then
                 rm -rf "${dest}"
-                echo "SoundTouch 2.3.3 tag revision mismatch: expected ${SOUNDTOUCH_COMMIT}, got ${actual}" >&2
+                echo "SoundTouch ${SOUNDTOUCH_REF} tag revision mismatch: expected ${SOUNDTOUCH_COMMIT}, got ${actual}" >&2
                 return 1
             fi
             if ! soundtouch_git_clean || [ ! -f "${marker}" ]; then
@@ -158,7 +167,7 @@ fetch_soundtouch() {
         echo "SoundTouch git clone failed (attempt ${attempt}/5)"
         sleep $((attempt * 5))
     done
-    echo "Falling back to the SoundTouch 2.3.3 source archive"
+    echo "Falling back to the SoundTouch ${SOUNDTOUCH_REF} source archive"
     fetch_soundtouch_archive
 }
 
@@ -168,6 +177,6 @@ python3 scripts/github_actions/fetch-models.py
 
 test -f Installer/NOTICE.md
 test -f ThirdParty/r8brain-free-src-master/r8bbase.h
-test -f ThirdParty/soundtouch-2.3.3/source/SoundTouch/SoundTouch.cpp
+test -f ThirdParty/soundtouch-2.3.2/source/SoundTouch/SoundTouch.cpp
 test -d ThirdParty/ARA_SDK-releases-2.3.0/ARA_Library
 echo "macOS source dependencies are in the runner workspace. ONNX Runtime is built separately by scripts/build-onnxruntime-macos.sh."
