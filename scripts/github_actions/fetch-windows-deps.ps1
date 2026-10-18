@@ -4,8 +4,8 @@ $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $Root
 
-$JuceRef = "8.0.6"
-$JuceCommit = "51a8a6d7aeae7326956d747737ccf1575e61e209"
+$JuceRef = "8.0.12"
+$JuceCommit = "29396c22c93392d6738e021b83196283d6e4d850"
 $AraRef = "releases/2.3.0"
 $AraCommit = "0005c532bb03eb210e7bb490329fc6d7ba1792c7"
 $SoundTouchRef = "2.3.2"

@@ -7,8 +7,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"
 mkdir -p ThirdParty models
 
-JUCE_REF="8.0.6"
-JUCE_COMMIT="51a8a6d7aeae7326956d747737ccf1575e61e209"
+JUCE_REF="8.0.12"
+JUCE_COMMIT="29396c22c93392d6738e021b83196283d6e4d850"
 ARA_REF="releases/2.3.0"
 ARA_COMMIT="0005c532bb03eb210e7bb490329fc6d7ba1792c7"
 SOUNDTOUCH_REF="2.3.2"
