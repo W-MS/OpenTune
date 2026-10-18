@@ -27,23 +27,38 @@ decode_p12() {
 decode_p12 "${MACOS_APPLICATION_P12_BASE64}" "${APP_P12}"
 decode_p12 "${MACOS_INSTALLER_P12_BASE64}" "${INST_P12}"
 
+run_quiet() {
+    local message="$1"
+    shift
+    if ! "$@" >/dev/null 2>&1; then
+        echo "${message}"
+        exit 1
+    fi
+}
+
 security delete-keychain "${KEYCHAIN_PATH}" >/dev/null 2>&1 || true
-security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
-security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-security list-keychains -d user -s "${KEYCHAIN_PATH}"
-security default-keychain -s "${KEYCHAIN_PATH}"
+run_quiet "Could not create the temporary keychain" \
+    security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+run_quiet "Could not configure the temporary keychain" \
+    security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+run_quiet "Could not unlock the temporary keychain" \
+    security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+run_quiet "Could not select the temporary keychain" \
+    security list-keychains -d user -s "${KEYCHAIN_PATH}"
+run_quiet "Could not set the default keychain" \
+    security default-keychain -s "${KEYCHAIN_PATH}"
+run_quiet "Could not import the application certificate" \
+    security import "${APP_P12}" -k "${KEYCHAIN_PATH}" -P "${MACOS_APPLICATION_P12_PASSWORD}" -A -t cert -f pkcs12
+run_quiet "Could not import the installer certificate" \
+    security import "${INST_P12}" -k "${KEYCHAIN_PATH}" -P "${MACOS_INSTALLER_P12_PASSWORD}" -A -t cert -f pkcs12
+run_quiet "Could not allow codesign to use the imported key" \
+    security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
 
-security import "${APP_P12}" -k "${KEYCHAIN_PATH}" -P "${MACOS_APPLICATION_P12_PASSWORD}" -A -t cert -f pkcs12
-security import "${INST_P12}" -k "${KEYCHAIN_PATH}" -P "${MACOS_INSTALLER_P12_PASSWORD}" -A -t cert -f pkcs12
-security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-
-SIGN_IDENTITY="$(security find-identity -v -p codesigning "${KEYCHAIN_PATH}" | sed -n 's/.*"\(Developer ID Application:[^"]*\)"/\1/p' | head -n 1)"
-PKG_SIGN_IDENTITY="$(security find-identity -v "${KEYCHAIN_PATH}" | sed -n 's/.*"\(Developer ID Installer:[^"]*\)"/\1/p' | head -n 1)"
+SIGN_IDENTITY="$(security find-identity -v -p codesigning "${KEYCHAIN_PATH}" 2>/dev/null | sed -n 's/.*"\(Developer ID Application:[^"]*\)"/\1/p' | head -n 1)"
+PKG_SIGN_IDENTITY="$(security find-identity -v "${KEYCHAIN_PATH}" 2>/dev/null | sed -n 's/.*"\(Developer ID Installer:[^"]*\)"/\1/p' | head -n 1)"
 
 if [ -z "${SIGN_IDENTITY}" ] || [ -z "${PKG_SIGN_IDENTITY}" ]; then
     echo "Keychain is missing Developer ID Application or Developer ID Installer"
-    security find-identity -v "${KEYCHAIN_PATH}" || true
     exit 1
 fi
 
@@ -56,8 +71,9 @@ case "${PKG_SIGN_IDENTITY}" in
     *) echo "Installer certificate Team ID does not match APPLE_TEAM_ID"; exit 1 ;;
 esac
 
-echo "Application: ${SIGN_IDENTITY}"
-echo "Installer: ${PKG_SIGN_IDENTITY}"
+# Later steps print these names while signing. Mask them for the rest of the job.
+echo "::add-mask::${SIGN_IDENTITY}"
+echo "::add-mask::${PKG_SIGN_IDENTITY}"
 
 if [ -n "${GITHUB_ENV:-}" ]; then
     {

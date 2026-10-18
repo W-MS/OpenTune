@@ -87,9 +87,8 @@ if [ "${SIGN_IDENTITY}" != "-" ]; then
         echo "SIGN_IDENTITY is set, but PKG builds also need PKG_SIGN_IDENTITY (Developer ID Installer)"
         exit 1
     fi
-    if ! security find-identity -v -p codesigning | grep -F -- "${SIGN_IDENTITY}" >/dev/null; then
-        echo "Developer ID Application was not found in the keychain: ${SIGN_IDENTITY}"
-        security find-identity -v -p codesigning || true
+    if ! security find-identity -v -p codesigning 2>/dev/null | grep -F -- "${SIGN_IDENTITY}" >/dev/null; then
+        echo "Developer ID Application was not found in the keychain"
         exit 1
     fi
 fi
