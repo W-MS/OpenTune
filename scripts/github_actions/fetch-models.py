@@ -26,9 +26,17 @@ HIFIGAN_URL = (
 )
 HIFIGAN_NAME = "pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx"
 HIFIGAN_SHA256 = "ba7d43142d41f6900c8264b5662ca7125a50feb8760bb8b9615c61a8f5e6902e"
+HIFIGAN_MODEL_SHA256 = "b297c0c790dbcfe6b2123d87cc20bf8718969f91ffa3170a198c8fb53686155d"
 GAME_URL = "https://github.com/openvpi/GAME/releases/download/v1.0.3/GAME-1.0.3-small-onnx.zip"
 GAME_SHA256 = "00ba0c64115b6b874d9ea4afd3e6cf822abda2a04e52569233b0a044fd40e4e8"
 GAME_FILES = ("encoder.onnx", "segmenter.onnx", "estimator.onnx", "bd2dur.onnx", "config.json")
+GAME_FILE_SHA256 = {
+    "encoder.onnx": "a6868a702d9c88ccc06b19e54f49d88b7f8cba4a68517f20806bd81ef6f94e06",
+    "segmenter.onnx": "7724db4ba59a388fff5aba2f08f0ac025d4ca59caef80e7f474053a1455c88e5",
+    "estimator.onnx": "a84738b2504472a1f22773cc6b0eccad1353a8f36229ad490b8fea85388bb5e1",
+    "bd2dur.onnx": "6672d56b00f27a20e9bfaa92801c15e394bb520e49031d3ed2515b0a6cf27402",
+    "config.json": "60dfe7e7b57db29475604eeea9b2abf5f8cd2a49326f1f4bc0e1c14ed151a55e",
+}
 
 
 def download(url: str, dest: pathlib.Path) -> None:
@@ -79,6 +87,9 @@ def fetch_fcpe() -> None:
 
 def fetch_hifigan() -> None:
     dest = ROOT / "pc_nsf_hifigan_44.1k_ONNX" / HIFIGAN_NAME
+    if dest.is_file() and sha256(dest) == HIFIGAN_MODEL_SHA256:
+        print(f"HifiGAN already present and checksum matches: {dest}")
+        return
     with tempfile.TemporaryDirectory() as temp_dir:
         archive_path = pathlib.Path(temp_dir) / "hifigan.zip"
         print(f"Downloading HifiGAN: {HIFIGAN_URL}")
@@ -98,11 +109,18 @@ def fetch_hifigan() -> None:
             dest.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(matches[0]) as src, dest.open("wb") as output:
                 shutil.copyfileobj(src, output)
+    verify_sha256(dest, HIFIGAN_MODEL_SHA256, "HifiGAN model")
     print(f"HifiGAN written to: {dest}")
 
 
 def fetch_game() -> None:
     dest = ROOT / "models" / "GAME"
+    if all(
+        (dest / name).is_file() and sha256(dest / name) == expected
+        for name, expected in GAME_FILE_SHA256.items()
+    ):
+        print(f"GAME already present and checksums match: {dest}")
+        return
     with tempfile.TemporaryDirectory() as temp_dir:
         archive_path = pathlib.Path(temp_dir) / "game.zip"
         print(f"Downloading GAME: {GAME_URL}")
@@ -126,6 +144,8 @@ def fetch_game() -> None:
             for required in GAME_FILES:
                 with archive.open(members[required]) as src, (dest / required).open("wb") as output:
                     shutil.copyfileobj(src, output)
+    for required, expected in GAME_FILE_SHA256.items():
+        verify_sha256(dest / required, expected, f"GAME {required}")
     print(f"GAME written to: {dest}")
 
 
