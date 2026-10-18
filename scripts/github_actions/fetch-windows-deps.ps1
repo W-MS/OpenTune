@@ -11,7 +11,7 @@ $AraCommit = "0005c532bb03eb210e7bb490329fc6d7ba1792c7"
 $SoundTouchCommit = "e83424d5928ab8513d2d082779c275765dee31b9"
 $SoundTouchArchiveSha256 = "06c00f37d28e5984944951c20d0845c7931e691c59820922230915d205131a47"
 $OnnxRuntimeDirectMlSha256 = "57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681"
-$DirectMlSha256 = "c431d4a40fc935b3006fa1b93d116992e9974b9d60bffb743a94b0c570482931"
+$DirectMlSha256 = "4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9"
 $Direct3DSha256 = "0e9bcf32aac9a79343ede9b21e4864950ee54577e3d8e19bfcdf002bb4e9bfd6"
 $OnnxRuntimeCpuSha256 = "d2319fddfb6ea4db99ccc4b60c85c517bcd855721f5daa6a06d40d7cb2ee2357"
 
@@ -87,14 +87,18 @@ function Test-CleanGitTree {
 function Test-AraCheckout {
     param([string]$Directory)
     if (-not (Test-CleanGitTree $Directory)) { return $false }
+    # Do not use `git submodule foreach` here. Windows PowerShell splits a
+    # quoted $(...) command, and git then runs `test -z $(git "$@"` which
+    # fails before it can read submodule status.
     $submodules = & git -C $Directory -c core.longpaths=true submodule status --recursive
     if ($LASTEXITCODE -ne 0) { return $false }
     foreach ($line in @($submodules)) {
-        if ($line.Length -gt 0 -and $line[0] -ne " ") { return $false }
+        if ($null -eq $line -or $line.Length -eq 0) { continue }
+        if ($line[0] -ne " ") { return $false }
+        if ($line -notmatch '^ [0-9a-f]+ (\S+)') { return $false }
+        $relative = $Matches[1].Replace('/', [IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-CleanGitTree (Join-Path $Directory $relative))) { return $false }
     }
-    & git -C $Directory -c core.longpaths=true submodule foreach --quiet --recursive `
-        'test -z "$(git status --porcelain --untracked-files=all --ignored=matching)"'
-    if ($LASTEXITCODE -ne 0) { return $false }
     return $true
 }
 
