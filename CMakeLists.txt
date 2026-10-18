@@ -932,10 +932,10 @@ if(APPLE)
     target_sources(OpenTuneAU PRIVATE ${OPENTUNE_CAPTURE_SOURCES})
 endif()
 
-# SoundTouch Library v2.3.3 (WSOLA time-stretch for vocal Stage 2).
+# SoundTouch Library v2.3.2 (WSOLA time-stretch for vocal Stage 2).
 # Replaced Rubber Band R3 (phase vocoder) — see archive change swap-time-stretch-to-soundtouch.
 # License: LGPL-2.1. See LICENSES/soundtouch.LGPL-2.1.txt.
-set(SOUNDTOUCH_DIR ${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/soundtouch-2.3.3)
+set(SOUNDTOUCH_DIR ${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/soundtouch-2.3.2)
 if(EXISTS ${SOUNDTOUCH_DIR}/source/SoundTouch/SoundTouch.cpp)
     set(OPENTUNE_SOUNDTOUCH_SOURCES
         ${SOUNDTOUCH_DIR}/source/SoundTouch/AAFilter.cpp
@@ -993,7 +993,7 @@ foreach(_opentune_target IN LISTS OPENTUNE_SHARED_CODE_TARGETS)
             ${CMAKE_CURRENT_SOURCE_DIR}/Source/Standalone
             ${CMAKE_CURRENT_SOURCE_DIR}/Source
             ${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/r8brain-free-src-master
-            ${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/soundtouch-2.3.3/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/soundtouch-2.3.2/include
             ${ONNXRUNTIME_INCLUDE_DIR}
             # JUCE module include paths — required for juce::* namespace resolution
             $<BUILD_INTERFACE:${OPENTUNE_JUCE_DIR}/modules/juce_audio_basics>

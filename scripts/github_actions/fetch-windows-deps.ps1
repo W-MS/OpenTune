@@ -8,8 +8,9 @@ $JuceRef = "8.0.6"
 $JuceCommit = "51a8a6d7aeae7326956d747737ccf1575e61e209"
 $AraRef = "releases/2.3.0"
 $AraCommit = "0005c532bb03eb210e7bb490329fc6d7ba1792c7"
-$SoundTouchCommit = "e83424d5928ab8513d2d082779c275765dee31b9"
-$SoundTouchArchiveSha256 = "06c00f37d28e5984944951c20d0845c7931e691c59820922230915d205131a47"
+$SoundTouchRef = "2.3.2"
+$SoundTouchCommit = "29fba832a7920a04eab956b3990c50e13d8c93f9"
+$SoundTouchArchiveSha256 = "ed714f84a3e748de87b24f385ec69d3bdc51ca47b7f4710d2048b84b2761e7ff"
 $OnnxRuntimeDirectMlSha256 = "57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681"
 $DirectMlSha256 = "c431d4a40fc935b3006fa1b93d116992e9974b9d60bffb743a94b0c570482931"
 $Direct3DSha256 = "0e9bcf32aac9a79343ede9b21e4864950ee54577e3d8e19bfcdf002bb4e9bfd6"
@@ -92,9 +93,9 @@ function Test-AraCheckout {
     foreach ($line in @($submodules)) {
         if ($line.Length -gt 0 -and $line[0] -ne " ") { return $false }
     }
-    & git -C $Directory -c core.longpaths=true submodule foreach --quiet --recursive `
-        'test -z "$(git status --porcelain --untracked-files=all --ignored=matching)"'
-    if ($LASTEXITCODE -ne 0) { return $false }
+    $submoduleStatus = & git -C $Directory -c core.longpaths=true submodule foreach --quiet --recursive `
+        'git status --porcelain --untracked-files=all --ignored=matching'
+    if ($LASTEXITCODE -ne 0 -or @($submoduleStatus).Count -gt 0) { return $false }
     return $true
 }
 
@@ -134,8 +135,16 @@ Install-Juce
 
 Install-Ara
 
+function Test-SoundTouchSource {
+    param([string]$Directory)
+    $configure = Join-Path $Directory "configure.ac"
+    if (-not (Test-Path -LiteralPath $configure)) { return $false }
+    if (-not (Select-String -LiteralPath $configure -Pattern 'AC_INIT\(\[SoundTouch\],\[2\.3\.2\]' -Quiet)) { return $false }
+    return Test-Path -LiteralPath (Join-Path $Directory "source\SoundTouch\SoundTouch.cpp")
+}
+
 function Install-SoundTouch {
-    $dest = Join-Path $Root "ThirdParty\soundtouch-2.3.3"
+    $dest = Join-Path $Root "ThirdParty\soundtouch-2.3.2"
     $marker = Join-Path $dest "source\SoundTouch\SoundTouch.cpp"
     if (Test-Path -LiteralPath $dest) {
         if (Test-Path -LiteralPath (Join-Path $dest ".git")) {
@@ -144,6 +153,8 @@ function Install-SoundTouch {
                 return
             }
             Remove-Item -LiteralPath $dest -Recurse -Force
+        } elseif (Test-SoundTouchSource $dest) {
+            return
         } else {
             Remove-Item -LiteralPath $dest -Recurse -Force
             Install-SoundTouchArchive
@@ -154,13 +165,13 @@ function Install-SoundTouch {
         if (Test-Path -LiteralPath $dest) {
             Remove-Item -LiteralPath $dest -Recurse -Force
         }
-        & git clone --depth 1 --branch 2.3.3 "https://codeberg.org/soundtouch/soundtouch.git" $dest
+        & git clone --depth 1 --branch $SoundTouchRef "https://codeberg.org/soundtouch/soundtouch.git" $dest
         if ($LASTEXITCODE -eq 0) {
             $head = & git -C $dest rev-parse HEAD
             if ($LASTEXITCODE -ne 0) { throw "SoundTouch checkout has no readable Git HEAD" }
             if ($head.Trim() -ne $SoundTouchCommit) {
                 Remove-Item -LiteralPath $dest -Recurse -Force
-                throw "SoundTouch 2.3.3 tag revision mismatch: expected $SoundTouchCommit, got $($head.Trim())"
+                throw "SoundTouch $SoundTouchRef tag revision mismatch: expected $SoundTouchCommit, got $($head.Trim())"
             }
             if (-not (Test-CleanGitTree $dest) -or -not (Test-Path -LiteralPath $marker)) {
                 Remove-Item -LiteralPath $dest -Recurse -Force
@@ -175,21 +186,21 @@ function Install-SoundTouch {
 }
 
 function Install-SoundTouchArchive {
-    $dest = Join-Path $Root "ThirdParty\soundtouch-2.3.3"
+    $dest = Join-Path $Root "ThirdParty\soundtouch-2.3.2"
     $marker = Join-Path $dest "source\SoundTouch\SoundTouch.cpp"
-    Write-Host "Fetching the verified SoundTouch 2.3.3 source archive"
+    Write-Host "Fetching the verified SoundTouch $SoundTouchRef source archive"
     if (Test-Path -LiteralPath $dest) {
         Remove-Item -LiteralPath $dest -Recurse -Force
     }
-    $archive = Join-Path $Work "soundtouch-2.3.3.tar.gz"
+    $archive = Join-Path $Work "soundtouch-$SoundTouchRef.tar.gz"
     $extract = Join-Path $Work "soundtouch-extract"
     if (Test-Path -LiteralPath $extract) {
         Remove-Item -LiteralPath $extract -Recurse -Force
     }
     New-Item -ItemType Directory -Force -Path $extract | Out-Null
-    Save-Url "https://codeberg.org/soundtouch/soundtouch/archive/2.3.3.tar.gz" $archive
+    Save-Url "https://codeberg.org/soundtouch/soundtouch/archive/$SoundTouchRef.tar.gz" $archive
     Assert-Sha256 -Path $archive -Expected $SoundTouchArchiveSha256 -Label "SoundTouch archive"
-    Invoke-Checked "tar.exe" @("-xzf", $archive, "-C", $extract)
+    Invoke-Checked "tar.exe" @("--exclude=*/LazarusTest/*", "-xzf", $archive, "-C", $extract)
     $unpacked = Join-Path $extract "soundtouch"
     if (-not (Test-Path -LiteralPath (Join-Path $unpacked "source\SoundTouch\SoundTouch.cpp"))) {
         throw "SoundTouch archive is missing source/SoundTouch/SoundTouch.cpp"
@@ -262,7 +273,7 @@ $required = @(
     "ThirdParty\microsoft.direct3d.d3d12.1.619.5\build\native\bin\x64\D3D12Core.dll",
     "ThirdParty\microsoft.direct3d.d3d12.1.619.5\build\native\bin\x64\d3d12SDKLayers.dll",
     "ThirdParty\r8brain-free-src-master\r8bbase.h",
-    "ThirdParty\soundtouch-2.3.3\source\SoundTouch\SoundTouch.cpp",
+    "ThirdParty\soundtouch-2.3.2\source\SoundTouch\SoundTouch.cpp",
     "ThirdParty\ARA_SDK-releases-2.3.0\ARA_Library",
     "models\fcpe.onnx",
     "pc_nsf_hifigan_44.1k_ONNX\pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx"

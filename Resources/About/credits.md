@@ -22,7 +22,7 @@ gratefully acknowledge the work of their authors.
 - **Project**: https://github.com/avaneev/r8brain-free-src
 - **Use**: Polyphase 24-bit sample rate conversion
 
-### SoundTouch 2.3.3
+### SoundTouch 2.3.2
 - **License**: GNU LGPL v2.1 (see LICENSES/soundtouch.LGPL-2.1.txt)
 - **Project**: https://www.surina.net/soundtouch/
 - **Author**: Olli Parviainen

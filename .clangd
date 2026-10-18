@@ -58,7 +58,7 @@ CompileFlags:
 
     # ---- 第三方库（与真实构建 include 列表对齐）----
     - "-IG:/Opentune0723/ThirdParty/r8brain-free-src-master"
-    - "-IG:/Opentune0723/ThirdParty/soundtouch-2.3.3/include"
+    - "-IG:/Opentune0723/ThirdParty/soundtouch-2.3.2/include"
     - "-IG:/Opentune0723/ThirdParty/onnxruntime-win-x64-1.24.4/include"
     - "-IG:/Opentune0723/ThirdParty/onnxruntime-dml-1.24.4/build/native/include"
     - "-IG:/Opentune0723/build-ara-overlay-vs18-clean/onnxruntime_dml_include"
