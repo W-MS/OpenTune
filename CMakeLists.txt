@@ -445,18 +445,7 @@ if(APPLE)
 endif()
 
 if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
-    # The helper must be host-arch so it can run while the plugin is universal
-    # or cross-compiled. JUCE 8.0.6 creates one executable named juce_vst3_helper.
-    # Later JUCE revisions name it after the plugin instead.
-    if(TARGET OpenTune_vst3_helper)
-        set(OPENTUNE_VST3_HELPER_TARGET OpenTune_vst3_helper)
-    elseif(TARGET juce_vst3_helper)
-        set(OPENTUNE_VST3_HELPER_TARGET juce_vst3_helper)
-    else()
-        message(FATAL_ERROR
-            "VST3 manifest helper target is missing. Expected OpenTune_vst3_helper or juce_vst3_helper.")
-    endif()
-    set_target_properties(${OPENTUNE_VST3_HELPER_TARGET} PROPERTIES
+    set_target_properties(OpenTune_vst3_helper PROPERTIES
         OSX_ARCHITECTURES "${CMAKE_HOST_SYSTEM_PROCESSOR}")
 endif()
 

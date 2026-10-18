@@ -87,18 +87,14 @@ function Test-CleanGitTree {
 function Test-AraCheckout {
     param([string]$Directory)
     if (-not (Test-CleanGitTree $Directory)) { return $false }
-    # Do not use `git submodule foreach` here. Windows PowerShell splits a
-    # quoted $(...) command, and git then runs `test -z $(git "$@"` which
-    # fails before it can read submodule status.
     $submodules = & git -C $Directory -c core.longpaths=true submodule status --recursive
     if ($LASTEXITCODE -ne 0) { return $false }
     foreach ($line in @($submodules)) {
-        if ($null -eq $line -or $line.Length -eq 0) { continue }
-        if ($line[0] -ne " ") { return $false }
-        if ($line -notmatch '^ [0-9a-f]+ (\S+)') { return $false }
-        $relative = $Matches[1].Replace('/', [IO.Path]::DirectorySeparatorChar)
-        if (-not (Test-CleanGitTree (Join-Path $Directory $relative))) { return $false }
+        if ($line.Length -gt 0 -and $line[0] -ne " ") { return $false }
     }
+    & git -C $Directory -c core.longpaths=true submodule foreach --quiet --recursive `
+        'test -z "$(git status --porcelain --untracked-files=all --ignored=matching)"'
+    if ($LASTEXITCODE -ne 0) { return $false }
     return $true
 }
 
