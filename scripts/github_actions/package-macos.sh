@@ -7,8 +7,6 @@
 # 并用 PKG_SIGN_IDENTITY（Developer ID Installer）签名 PKG。
 # 用法：
 #   scripts/github_actions/package-macos.sh                     # 构建 Universal2 并生成 PKG
-#   scripts/github_actions/package-macos.sh --format dmg        # 生成 Universal2 DMG
-#   scripts/github_actions/package-macos.sh --format both       # 同时生成 DMG 与 PKG
 #   scripts/github_actions/package-macos.sh --skip-build        # 跳过构建，直接打包已有产物
 #   scripts/github_actions/package-macos.sh --clean             # 清空构建目录后重新构建
 # ==============================================================================
@@ -28,60 +26,21 @@ ENTITLEMENTS="${ROOT_DIR}/scripts/github_actions/macos-entitlements.plist"
 # ── 参数解析 ──────────────────────────────────────────────────────────────────
 SKIP_BUILD=false
 CLEAN=false
-FORMAT="pkg"
-PREV_ARG=""
 for arg in "$@"; do
-    if [ "${PREV_ARG}" = "--format" ] && [[ "${arg}" == -* ]]; then
-        echo "Missing value for --format (expected dmg, pkg, or both)"
-        exit 1
-    fi
-
     case "$arg" in
         --skip-build) SKIP_BUILD=true ;;
         --clean)      CLEAN=true ;;
-        --format)
-            # handled via next arg
-            ;;
-        --format=dmg)
-            FORMAT="dmg"
-            ;;
-        --format=pkg)
-            FORMAT="pkg"
-            ;;
-        --format=both)
-            FORMAT="both"
-            ;;
-        --format=*)
-            echo "Unknown package format: ${arg#--format=} (expected dmg, pkg, or both)"
-            exit 1
-            ;;
         -h|--help)
-            echo "Usage: $0 [--format dmg|pkg|both] [--skip-build] [--clean]"
-            echo "  --format FMT   Package format: dmg, pkg, or both (default pkg)"
+            echo "Usage: $0 [--skip-build] [--clean]"
             echo "  --skip-build   Package existing build outputs"
             echo "  --clean        Delete the build directory before building"
             exit 0
             ;;
         *)
-            # Handle --format <value> form (space-separated)
-            if [ "${PREV_ARG:-}" = "--format" ]; then
-                case "$arg" in
-                    dmg|pkg|both) FORMAT="$arg" ;;
-                    *) echo "Unknown package format: $arg (expected dmg, pkg, or both)"; exit 1 ;;
-                esac
-                PREV_ARG=""
-                continue
-            fi
             echo "Unknown argument: $arg"; exit 1
             ;;
     esac
-    PREV_ARG="$arg"
 done
-
-if [ "${PREV_ARG}" = "--format" ]; then
-    echo "Missing value for --format (expected dmg, pkg, or both)"
-    exit 1
-fi
 
 # ── 唯一 macOS Release 目标：Universal2 ───────────────────────────────────────
 OSX_ARCHS="arm64 x86_64"
@@ -94,28 +53,19 @@ PKG_MIN_OS="12.0"
 STANDALONE_ARTIFACTS="${BUILD_DIR}/OpenTuneStandalone_artefacts/Release"
 VST3_ARTIFACTS="${BUILD_DIR}/OpenTune_artefacts/Release"
 AU_ARTIFACTS="${BUILD_DIR}/OpenTuneAU_artefacts/Release"
-DMG_NAME="${APP_NAME}-${VERSION}-macOS-${DMG_ARCH_LABEL}"
 PKG_NAME="${APP_NAME}-${VERSION}-macOS-${DMG_ARCH_LABEL}"
 
 # ── 工具检查 ──────────────────────────────────────────────────────────────────
-for cmd in cmake ninja hdiutil codesign xattr otool lipo file; do
+for cmd in cmake ninja pkgbuild productbuild codesign xattr otool lipo file; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "Missing tool: $cmd"
         exit 1
     fi
 done
 
-if [ "$FORMAT" != "dmg" ]; then
-    for cmd in pkgbuild productbuild; do
-        if ! command -v "$cmd" &>/dev/null; then
-            echo "Missing tool: $cmd (PKG builds need the macOS command line tools)"
-            exit 1
-        fi
-    done
-    if [ ! -f "${ROOT_DIR}/Installer/NOTICE.md" ]; then
-        echo "PKG builds need Installer/NOTICE.md"
-        exit 1
-    fi
+if [ ! -f "${ROOT_DIR}/Installer/NOTICE.md" ]; then
+    echo "PKG builds need Installer/NOTICE.md"
+    exit 1
 fi
 
 if [ "${SIGN_IDENTITY}" != "-" ]; then
@@ -123,7 +73,7 @@ if [ "${SIGN_IDENTITY}" != "-" ]; then
         echo "Missing entitlements: ${ENTITLEMENTS}"
         exit 1
     fi
-    if [ "$FORMAT" != "dmg" ] && [ -z "${PKG_SIGN_IDENTITY:-}" ]; then
+    if [ -z "${PKG_SIGN_IDENTITY:-}" ]; then
         echo "SIGN_IDENTITY is set, but PKG builds also need PKG_SIGN_IDENTITY (Developer ID Installer)"
         exit 1
     fi
@@ -876,70 +826,23 @@ STAGING_SIZE=$(du -sh "${STAGING}" | cut -f1)
 echo ""
 echo "Staging size: ${STAGING_SIZE}"
 
-# ── 生成 PKG（--format pkg|both）─────────────────────────────────────────────
-if [ "$FORMAT" != "dmg" ]; then
-    build_pkg
+# ── 生成 PKG ──────────────────────────────────────────────────────────────────
+build_pkg
 
-    PKG_PATH="${DMG_DIR}/${PKG_NAME}.pkg"
-    if [ ! -f "${PKG_PATH}" ]; then
-        echo "PKG was not created: ${PKG_PATH}"
-        exit 1
-    fi
-    PKG_SIZE=$(du -sh "${PKG_PATH}" | cut -f1)
-    echo ""
-    echo "══════════════════════════════════════════════"
-    echo "  PKG created"
-    echo "══════════════════════════════════════════════"
-    echo "  File: ${PKG_PATH}"
-    echo "  Size: ${PKG_SIZE}"
-    echo "  Version: ${VERSION}"
-    echo "  Architectures: Universal2 (x86_64 + arm64)"
-    echo "  Welcome page: notice text from Installer/NOTICE.md"
-    echo "  Install: open the PKG and follow the prompts"
-    echo "══════════════════════════════════════════════"
+PKG_PATH="${DMG_DIR}/${PKG_NAME}.pkg"
+if [ ! -f "${PKG_PATH}" ]; then
+    echo "PKG was not created: ${PKG_PATH}"
+    exit 1
 fi
-
-# ── 生成 DMG（--format dmg|both）─────────────────────────────────────────────
-if [ "$FORMAT" != "pkg" ]; then
-    echo "Creating the DMG"
-
-    DMG_PATH="${DMG_DIR}/${DMG_NAME}.dmg"
-    # 如果已有同名 DMG，先删除
-    rm -f "${DMG_PATH}"
-
-    # 直接从 staging 创建压缩只读 DMG（跳过 AppleScript 美化，终端环境不稳定）
-    hdiutil_log="/dev/null"
-    if [ -n "${CI:-}" ]; then
-        hdiutil_log="/dev/stderr"
-    fi
-    hdiutil create \
-        -srcfolder "${STAGING}" \
-        -volname "${APP_NAME} ${VERSION} Universal2" \
-        -fs HFS+ \
-        -fsargs "-c c=64,a=16,e=16" \
-        -format UDZO \
-        -imagekey zlib-level=9 \
-        "${DMG_PATH}" \
-        2>"${hdiutil_log}"
-
-    if [ "${SIGN_IDENTITY}" != "-" ]; then
-        codesign --force --timestamp --sign "${SIGN_IDENTITY}" "${DMG_PATH}"
-        codesign --verify --verbose=2 "${DMG_PATH}"
-        echo "  DMG signed with Developer ID Application"
-    fi
-
-    # ── 最终结果 ──
-    DMG_SIZE=$(du -sh "${DMG_PATH}" | cut -f1)
-    echo ""
-    echo "══════════════════════════════════════════════"
-    echo "  DMG created"
-    echo "══════════════════════════════════════════════"
-    echo "  File: ${DMG_PATH}"
-    echo "  Size: ${DMG_SIZE}"
-    echo "  Version: ${VERSION}"
-    echo "  Architectures: Universal2 (x86_64 + arm64)"
-    echo ""
-    echo "  Install: open the DMG, then run \"Install OpenTune.command\" or \"安装 OpenTune.command\""
-    echo "  Or copy .app to /Applications, .vst3 to VST3, and .component to Components"
-    echo "══════════════════════════════════════════════"
-fi
+PKG_SIZE=$(du -sh "${PKG_PATH}" | cut -f1)
+echo ""
+echo "══════════════════════════════════════════════"
+echo "  PKG created"
+echo "══════════════════════════════════════════════"
+echo "  File: ${PKG_PATH}"
+echo "  Size: ${PKG_SIZE}"
+echo "  Version: ${VERSION}"
+echo "  Architectures: Universal2 (x86_64 + arm64)"
+echo "  Welcome page: notice text from Installer/NOTICE.md"
+echo "  Install: open the PKG and follow the prompts"
+echo "══════════════════════════════════════════════"

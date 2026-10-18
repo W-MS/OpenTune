@@ -5,15 +5,6 @@ name: Release
 
 on:
   workflow_dispatch:
-    inputs:
-      macos_format:
-        description: macOS package format
-        type: choice
-        options:
-          - both
-          - pkg
-          - dmg
-        default: both
   push:
     tags:
       - "v*"
@@ -33,8 +24,6 @@ jobs:
     defaults:
       run:
         shell: bash
-    env:
-      MACOS_FORMAT: ${{ github.event.inputs.macos_format || 'both' }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -106,7 +95,7 @@ jobs:
         run: bash scripts/github_actions/import-macos-certs.sh
 
       - name: Build and sign packages
-        run: bash scripts/github_actions/package-macos.sh --format "${MACOS_FORMAT}"
+        run: bash scripts/github_actions/package-macos.sh
 
       - name: Notarize and staple
         env:
@@ -115,9 +104,9 @@ jobs:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
           shopt -s nullglob
-          files=(dist/*.pkg dist/*.dmg)
+          files=(dist/*.pkg)
           if [ "${#files[@]}" -eq 0 ]; then
-            echo "No pkg or dmg found to notarize"
+            echo "No pkg found to notarize"
             exit 1
           fi
           bash scripts/github_actions/notarize-macos.sh "${files[@]}"
@@ -126,9 +115,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: OpenTune-macOS-Universal2
-          path: |
-            dist/*.pkg
-            dist/*.dmg
+          path: dist/*.pkg
           if-no-files-found: error
 
       - name: Delete the temporary keychain and certificates
@@ -178,7 +165,7 @@ jobs:
   publish:
     name: Publish the GitHub Release
     needs: [macos, windows]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -192,8 +179,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${GITHUB_REF_NAME}"
           shopt -s nullglob
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            pkgs=(artifacts/OpenTune-macOS-Universal2/*.pkg)
+            if [ "${#pkgs[@]}" -ne 1 ]; then
+              echo "Expected one pkg to name the release, found ${#pkgs[@]}"
+              exit 1
+            fi
+            version="$(basename "${pkgs[0]}" | sed -n 's/^OpenTune-\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)-.*/\1/p')"
+            if [ -z "${version}" ]; then
+              echo "Could not read the version from ${pkgs[0]}"
+              exit 1
+            fi
+            tag="v${version}"
+          fi
           assets=()
           for file in artifacts/OpenTune-macOS-Universal2/*; do
             if [ -f "${file}" ]; then
@@ -227,6 +228,7 @@ jobs:
             gh release upload "${tag}" "${assets[@]}" --clobber
           else
             gh release create "${tag}" "${assets[@]}" \
+              --target "${GITHUB_SHA}" \
               --title "OpenTune ${tag}" \
-              --notes "The macOS Universal2 packages are signed with Developer ID and notarized. The Windows package is a portable zip containing Standalone, its runtime libraries, and VST3."
+              --notes "The macOS package is a notarized PKG. The Windows package is a portable zip containing Standalone, its runtime libraries, and VST3."
           fi
