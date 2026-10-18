@@ -20,6 +20,9 @@ pc_nsf_hifigan_44.1k_ONNX/
 docs/
 docs/UserGuide.html
 .*/
+# .*/ 会忽略点开头的目录；Actions 工作流必须入库
+!.github/
+!.github/**
 Logs/
 openspec/
 specs/
