@@ -1,0 +1,303 @@
+name: Release
+
+# Dependencies are downloaded into the runner workspace. They are not committed.
+# macOS also imports the Developer ID secrets into a temporary keychain, then deletes it.
+
+# Only standalone is built. Other branches and pull requests do not start a run.
+# The package name gains a short commit id when project(OpenTune VERSION) is
+# unchanged. A GitHub Release is published only when that version changes.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - standalone
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
+
+jobs:
+  prepare:
+    name: Set package label
+    if: github.ref == 'refs/heads/standalone'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      label: ${{ steps.meta.outputs.label }}
+      publish: ${{ steps.meta.outputs.publish }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare the CMake version
+        id: meta
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          read_version() {
+            sed -n 's/.*project(OpenTune VERSION \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$1" | head -n 1
+          }
+          version="$(read_version CMakeLists.txt)"
+          if [ -z "${version}" ]; then
+            echo "Could not read project(OpenTune VERSION ...) from CMakeLists.txt"
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+          publish=false
+          label=""
+          old=""
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ -n "${BEFORE}" ] && [ "${BEFORE}" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            old="$(git show "${BEFORE}:CMakeLists.txt" | sed -n 's/.*project(OpenTune VERSION \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)"
+            echo "Previous CMake version: ${old:-<missing>}"
+          elif git rev-parse --verify --quiet "HEAD^" >/dev/null; then
+            old="$(git show "HEAD^:CMakeLists.txt" | sed -n 's/.*project(OpenTune VERSION \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)"
+            echo "Parent CMake version: ${old:-<missing>}"
+          fi
+          if [ -n "${old}" ] && [ "${old}" != "${version}" ] && [ "${GITHUB_REF}" = "refs/heads/standalone" ]; then
+            publish=true
+          fi
+
+          if [ "${publish}" != "true" ] && [ -z "${label}" ]; then
+            label="$(git rev-parse --short=7 HEAD)"
+          fi
+          if [ -n "${label}" ] && ! printf '%s' "${label}" | grep -Eq '^[0-9A-Za-z._-]{1,40}$'; then
+            echo "Invalid package label: ${label}"
+            exit 1
+          fi
+          echo "label=${label}" >> "${GITHUB_OUTPUT}"
+          echo "publish=${publish}" >> "${GITHUB_OUTPUT}"
+          echo "CMake version: ${version}"
+          if [ "${publish}" = "true" ]; then
+            echo "This build updates GitHub Release v${version}"
+          else
+            echo "Nightly package label: ${label}"
+          fi
+
+  macos:
+    name: macOS Universal2
+    needs: prepare
+    runs-on: macos-15
+    env:
+      OPENTUNE_BUILD_LABEL: ${{ needs.prepare.outputs.label }}
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check signing secrets
+        env:
+          MACOS_APPLICATION_P12_BASE64: ${{ secrets.MACOS_APPLICATION_P12_BASE64 }}
+          MACOS_APPLICATION_P12_PASSWORD: ${{ secrets.MACOS_APPLICATION_P12_PASSWORD }}
+          MACOS_INSTALLER_P12_BASE64: ${{ secrets.MACOS_INSTALLER_P12_BASE64 }}
+          MACOS_INSTALLER_P12_PASSWORD: ${{ secrets.MACOS_INSTALLER_P12_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=0
+          for name in \
+              MACOS_APPLICATION_P12_BASE64 \
+              MACOS_APPLICATION_P12_PASSWORD \
+              MACOS_INSTALLER_P12_BASE64 \
+              MACOS_INSTALLER_P12_PASSWORD \
+              APPLE_API_KEY_ID \
+              APPLE_API_ISSUER_ID \
+              APPLE_API_KEY_P8 \
+              APPLE_TEAM_ID
+          do
+            if [ -z "${!name}" ]; then
+              echo "Missing secret: ${name}"
+              missing=1
+            fi
+          done
+          exit "${missing}"
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Download macOS dependencies
+        run: bash scripts/github_actions/fetch-macos-deps.sh
+
+      - name: Restore cached ONNX Runtime
+        id: ort-cache
+        uses: actions/cache@v4
+        with:
+          path: ThirdParty/onnxruntime-osx-universal2-1.20.0
+          key: onnxruntime-osx-universal2-1.20.0-${{ hashFiles('scripts/build-onnxruntime-macos.sh') }}
+
+      - name: Build ONNX Runtime universal2 from source
+        if: steps.ort-cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-onnxruntime-macos.sh
+
+      - name: Remove ONNX Runtime intermediate directories
+        if: always()
+        run: |
+          rm -rf \
+            ThirdParty/.onnxruntime-1.20.0-src \
+            ThirdParty/.onnxruntime-1.20.0-build \
+            ThirdParty/.eigen-e7248b26a1ed53fa030c5c459f7ea095dfd276ac \
+            ThirdParty/.eigen-e7248b26a1ed53fa030c5c459f7ea095dfd276ac.zip
+
+      - name: Import Developer ID certificates
+        env:
+          MACOS_APPLICATION_P12_BASE64: ${{ secrets.MACOS_APPLICATION_P12_BASE64 }}
+          MACOS_APPLICATION_P12_PASSWORD: ${{ secrets.MACOS_APPLICATION_P12_PASSWORD }}
+          MACOS_INSTALLER_P12_BASE64: ${{ secrets.MACOS_INSTALLER_P12_BASE64 }}
+          MACOS_INSTALLER_P12_PASSWORD: ${{ secrets.MACOS_INSTALLER_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/github_actions/import-macos-certs.sh
+
+      - name: Build and sign packages
+        run: bash scripts/github_actions/package-macos.sh
+
+      - name: Notarize and staple
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          shopt -s nullglob
+          files=(dist/*.pkg)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No pkg found to notarize"
+            exit 1
+          fi
+          bash scripts/github_actions/notarize-macos.sh "${files[@]}"
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenTune-macOS-Universal2
+          path: dist/*.pkg
+          if-no-files-found: error
+
+      - name: Delete the temporary keychain and certificates
+        if: always()
+        run: bash scripts/github_actions/cleanup-macos-signing.sh
+
+  windows:
+    name: Windows x64
+    needs: prepare
+    runs-on: windows-2022
+    env:
+      OPENTUNE_BUILD_LABEL: ${{ needs.prepare.outputs.label }}
+    timeout-minutes: 180
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download Windows dependencies
+        shell: powershell
+        run: scripts/github_actions/fetch-windows-deps.ps1
+
+      - name: Configure Visual Studio 2022
+        shell: powershell
+        run: |
+          cmake --preset windows-ara-vs2022
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Release
+        shell: powershell
+        run: |
+          cmake --build --preset windows-ara-release --target OpenTune_VST3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset windows-ara-release --target OpenTuneStandalone_Standalone
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package the portable build
+        id: package
+        shell: powershell
+        run: scripts/github_actions/package-windows-portable.ps1
+
+      - name: Upload the Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenTune-${{ steps.package.outputs.version }}-Windows-x64
+          path: dist/windows-stage/**
+          if-no-files-found: error
+
+  publish:
+    name: Publish the GitHub Release
+    needs: [prepare, macos, windows]
+    if: needs.prepare.outputs.publish == 'true' && needs.macos.result == 'success' && needs.windows.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create or update the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            pkgs=(artifacts/OpenTune-macOS-Universal2/*.pkg)
+            if [ "${#pkgs[@]}" -ne 1 ]; then
+              echo "Expected one pkg to name the release, found ${#pkgs[@]}"
+              exit 1
+            fi
+            version="$(basename "${pkgs[0]}" | sed -n 's/^OpenTune-\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)-.*/\1/p')"
+            if [ -z "${version}" ]; then
+              echo "Could not read the version from ${pkgs[0]}"
+              exit 1
+            fi
+            tag="v${version}"
+          fi
+          assets=()
+          for file in artifacts/OpenTune-macOS-Universal2/*; do
+            if [ -f "${file}" ]; then
+              assets+=("${file}")
+            fi
+          done
+          for dir in artifacts/OpenTune-*-Windows-x64; do
+            if [ ! -d "${dir}" ]; then
+              continue
+            fi
+            archive="artifacts/$(basename "${dir}").zip"
+            python3 - "${dir}" "${archive}" <<'PY'
+          import pathlib
+          import sys
+          import zipfile
+
+          root = pathlib.Path(sys.argv[1])
+          dest = pathlib.Path(sys.argv[2])
+          with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+              for path in sorted(root.rglob("*")):
+                  if path.is_file():
+                      archive.write(path, path.relative_to(root).as_posix())
+          PY
+            assets+=("${archive}")
+          done
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No release assets found"
+            exit 1
+          fi
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release upload "${tag}" "${assets[@]}" --clobber
+          else
+            gh release create "${tag}" "${assets[@]}" \
+              --target "${GITHUB_SHA}" \
+              --title "OpenTune ${tag}" \
+              --notes "The macOS package is a notarized PKG. The Windows package is a portable zip containing Standalone, its runtime libraries, and VST3."
+          fi
