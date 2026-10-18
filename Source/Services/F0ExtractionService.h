@@ -59,6 +59,8 @@ public:
         int f0SampleRate{0};
         std::vector<float> f0;
         std::vector<float> energy;
+        std::shared_ptr<const std::vector<float>> hnsepHarmonicAudio;
+        std::shared_ptr<const std::vector<float>> hnsepResidualAudio;
         std::vector<SilentGap> silentGaps;
         std::string errorMessage;
 

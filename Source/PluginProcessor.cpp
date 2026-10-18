@@ -11,6 +11,9 @@
 #include "DSP/F0KeyDetector.h"
 #include "Services/F0ExtractionService.h"
 #include "Services/ImportedClipF0Extraction.h"
+#if JucePlugin_Build_Standalone
+#include "Services/HNSEPOnnxPostprocessor.h"
+#endif
 #include "Runtime/ProcessF0Runtime.h"
 #include "Utils/ModelPathResolver.h"
 #include "Utils/AppLogger.h"
@@ -1431,11 +1434,31 @@ void OpenTuneAudioProcessor::setVocoderModelWeight(const VocoderModelWeight& wei
         // 3. 模型切换完成后才清 RenderCache/TimeStretchCache 并恢复 render worker
 #if JucePlugin_Build_Standalone
         if (processor->contentRenderService_ && processor->standaloneContentRepository_) {
+            const auto activeWeight = ProcessRenderRuntime::getInstance().getVocoderModelWeight();
             const auto keys = processor->standaloneContentRepository_->getAllClips();
             for (const auto key : keys) {
                 if (auto cache = processor->contentRenderService_->getRenderCache(key))
                     cache->clear();
-                processor->requestFullContentRender(key);
+                if (auto* clip = processor->standaloneContentRepository_->findClip(key)) {
+                    if (activeWeight == kVocoderWeightDdspHarmonicGenerator) {
+                        clip->clearHnsepAudio();
+                        OpenTuneAudioProcessor::ContentRefreshRequest refreshRequest;
+                        refreshRequest.contentKey = key;
+                        processor->requestContentRefresh(refreshRequest);
+                    } else {
+                        clip->clearHnsepAudio();
+                        const auto snapshot = clip->snapshotContent();
+                        if (snapshot != nullptr
+                            && snapshot->originalF0State == OriginalF0State::Extracting)
+                            processor->setContentOriginalF0State(key,
+                                snapshot->hasUsableOriginalF0()
+                                    ? OriginalF0State::Ready
+                                    : OriginalF0State::NotRequested);
+                        processor->requestFullContentRender(key);
+                    }
+                } else {
+                    processor->requestFullContentRender(key);
+                }
             }
             processor->contentRenderService_->getTimeStretchCache().clear();
         }
@@ -2840,6 +2863,8 @@ std::optional<SplitOutcome> OpenTuneAudioProcessor::splitPlacementAtSeconds(int 
     leadingPayload.sourceWindow = originalSnapshot->sourceWindow;
     leadingPayload.sourceWindow.sourceEndSeconds = boundarySourceSeconds;
     leadingPayload.audioBuffer = sliceAudioBuffer(originalSnapshot->audioBuffer, 0, splitSample);
+    leadingPayload.analysis.hnsepHarmonicAudio.reset();
+    leadingPayload.analysis.hnsepResidualAudio.reset();
     leadingPayload.analysis.pitchCurve = slicePitchCurveToFrameRange(originalSnapshot->pitchCurve, 0, frameBoundary);
     leadingPayload.notes = sliceNotesToLocalRange(originalSnapshot->notes, 0.0, splitSourceSeconds);
     leadingPayload.volumeEnvelope = AutomationLane::sliceToLocalRange(
@@ -2853,6 +2878,8 @@ std::optional<SplitOutcome> OpenTuneAudioProcessor::splitPlacementAtSeconds(int 
     trailingPayload.sourceWindow = originalSnapshot->sourceWindow;
     trailingPayload.sourceWindow.sourceStartSeconds = boundarySourceSeconds;
     trailingPayload.audioBuffer = sliceAudioBuffer(originalSnapshot->audioBuffer, splitSample, totalSamples);
+    trailingPayload.analysis.hnsepHarmonicAudio.reset();
+    trailingPayload.analysis.hnsepResidualAudio.reset();
     trailingPayload.analysis.pitchCurve = slicePitchCurveToFrameRange(
         originalSnapshot->pitchCurve, frameBoundary, f0FrameCount);
     trailingPayload.notes = sliceNotesToLocalRange(originalSnapshot->notes,
@@ -4042,6 +4069,15 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
         return false;
     }
 
+    const auto capturedModelWeight =
+        ProcessRenderRuntime::getInstance().getVocoderModelWeight();
+#if JucePlugin_Build_Standalone
+    const bool capturedHnsepEnabled = request.contentKey.domainKind == DomainKind::StandaloneClip
+        && capturedModelWeight == kVocoderWeightDdspHarmonicGenerator;
+#else
+    constexpr bool capturedHnsepEnabled = false;
+#endif
+
     auto snap = getContentSnapshot(request.contentKey);
     if (snap == nullptr) {
         setContentOriginalF0State(request.contentKey, OriginalF0State::Failed);
@@ -4086,7 +4122,11 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
 #if JucePlugin_Build_Standalone
         case DomainKind::StandaloneClip: {
             auto* clip = standaloneContentRepository_->findClip(request.contentKey);
-            if (clip) clip->applyOriginalF0State(OriginalF0State::Extracting);
+            if (clip) {
+                if (capturedHnsepEnabled)
+                    clip->clearHnsepAudio();
+                clip->applyOriginalF0State(OriginalF0State::Extracting);
+            }
             break;
         }
 #endif
@@ -4129,7 +4169,8 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
 
     const auto submitResult = f0ExtractionService_->submit(
         F0RequestKey{request.contentKey},
-        [capturedSnap, capturedRequest](const std::shared_ptr<F0RunOwnerState>& runOwnerState) -> F0ExtractionService::Result {
+        [capturedSnap, capturedRequest, capturedModelWeight](
+            const std::shared_ptr<F0RunOwnerState>& runOwnerState) -> F0ExtractionService::Result {
             F0ExtractionService::Result result;
             result.contentKey = capturedRequest.contentKey;
 
@@ -4161,10 +4202,35 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
                 return result;
             }
 
+#if JucePlugin_Build_Standalone
+            const bool runHnsepForCapturedModel =
+                capturedRequest.contentKey.domainKind == DomainKind::StandaloneClip
+                && capturedModelWeight == kVocoderWeightDdspHarmonicGenerator;
+            if (runHnsepForCapturedModel) {
+                auto ortEnv = f0Runtime.getOrtEnv();
+                if (ortEnv == nullptr) {
+                    result.errorMessage = "HNSEP could not acquire the process ONNX Runtime environment";
+                    return result;
+                }
+
+                HNSEPOutput hnsepOutput;
+                if (!runHNSEPOnnx(capturedSnap->audioBuffer->getReadPointer(0),
+                                  static_cast<size_t>(capturedSnap->audioBuffer->getNumSamples()),
+                                  ModelPathResolver::getModelsDirectory(), *ortEnv,
+                                  hnsepOutput, errorMessage)) {
+                    result.errorMessage = errorMessage;
+                    return result;
+                }
+                result.hnsepHarmonicAudio = std::move(hnsepOutput.harmonic);
+                result.hnsepResidualAudio = std::move(hnsepOutput.residual);
+            }
+#endif
+
             result.success = true;
             return result;
         },
-        [processor, gate, capturedRequest, capturedContentRevision,
+        [processor, gate, capturedRequest, capturedContentRevision, capturedModelWeight,
+         capturedHnsepEnabled,
          capturedAudioBuffer, requestToken]
         (F0ExtractionService::Result&& result) {
             // Both the normal commit and the dispatcher-failure mailbox invoke
@@ -4194,6 +4260,28 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
                     + juce::String(static_cast<juce::int64>(capturedRequest.contentKey.objectId)));
                 return;
             }
+
+#if JucePlugin_Build_Standalone
+            const bool currentModelNeedsHnsep =
+                capturedRequest.contentKey.domainKind == DomainKind::StandaloneClip
+                && ProcessRenderRuntime::getInstance().getVocoderModelWeight()
+                    == kVocoderWeightDdspHarmonicGenerator;
+            if (currentModelNeedsHnsep && !capturedHnsepEnabled) {
+                processor->f0RequestTokens_.erase(capturedRequest.contentKey);
+                OpenTuneAudioProcessor::ContentRefreshRequest retryRequest = capturedRequest;
+                processor->requestContentRefresh(retryRequest);
+                return;
+            }
+            if (capturedHnsepEnabled
+                && ProcessRenderRuntime::getInstance().getVocoderModelWeight() != capturedModelWeight) {
+                result.hnsepHarmonicAudio.reset();
+                result.hnsepResidualAudio.reset();
+                if (!result.f0.empty()) {
+                    result.success = true;
+                    result.errorMessage.clear();
+                }
+            }
+#endif
 
             if (!result.success) {
                 processor->f0RequestTokens_.erase(capturedRequest.contentKey);
@@ -4271,7 +4359,9 @@ bool OpenTuneAudioProcessor::requestContentRefresh(const OpenTuneAudioProcessor:
                 }
             }
 
-            if (!processor->writeOriginalF0ToOwner(capturedRequest.contentKey, pitchCurve)) {
+            if (!processor->writeOriginalF0ToOwner(capturedRequest.contentKey, pitchCurve,
+                                                   std::move(result.hnsepHarmonicAudio),
+                                                   std::move(result.hnsepResidualAudio))) {
                 processor->f0RequestTokens_.erase(capturedRequest.contentKey);
                 AppLogger::log("ContentRefresh: OriginalF0 commit failed contentKey objectId="
                     + juce::String(static_cast<juce::int64>(capturedRequest.contentKey.objectId)));
@@ -5869,15 +5959,20 @@ bool OpenTuneAudioProcessor::writePitchCurveToOwner(ContentKey key,
     return false;
 }
 
-bool OpenTuneAudioProcessor::writeOriginalF0ToOwner(ContentKey key,
-                                                      std::shared_ptr<PitchCurve> curve)
+bool OpenTuneAudioProcessor::writeOriginalF0ToOwner(
+    ContentKey key,
+    std::shared_ptr<PitchCurve> curve,
+    std::shared_ptr<const std::vector<float>> hnsepHarmonicAudio,
+    std::shared_ptr<const std::vector<float>> hnsepResidualAudio)
 {
     switch (key.domainKind) {
 #if JucePlugin_Build_Standalone
         case DomainKind::StandaloneClip: {
             auto* clip = standaloneContentRepository_->findClip(key);
             if (!clip) return false;
-            clip->applyOriginalF0(std::move(curve));
+            clip->applyOriginalF0(std::move(curve),
+                                  std::move(hnsepHarmonicAudio),
+                                  std::move(hnsepResidualAudio));
             return true;
         }
 #endif

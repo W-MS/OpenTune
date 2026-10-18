@@ -2,6 +2,7 @@
 
 #include "../DSP/AutoTunePeriodDetector.h"
 #include "../DSP/AutoTunePitchShifter.h"
+#include "../Services/HnsepAudio.h"
 #include "../Editor/ConfirmDialogContent.h"
 #include "../DSP/MelSpectrogram.h"
 #include "../DSP/HybridAperiodicResidual.h"
@@ -1162,6 +1163,7 @@ bool ProcessRenderRuntime::acquireVocoderConfig(VocoderConfig& out)
         if (vocoderDomain_ != nullptr)
         {
             out.generation = vocoderGeneration_;
+            out.modelWeight = currentVocoderModelWeight_;
             out.conditioningBins = vocoderDomain_->getConditioningBins();
             out.conditioningType = vocoderDomain_->getConditioningType();
             out.fMax = vocoderDomain_->getFMax();
@@ -1197,6 +1199,12 @@ bool ProcessRenderRuntime::isVocoderReady() const noexcept
 {
     std::lock_guard<std::mutex> lock(vocoderMutex_);
     return vocoderDomain_ != nullptr;
+}
+
+VocoderModelWeight ProcessRenderRuntime::getVocoderModelWeight() const
+{
+    std::lock_guard<std::mutex> lock(vocoderMutex_);
+    return currentVocoderModelWeight_;
 }
 
 bool ProcessRenderRuntime::isVocoderReconfiguring() const noexcept
@@ -1777,7 +1785,10 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
     std::vector<float> conditioning;
     int actualFrames = 0;
     std::shared_ptr<const HybridRenderPayload> hybridPayload;
-    if (vocoderCfg.needsHighFrequencyOriginal)
+    const bool usesHnsepDdspGenerator =
+        coreJob.contentKey.domainKind == DomainKind::StandaloneClip
+        && vocoderCfg.modelWeight == kVocoderWeightDdspHarmonicGenerator;
+    if (vocoderCfg.needsHighFrequencyOriginal || usesHnsepDdspGenerator)
     {
         if (linearSpec)
         {
@@ -1864,12 +1875,54 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
             vocoderF0[static_cast<size_t>(i)] = interpolateTrack(effectiveTrack, framePosition);
         }
 
-        auto extracted = extractAperiodicHigh(
-            sourceAudio, static_cast<size_t>(clipSamples), sourceF0, voicedFrames,
-            static_cast<size_t>(contextStartFrame), static_cast<size_t>(clipFrames));
-        std::vector<float> cleanAudio(extracted.alignedAudio.size());
-        for (size_t i = 0; i < cleanAudio.size(); ++i)
-            cleanAudio[i] = extracted.alignedAudio[i] - extracted.residual[i];
+        const size_t contextSamples = static_cast<size_t>(contextFrames)
+            * RenderChunkPlanner::kRenderHopSize;
+        std::vector<float> cleanAudio;
+        auto payload = std::make_shared<HybridRenderPayload>();
+        if (usesHnsepDdspGenerator)
+        {
+            if (contentSnap->hnsepHarmonicAudio == nullptr
+                || contentSnap->hnsepResidualAudio == nullptr
+                || contentSnap->hnsepHarmonicAudio->size() != static_cast<size_t>(clipSamples)
+                || contentSnap->hnsepResidualAudio->size() != static_cast<size_t>(clipSamples))
+            {
+                failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
+                          coreJob.targetRevision, coreJob.contentKey,
+                          "HNSEP harmonic/residual audio is unavailable or not sample-aligned; "
+                          "refresh content with ddsp_harmonic_generator_opentune.onnx selected");
+                return;
+            }
+
+            if (!sliceHnsepSamples(*contentSnap->hnsepHarmonicAudio,
+                                   contextStartSample, contextSamples, cleanAudio)
+                || !sliceHnsepSamples(*contentSnap->hnsepResidualAudio,
+                                      contextStartSample, contextSamples, payload->residual))
+            {
+                failChunk(completion, coreJob.renderCache.get(), coreJob.startSample,
+                          coreJob.targetRevision, coreJob.contentKey,
+                          "HNSEP chunk could not be sliced on the dry-audio sample timeline");
+                return;
+            }
+
+            payload->sourceAudio.assign(contextSamples, 0.0f);
+            for (size_t i = 0; i < contextSamples; ++i)
+            {
+                const int64_t globalSample = contextStartSample + static_cast<int64_t>(i);
+                if (globalSample >= 0 && globalSample < clipSamples)
+                    payload->sourceAudio[i] = sourceAudio[globalSample];
+            }
+        }
+        else
+        {
+            auto extracted = extractAperiodicHigh(
+                sourceAudio, static_cast<size_t>(clipSamples), sourceF0, voicedFrames,
+                static_cast<size_t>(contextStartFrame), static_cast<size_t>(clipFrames));
+            cleanAudio.resize(extracted.alignedAudio.size());
+            for (size_t i = 0; i < cleanAudio.size(); ++i)
+                cleanAudio[i] = extracted.alignedAudio[i] - extracted.residual[i];
+            payload->sourceAudio = std::move(extracted.alignedAudio);
+            payload->residual = std::move(extracted.residual);
+        }
         auto cleanConditioning = computeLogMelSpectrogram(
             cleanAudio.data(), static_cast<int>(cleanAudio.size()), contextFrames,
             conditioningConfig);
@@ -1885,9 +1938,6 @@ void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderSe
         conditioning = std::move(cleanConditioning).value();
         actualFrames = static_cast<int>(conditioning.size() / conditioningConfig.nMels);
 
-        auto payload = std::make_shared<HybridRenderPayload>();
-        payload->sourceAudio = std::move(extracted.alignedAudio);
-        payload->residual = std::move(extracted.residual);
         payload->voicedSamples.resize(payload->sourceAudio.size(), 0);
         for (size_t i = 0; i < payload->voicedSamples.size(); ++i)
         {

@@ -172,8 +172,9 @@ public:
      * domain rebuilt since then with stale configuration.
      */
     VocoderSubmitResult submitVocoderJob(VocoderDomain::Job job,
-                                         uint64_t expectedGeneration,
-                                         juce::String& rejectionReason);
+                                          uint64_t expectedGeneration,
+                                          juce::String& rejectionReason);
+    VocoderModelWeight getVocoderModelWeight() const;
     bool isVocoderReady() const noexcept;
     bool isVocoderReconfiguring() const noexcept;
 
@@ -201,6 +202,7 @@ private:
     struct VocoderConfig
     {
         uint64_t generation{0};
+        VocoderModelWeight modelWeight{kDefaultVocoderWeight};
         int conditioningBins{0};
         VocoderConditioningType conditioningType{VocoderConditioningType::LogMel};
         float fMax{16000.0f};
