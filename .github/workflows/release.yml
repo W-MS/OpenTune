@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   prepare:
-    name: Choose package label
+    name: Set package label
     if: github.ref == 'refs/heads/standalone'
     runs-on: ubuntu-latest
     outputs:
