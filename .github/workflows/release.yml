@@ -331,25 +331,6 @@ jobs:
               assets+=("${file}")
             fi
           done
-          for dir in artifacts/OpenTune-*-Windows-x64; do
-            if [ ! -d "${dir}" ]; then
-              continue
-            fi
-            archive="artifacts/$(basename "${dir}").zip"
-            python3 - "${dir}" "${archive}" <<'PY'
-          import pathlib
-          import sys
-          import zipfile
-
-          root = pathlib.Path(sys.argv[1])
-          dest = pathlib.Path(sys.argv[2])
-          with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-              for path in sorted(root.rglob("*")):
-                  if path.is_file():
-                      archive.write(path, path.relative_to(root).as_posix())
-          PY
-            assets+=("${archive}")
-          done
           for file in artifacts/OpenTune-*-Windows-x64-Setup/*.exe; do
             if [ -f "${file}" ]; then
               assets+=("${file}")
@@ -365,5 +346,5 @@ jobs:
             gh release create "${tag}" "${assets[@]}" \
               --target "${GITHUB_SHA}" \
               --title "OpenTune ${tag}" \
-              --notes "The macOS package is a notarized PKG. The Windows package is a portable zip containing Standalone, its runtime libraries, and VST3. A signed Windows Setup installer is also included."
+              --notes "The macOS package is a notarized Universal2 PKG. The Windows package is a signed Setup installer."
           fi
