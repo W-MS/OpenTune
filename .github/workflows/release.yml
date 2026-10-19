@@ -219,6 +219,15 @@ jobs:
           cmake --build --preset windows-ara-release --target OpenTuneStandalone_Standalone
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Sign Windows executables
+        shell: powershell
+        env:
+          WIN_SIGNER_CHAP: ${{ secrets.WIN_SIGNER_CHAP }}
+          WIN_SIGNER_ENDPOINT: ${{ secrets.WIN_SIGNER_ENDPOINT }}
+          WIN_SIGNER_KEY: ${{ secrets.WIN_SIGNER_KEY }}
+          WIN_SIGNER_URL: ${{ secrets.WIN_SIGNER_URL }}
+        run: scripts/github_actions/sign-windows.ps1
+
       - name: Package the portable build
         id: package
         shell: powershell
