@@ -47,8 +47,18 @@ JUCE-master/
 AGENTS.md
 CLAUDE.md
 MACOS_PORT.md
-# Installer / packaging / release chain (local only)
-Installer/
+# Installer / packaging / release chain
+Installer/*
+!Installer/NOTICE.md
+!Installer/OpenTune_Installer.iss
+!Installer/WizardImage.bmp
+!Installer/WizardSmallImage.bmp
+!Installer/Languages/
+Installer/Languages/*
+!Installer/Languages/ChineseSimplified.isl
+!Installer/Licenses/
+Installer/Licenses/*
+!Installer/Licenses/LICENSE-COMBINED.txt
 scripts/build-ninja.ps1
 scripts/package-windows.ps1
 scripts/validate-windows-release.ps1

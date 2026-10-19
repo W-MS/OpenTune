@@ -3,6 +3,9 @@
 # temporary file and then moved over the unsigned original.
 # This file is ASCII on purpose. Windows PowerShell 5.1 parses scripts with
 # the system ANSI code page unless the file has a UTF-8 BOM.
+param(
+    [string[]]$Targets
+)
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $Script:Latin1 = [Text.Encoding]::GetEncoding(28591)
@@ -151,7 +154,14 @@ $AuthFailedGbk = New-BytePattern 0xC8, 0xCF, 0xD6, 0xA4, 0xCA, 0xA7, 0xB0, 0xDC
 $SignedGbk = New-BytePattern 0xD2, 0xD1, 0xC7, 0xA9, 0xC3, 0xFB
 
 $Standalone = Join-Path $Root "build-ara-overlay-vs18-clean\OpenTuneStandalone_artefacts\Release\Standalone"
-$Executables = @(Get-ChildItem -LiteralPath $Standalone -Filter "*.exe" -File -Recurse -ErrorAction SilentlyContinue)
+if ($Targets) {
+    $Executables = @($Targets | ForEach-Object { Get-Item -LiteralPath $_ -ErrorAction Stop })
+    if (@($Executables | Where-Object { $_.PSIsContainer }).Count -gt 0) {
+        throw "Signing targets must be files"
+    }
+} else {
+    $Executables = @(Get-ChildItem -LiteralPath $Standalone -Filter "*.exe" -File -Recurse -ErrorAction SilentlyContinue)
+}
 if ($Executables.Count -eq 0) {
     throw "No Windows executable was found to sign"
 }

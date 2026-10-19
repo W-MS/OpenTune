@@ -233,11 +233,63 @@ jobs:
         shell: powershell
         run: scripts/github_actions/package-windows-portable.ps1
 
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --no-progress -y
+
+      - name: Download and verify VC++ Redistributable
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path Installer\redist | Out-Null
+          curl.exe -fsSL --retry 5 --retry-delay 2 -o Installer\redist\VC_redist.x64.exe https://aka.ms/vc14/vc_redist.x64.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $expected = '843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c'
+          $actual = (Get-FileHash Installer\redist\VC_redist.x64.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "VC_redist SHA-256 mismatch: expected $expected, got $actual"
+          }
+          $signature = Get-AuthenticodeSignature Installer\redist\VC_redist.x64.exe
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*Microsoft Corporation*') {
+            throw "VC_redist signature validation failed: $($signature.Status)"
+          }
+
+      - name: Build the Windows installer
+        shell: powershell
+        env:
+          OPENTUNE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $iscc "/DMyBuildConfig=build-ara-overlay-vs18-clean" "/DMyAppVersion=$env:OPENTUNE_VERSION" "Installer\OpenTune_Installer.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Sign the Windows installer
+        shell: powershell
+        env:
+          WIN_SIGNER_CHAP: ${{ secrets.WIN_SIGNER_CHAP }}
+          WIN_SIGNER_ENDPOINT: ${{ secrets.WIN_SIGNER_ENDPOINT }}
+          WIN_SIGNER_KEY: ${{ secrets.WIN_SIGNER_KEY }}
+          WIN_SIGNER_URL: ${{ secrets.WIN_SIGNER_URL }}
+        run: |
+          $installer = Get-ChildItem -LiteralPath dist -Filter "OpenTune-*-Windows-x64-Setup.exe" -File | Select-Object -First 1
+          if (-not $installer) { throw "Windows installer was not created" }
+          scripts/github_actions/sign-windows.ps1 -Targets $installer.FullName
+          $signature = Get-AuthenticodeSignature $installer.FullName
+          if ($signature.Status -ne "Valid") {
+            throw "Windows installer signature is $($signature.Status)"
+          }
+
       - name: Upload the Windows package
         uses: actions/upload-artifact@v4
         with:
           name: OpenTune-${{ steps.package.outputs.version }}-Windows-x64
           path: dist/windows-stage/**
+          if-no-files-found: error
+
+      - name: Upload the Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenTune-${{ needs.prepare.outputs.version }}-Windows-x64-Setup
+          path: dist/OpenTune-*-Windows-x64-Setup.exe
           if-no-files-found: error
 
   publish:
@@ -298,6 +350,11 @@ jobs:
           PY
             assets+=("${archive}")
           done
+          for file in artifacts/OpenTune-*-Windows-x64-Setup/*.exe; do
+            if [ -f "${file}" ]; then
+              assets+=("${file}")
+            fi
+          done
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "No release assets found"
             exit 1
@@ -308,5 +365,5 @@ jobs:
             gh release create "${tag}" "${assets[@]}" \
               --target "${GITHUB_SHA}" \
               --title "OpenTune ${tag}" \
-              --notes "The macOS package is a notarized PKG. The Windows package is a portable zip containing Standalone, its runtime libraries, and VST3."
+              --notes "The macOS package is a notarized PKG. The Windows package is a portable zip containing Standalone, its runtime libraries, and VST3. A signed Windows Setup installer is also included."
           fi
