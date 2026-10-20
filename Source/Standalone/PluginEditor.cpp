@@ -1443,10 +1443,13 @@ void OpenTuneAudioProcessorEditor::resized()
                                  overviewBottom - overviewHeight,
                                  overviewRight - overviewX,
                                  overviewHeight);
+        pianoRoll_.setZoomControlsArea({ 0, 0, bounds.getWidth(),
+                                         overviewBottom - overviewHeight - bounds.getY() });
     }
     else
     {
         overviewStrip_.setBounds({});
+        pianoRoll_.setZoomControlsArea({});
     }
 
     arrangementView_.setBounds(bounds);

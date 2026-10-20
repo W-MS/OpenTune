@@ -130,6 +130,7 @@ public:
 
     void paint(juce::Graphics& g) override;
     void resized() override;
+    void setZoomControlsArea(juce::Rectangle<int> area);
     void onHeartbeatTick();
 
     void setEditedContent(ContentKey contentKey,
@@ -387,6 +388,12 @@ private:
     void updateZoomPreview(float deltaY);
     void endZoomPreview();
     void handleVerticalZoomAt(float zoomFactor, float contentY);
+    void zoomHorizontalIn();
+    void zoomHorizontalOut();
+    void zoomVerticalIn();
+    void zoomVerticalOut();
+    void layoutZoomControls();
+    void updateZoomControlColours();
 
     // ── 内容构建（供 rasterize + overlay 共用） ────────────────
     std::vector<PianoRollRenderer::ContentRenderItem> buildContentRenderItems() const;
@@ -409,6 +416,11 @@ private:
     juce::ScrollBar verticalScrollBar_{ true };
     SmallButton scrollModeToggleButton_;
     SmallButton timeUnitToggleButton_;
+    SmallButton horizontalZoomOutButton_;
+    SmallButton horizontalZoomInButton_;
+    SmallButton verticalZoomOutButton_;
+    SmallButton verticalZoomInButton_;
+    juce::Rectangle<int> zoomControlsArea_;
 
     void mouseDown(const juce::MouseEvent& e) override;
     void mouseMove(const juce::MouseEvent& e) override;

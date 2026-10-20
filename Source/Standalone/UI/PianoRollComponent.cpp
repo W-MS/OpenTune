@@ -99,6 +99,40 @@ void PianoRollComponent::initializeUIComponents() {
     };
     addAndMakeVisible(timeUnitToggleButton_);
 
+    horizontalZoomOutButton_.setButtonText("-");
+    horizontalZoomOutButton_.setFontHeight(14.0f);
+    horizontalZoomOutButton_.setTooltip(LOC(kZoomHorizontalOut));
+    horizontalZoomOutButton_.setWantsKeyboardFocus(false);
+    horizontalZoomOutButton_.setMouseClickGrabsKeyboardFocus(false);
+    horizontalZoomOutButton_.onClick = [this] { zoomHorizontalOut(); };
+    addAndMakeVisible(horizontalZoomOutButton_);
+
+    horizontalZoomInButton_.setButtonText("+");
+    horizontalZoomInButton_.setFontHeight(14.0f);
+    horizontalZoomInButton_.setTooltip(LOC(kZoomHorizontalIn));
+    horizontalZoomInButton_.setWantsKeyboardFocus(false);
+    horizontalZoomInButton_.setMouseClickGrabsKeyboardFocus(false);
+    horizontalZoomInButton_.onClick = [this] { zoomHorizontalIn(); };
+    addAndMakeVisible(horizontalZoomInButton_);
+
+    verticalZoomOutButton_.setButtonText("-");
+    verticalZoomOutButton_.setFontHeight(14.0f);
+    verticalZoomOutButton_.setTooltip(LOC(kZoomVerticalOut));
+    verticalZoomOutButton_.setWantsKeyboardFocus(false);
+    verticalZoomOutButton_.setMouseClickGrabsKeyboardFocus(false);
+    verticalZoomOutButton_.onClick = [this] { zoomVerticalOut(); };
+    addAndMakeVisible(verticalZoomOutButton_);
+
+    verticalZoomInButton_.setButtonText("+");
+    verticalZoomInButton_.setFontHeight(14.0f);
+    verticalZoomInButton_.setTooltip(LOC(kZoomVerticalIn));
+    verticalZoomInButton_.setWantsKeyboardFocus(false);
+    verticalZoomInButton_.setMouseClickGrabsKeyboardFocus(false);
+    verticalZoomInButton_.onClick = [this] { zoomVerticalIn(); };
+    addAndMakeVisible(verticalZoomInButton_);
+
+    updateZoomControlColours();
+
     scrollVBlankAttachment_ = std::make_unique<juce::VBlankAttachment>(
         this, [this](double timestampSec) { onScrollVBlankCallback(timestampSec); });
 
@@ -110,6 +144,61 @@ void PianoRollComponent::initializeUIComponents() {
 
 void PianoRollComponent::initializeRenderer() {
     renderer_ = std::make_unique<PianoRollRenderer>();
+}
+
+void PianoRollComponent::updateZoomControlColours()
+{
+    const auto buttonColour = UIColors::currentThemeId() == ThemeId::Aurora
+        ? UIColors::auroraButtonNormal
+        : UIColors::buttonNormal;
+    horizontalZoomOutButton_.setColour(juce::TextButton::buttonColourId, buttonColour);
+    horizontalZoomInButton_.setColour(juce::TextButton::buttonColourId, buttonColour);
+    verticalZoomOutButton_.setColour(juce::TextButton::buttonColourId, buttonColour);
+    verticalZoomInButton_.setColour(juce::TextButton::buttonColourId, buttonColour);
+    horizontalZoomOutButton_.setColour(juce::TextButton::textColourOffId, UIColors::textPrimary);
+    horizontalZoomInButton_.setColour(juce::TextButton::textColourOffId, UIColors::textPrimary);
+    verticalZoomOutButton_.setColour(juce::TextButton::textColourOffId, UIColors::textPrimary);
+    verticalZoomInButton_.setColour(juce::TextButton::textColourOffId, UIColors::textPrimary);
+}
+
+void PianoRollComponent::layoutZoomControls()
+{
+    constexpr int buttonWidth = 28;
+    constexpr int buttonHeight = 24;
+    constexpr int buttonGap = 2;
+    constexpr int groupGap = 8;
+    constexpr int cornerInset = 8;
+    constexpr int horizontalGroupWidth = 3 * buttonWidth + buttonGap;
+    constexpr int verticalGroupHeight = 50;
+    constexpr int totalHeight = buttonHeight + groupGap + verticalGroupHeight;
+
+    const int left = juce::jmax(zoomControlsArea_.getX(), getTimelineContentStartX()) + cornerInset;
+    const int right = juce::jmin(zoomControlsArea_.getRight(),
+                                 getTimelineViewportBounds().getRight() - cornerInset);
+    const int bottom = zoomControlsArea_.getBottom() - cornerInset;
+    const int availableWidth = juce::jmax(0, right - left);
+    const int availableHeight = bottom - zoomControlsArea_.getY();
+    const bool visible = !zoomControlsArea_.isEmpty()
+        && availableWidth >= horizontalGroupWidth
+        && availableHeight >= totalHeight;
+
+    horizontalZoomOutButton_.setVisible(visible);
+    horizontalZoomInButton_.setVisible(visible);
+    verticalZoomOutButton_.setVisible(visible);
+    verticalZoomInButton_.setVisible(visible);
+    if (!visible)
+        return;
+
+    const int horizontalY = bottom - buttonHeight;
+    const int verticalY = horizontalY - groupGap - verticalGroupHeight;
+
+    horizontalZoomOutButton_.setBounds(left + buttonWidth, horizontalY, buttonWidth, buttonHeight);
+    horizontalZoomInButton_.setBounds(left + 2 * buttonWidth + buttonGap,
+                                      horizontalY, buttonWidth, buttonHeight);
+    verticalZoomInButton_.setBounds(left, verticalY,
+                                    buttonWidth, buttonHeight);
+    verticalZoomOutButton_.setBounds(left, verticalY + buttonHeight + buttonGap,
+                                     buttonWidth, buttonHeight);
 }
 
 void PianoRollComponent::handleVolumeEnvelopeRegionEditResult(
@@ -3119,6 +3208,12 @@ void PianoRollComponent::clearLineAnchorSegmentSelection()
     interactionState_.selectedLineAnchorSegmentIds.clear();
 }
 
+void PianoRollComponent::setZoomControlsArea(juce::Rectangle<int> area)
+{
+    zoomControlsArea_ = area;
+    layoutZoomControls();
+}
+
 void PianoRollComponent::resized() {
 
     auto bounds = getLocalBounds();
@@ -3146,14 +3241,19 @@ void PianoRollComponent::resized() {
     contentDirty_ = true;
 
     overlay_->setBounds(getLocalBounds());
+    layoutZoomControls();
 
     // tryConsumeInitialF0View 成功时 activateTimelineCamera 完成一次最终 full raster（含 updateScrollBars）
-    if (tryConsumeInitialF0View(editedContentKey_))
-        return;
+    if (!tryConsumeInitialF0View(editedContentKey_)) {
+        updateScrollBars();
+        rasterizeDirtySurfaces();
+        repaint();
+    }
 
-    updateScrollBars();
-    rasterizeDirtySurfaces();
-    repaint();
+    horizontalZoomOutButton_.toFront(false);
+    horizontalZoomInButton_.toFront(false);
+    verticalZoomOutButton_.toFront(false);
+    verticalZoomInButton_.toFront(false);
 }
 
 void PianoRollComponent::applyEditedContentCurve(std::shared_ptr<const PitchCurveSnapshot> curve)
@@ -3523,6 +3623,7 @@ void PianoRollComponent::requestContentRedraw() {
 }
 
 void PianoRollComponent::requestThemeRedraw() {
+    updateZoomControlColours();
     staticDirty_ = true;
     contentDirty_ = true;
     rasterizeDirtySurfaces();
@@ -4144,6 +4245,7 @@ void PianoRollComponent::setCurrentTool(ToolId tool) {
         const bool wasTimeView = (previousTool == ToolId::TimeTool);
         const bool isNowTimeView = (currentTool_ == ToolId::TimeTool);
         if (wasTimeView != isNowTimeView && showPianoKeyboard_) {
+            layoutZoomControls();
             staticDirty_ = true;
             contentDirty_ = true;
             rasterizeDirtySurfaces();
@@ -4181,6 +4283,7 @@ void PianoRollComponent::setShowPianoKeyboard(bool shouldShow) {
     if (showPianoKeyboard_ == shouldShow) return;
     const int oldContentStartX = getTimelineContentStartX();
     showPianoKeyboard_ = shouldShow;
+    layoutZoomControls();
     // 隐藏左侧键盘时立即结束正在试听的按键，避免 noteOff 因键盘不再显示而延迟
     if (!shouldShowPianoKeys() && pressedPianoKey_ >= 0) {
         if (pianoKeyAudition_ != nullptr)
@@ -4286,6 +4389,10 @@ void PianoRollComponent::refreshLocalizedText()
     timeUnitToggleButton_.setButtonText(displayMode_ == TimelineDisplayMode::Time
         ? LOC(kTime)
         : "BPM");
+    horizontalZoomOutButton_.setTooltip(LOC(kZoomHorizontalOut));
+    horizontalZoomInButton_.setTooltip(LOC(kZoomHorizontalIn));
+    verticalZoomOutButton_.setTooltip(LOC(kZoomVerticalOut));
+    verticalZoomInButton_.setTooltip(LOC(kZoomVerticalIn));
 }
 
 void PianoRollComponent::addListener(Listener* listener) {
@@ -5064,23 +5171,19 @@ bool PianoRollComponent::handleViewportShortcut(const juce::KeyPress& key)
         return true;
     }
     if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomHorizontalIn, key)) {
-        beginZoomPreviewAt(getTimelineContentViewportWidth() / 2,
-                           1.0 + zoomSensitivity_.horizontalZoomFactor);
+        zoomHorizontalIn();
         return true;
     }
     if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomHorizontalOut, key)) {
-        beginZoomPreviewAt(getTimelineContentViewportWidth() / 2,
-                           1.0 / (1.0 + zoomSensitivity_.horizontalZoomFactor));
+        zoomHorizontalOut();
         return true;
     }
     if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomVerticalIn, key)) {
-        handleVerticalZoomAt(1.0f + zoomSensitivity_.verticalZoomFactor,
-                             static_cast<float>(getTimelineContentViewportHeight()) * 0.5f);
+        zoomVerticalIn();
         return true;
     }
     if (matchesShortcut(KeyShortcutConfig::ShortcutId::ZoomVerticalOut, key)) {
-        handleVerticalZoomAt(1.0f / (1.0f + zoomSensitivity_.verticalZoomFactor),
-                             static_cast<float>(getTimelineContentViewportHeight()) * 0.5f);
+        zoomVerticalOut();
         return true;
     }
     if (matchesShortcut(KeyShortcutConfig::ShortcutId::FitSelectedNotes, key)) {
@@ -5092,6 +5195,30 @@ bool PianoRollComponent::handleViewportShortcut(const juce::KeyPress& key)
         return true;
     }
     return false;
+}
+
+void PianoRollComponent::zoomHorizontalIn()
+{
+    beginZoomPreviewAt(getTimelineContentViewportWidth() / 2,
+                       1.0 + zoomSensitivity_.horizontalZoomFactor);
+}
+
+void PianoRollComponent::zoomHorizontalOut()
+{
+    beginZoomPreviewAt(getTimelineContentViewportWidth() / 2,
+                       1.0 / (1.0 + zoomSensitivity_.horizontalZoomFactor));
+}
+
+void PianoRollComponent::zoomVerticalIn()
+{
+    handleVerticalZoomAt(1.0f + zoomSensitivity_.verticalZoomFactor,
+                         static_cast<float>(getTimelineContentViewportHeight()) * 0.5f);
+}
+
+void PianoRollComponent::zoomVerticalOut()
+{
+    handleVerticalZoomAt(1.0f / (1.0f + zoomSensitivity_.verticalZoomFactor),
+                         static_cast<float>(getTimelineContentViewportHeight()) * 0.5f);
 }
 
 bool PianoRollComponent::matchesShortcut(KeyShortcutConfig::ShortcutId id,
