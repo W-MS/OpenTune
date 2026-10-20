@@ -66,6 +66,13 @@ public:
     // 仅领取指定 startSample 的 pending chunk，并原子地转为 Running。
     bool claimPendingJob(const PendingJob& expectedJob);
     std::vector<PendingJob> getPendingJobs() const;
+    struct RunningChunkSnapshot {
+        int64_t startSample{0};
+        int64_t endSampleExclusive{0};
+        uint64_t runningRevision{0};
+        uint64_t lastRequestedContentRevision{0};
+    };
+    bool getRunningChunk(int64_t startSample, RunningChunkSnapshot& out) const;
 
     enum class ChunkRenderResult : uint8_t {
         Published,

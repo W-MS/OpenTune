@@ -3566,7 +3566,10 @@ bool OpenTuneAudioProcessor::exportPlacementAudio(int trackId, int placementInde
     }
 
     // 等待 RenderWorker 完成当前渲染，确保导出最新数据
-    contentRenderService_->drainRenderWorker();
+    if (!contentRenderService_->drainRenderWorkerForExport()) {
+        lastExportError_ = Loc::get(language, "Render is not ready for export");
+        return false;
+    }
 
     PlaybackReadSource source;
     if (!contentRenderService_->getPlaybackReadSource(placement.contentKey, source) || !source.hasAudio()) {
@@ -3622,7 +3625,10 @@ bool OpenTuneAudioProcessor::exportTrackAudio(int trackId, const juce::File& fil
     }
 
     // 等待 RenderWorker 完成当前渲染，确保导出最新数据
-    contentRenderService_->drainRenderWorker();
+    if (!contentRenderService_->drainRenderWorkerForExport()) {
+        lastExportError_ = Loc::get(language, "Render is not ready for export");
+        return false;
+    }
 
     constexpr double kExportSr = TimeCoordinate::kRenderSampleRate;
     int64_t totalLen = 0;
@@ -3679,6 +3685,7 @@ bool OpenTuneAudioProcessor::exportTrackAudio(int trackId, const juce::File& fil
 }
 
 bool OpenTuneAudioProcessor::exportMasterMixAudio(const juce::File& file, Language language) {
+    lastExportError_.clear();
     jassert(standaloneArrangement_ != nullptr);
 
     const auto playbackSnapshot = standaloneArrangement_->loadPlaybackSnapshot();
@@ -3687,7 +3694,10 @@ bool OpenTuneAudioProcessor::exportMasterMixAudio(const juce::File& file, Langua
     }
 
     // 等待 RenderWorker 完成当前渲染，确保导出最新数据
-    contentRenderService_->drainRenderWorker();
+    if (!contentRenderService_->drainRenderWorkerForExport()) {
+        lastExportError_ = Loc::get(language, "Render is not ready for export");
+        return false;
+    }
 
     constexpr double kExportSr = TimeCoordinate::kRenderSampleRate;
     int64_t totalLen = 0;

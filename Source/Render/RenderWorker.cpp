@@ -71,6 +71,13 @@ void RenderWorker::attachExecutionLease(RenderExecutionLease lease)
         asyncControl_->closed = false;
     }
     resume();
+    std::function<void()> capacityCallback;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        capacityCallback = stage1CapacityCallback_;
+    }
+    if (capacityCallback)
+        capacityCallback();
 }
 
 void RenderWorker::detachExecutionLease(void* owner)
@@ -109,6 +116,7 @@ void RenderWorker::reconcileAndSyncStage1Queue(const RenderJob& templateJob,
 {
     std::vector<RenderWorker::RejectedStage1Job> rejectedJobs;
     RenderExecutionLease failureLease;
+    std::function<void()> capacityCallback;
     {
         std::lock_guard<std::mutex> lk(mutex_);
         // 与 worker loop 的 claim 共用同一临界区：reconcile 产生的 revision
@@ -116,6 +124,7 @@ void RenderWorker::reconcileAndSyncStage1Queue(const RenderJob& templateJob,
         reconcile();
         syncStage1QueueLocked(templateJob, rejectedJobs);
         failureLease = lease_;
+        capacityCallback = stage1CapacityCallback_;
     }
     for (const auto& failure : rejectedJobs)
     {
@@ -132,6 +141,8 @@ void RenderWorker::reconcileAndSyncStage1Queue(const RenderJob& templateJob,
             failureLease.renderFailureCallback(failedJob, failure.reason);
         }
     }
+    if (capacityCallback)
+        capacityCallback();
     cv_.notify_all();
 }
 
@@ -204,8 +215,10 @@ void RenderWorker::syncStage1QueueLocked(
 void RenderWorker::discardStage1Queue(RenderCache* cache)
 {
     std::deque<RenderJob> discarded;
+    std::function<void()> capacityCallback;
     {
         std::lock_guard<std::mutex> lk(mutex_);
+        const auto oldSize = queue_.size();
         auto it = std::stable_partition(queue_.begin(), queue_.end(),
             [cache](const RenderJob& queued) {
                 return !(queued.kind == RenderJob::Kind::Stage1Render
@@ -214,18 +227,24 @@ void RenderWorker::discardStage1Queue(RenderCache* cache)
         discarded.insert(discarded.end(), std::make_move_iterator(it),
                          std::make_move_iterator(queue_.end()));
         queue_.erase(it, queue_.end());
+        if (queue_.size() != oldSize)
+            capacityCallback = stage1CapacityCallback_;
     }
     for (const auto& job : discarded)
         if (job.renderCache != nullptr)
             job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision);
     cv_.notify_all();
+    if (capacityCallback)
+        capacityCallback();
 }
 
 void RenderWorker::discardAllStage1Queue()
 {
     std::deque<RenderJob> discarded;
+    std::function<void()> capacityCallback;
     {
         std::lock_guard<std::mutex> lk(mutex_);
+        const auto oldSize = queue_.size();
         auto it = std::stable_partition(queue_.begin(), queue_.end(),
             [](const RenderJob& queued) {
                 return queued.kind != RenderJob::Kind::Stage1Render;
@@ -233,11 +252,15 @@ void RenderWorker::discardAllStage1Queue()
         discarded.insert(discarded.end(), std::make_move_iterator(it),
                          std::make_move_iterator(queue_.end()));
         queue_.erase(it, queue_.end());
+        if (queue_.size() != oldSize)
+            capacityCallback = stage1CapacityCallback_;
     }
     for (const auto& job : discarded)
         if (job.renderCache != nullptr)
             job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision);
     cv_.notify_all();
+    if (capacityCallback)
+        capacityCallback();
 }
 
 bool RenderWorker::enqueue(RenderJob job)
@@ -330,6 +353,61 @@ RenderWorker::RequeueResult RenderWorker::requeueStage1Chunk(const RenderJob& jo
     }
     cv_.notify_one();
     return RequeueResult::Requeued;
+}
+
+std::vector<RenderWorker::RequeueResult> RenderWorker::requeueStage1Chunks(
+    const std::vector<RenderJob>& jobs)
+{
+    std::vector<RequeueResult> results(jobs.size(), RequeueResult::InvalidJob);
+    bool inserted = false;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        bool queueFull = false;
+        for (std::size_t i = 0; i < jobs.size(); ++i)
+        {
+            const auto& job = jobs[i];
+            if (job.kind != RenderJob::Kind::Stage1Render
+                || job.renderCache == nullptr || job.queuedChunkStartSample < 0)
+                continue;
+            if (!lease_.isValid())
+            {
+                results[i] = RequeueResult::LeaseUnavailable;
+                continue;
+            }
+            if (queueFull || queue_.size() >= RenderWorker::kMaxQueueDepth)
+            {
+                queueFull = true;
+                results[i] = RequeueResult::QueueFull;
+                continue;
+            }
+            if (!job.renderCache->requeueRunningChunk(job.startSample, job.targetRevision))
+            {
+                results[i] = RequeueResult::CacheRejected;
+                continue;
+            }
+            RenderJob queued = job;
+            queued.queuedChunkStartSample = job.startSample;
+            const auto* cache = queued.renderCache.get();
+            const auto insertIt = std::find_if(queue_.begin(), queue_.end(),
+                [cache, &queued](const RenderJob& existing) {
+                    return existing.kind == RenderJob::Kind::Stage1Render
+                        && existing.renderCache.get() == cache
+                        && existing.queuedChunkStartSample > queued.queuedChunkStartSample;
+                });
+            queue_.insert(insertIt, std::move(queued));
+            results[i] = RequeueResult::Requeued;
+            inserted = true;
+        }
+    }
+    if (inserted)
+        cv_.notify_one();
+    return results;
+}
+
+void RenderWorker::setStage1CapacityCallback(std::function<void()> callback)
+{
+    std::lock_guard<std::mutex> lk(mutex_);
+    stage1CapacityCallback_ = std::move(callback);
 }
 
 bool RenderWorker::enqueueLocked(RenderJob job)
@@ -475,6 +553,7 @@ void RenderWorker::loop()
     {
         RenderJob job;
         RenderExecutionLease leaseCopy;
+        std::function<void()> capacityCallback;
         bool hasJob = false;
 
         {
@@ -496,6 +575,7 @@ void RenderWorker::loop()
                 job = std::move(queue_.front());
                 queue_.pop_front();
                 leaseCopy = lease_;
+                capacityCallback = stage1CapacityCallback_;
                 ++inFlight_;
 
                 if (leaseCopy.isValid())
@@ -518,6 +598,9 @@ void RenderWorker::loop()
                 }
             }
         }
+
+        if (capacityCallback)
+            capacityCallback();
 
         struct InFlightGuard final
         {

@@ -7,6 +7,7 @@
 #include <memory>
 #include <atomic>
 #include <cmath>
+#include <limits>
 #include "F0Timeline.h"
 #include "Note.h"
 #include "PitchUtils.h"
@@ -93,6 +94,12 @@ public:
     size_t size() const { return originalF0_.size(); }
 
     uint64_t getRenderGeneration() const { return renderGeneration_; }
+    // vector<bool> packs logical bits; expose only its backing payload, rounded to bytes.
+    std::size_t getVocoderMaskPayloadBytes() const noexcept
+    {
+        constexpr auto bitsPerByte = std::numeric_limits<unsigned char>::digits;
+        return (vocoderMask_.capacity() + bitsPerByte - 1) / bitsPerByte;
+    }
 
     bool hasCorrectionLayer() const { return !correctionSegments_.empty(); }
 

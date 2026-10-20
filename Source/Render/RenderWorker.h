@@ -95,6 +95,8 @@ public:
     // a Pending chunk behind an empty lease. On rejection the caller owns
     // failure settlement and notification.
     RequeueResult requeueStage1Chunk(const RenderJob& job);
+    std::vector<RequeueResult> requeueStage1Chunks(const std::vector<RenderJob>& jobs);
+    void setStage1CapacityCallback(std::function<void()> callback);
     std::shared_ptr<AsyncState> beginAsyncJob();
     static void completeAsyncJob(const std::shared_ptr<AsyncState>& state) noexcept;
     static bool isAsyncJobClosed(const std::shared_ptr<AsyncState>& state) noexcept;
@@ -147,6 +149,7 @@ private:
     bool paused_{false};
     int inFlight_{0};
     std::shared_ptr<AsyncState::Control> asyncControl_;
+    std::function<void()> stage1CapacityCallback_;
 };
 
 } // namespace OpenTune

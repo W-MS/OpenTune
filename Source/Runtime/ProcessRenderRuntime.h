@@ -22,6 +22,9 @@ namespace OpenTune {
 class ProcessRenderRuntime
 {
 public:
+    static constexpr std::size_t kDeferredSnapshotBudgetBytes =
+        static_cast<std::size_t>(6) * 1024 * 1024 * 1024;
+
     enum class ControlResult : uint8_t { Changed, Unchanged, Failed };
     using ControlCompletion = std::function<void(ControlResult, juce::String)>;
     enum class VocoderSubmitResult : uint8_t {
@@ -158,6 +161,12 @@ public:
                                std::shared_ptr<CompletionGate> completionGate);
     void detachDeferredJobs(void* owner,
                             const std::shared_ptr<CompletionGate>& gate);
+    void pruneDeferredJobsForCache(const std::shared_ptr<RenderCache>& cache);
+    void pruneStaleDeferredJobsForCache(const std::shared_ptr<RenderCache>& cache);
+    void pruneDeferredJobsForService(const ContentRenderService* service);
+    void renderQueueCapacityAvailable();
+    bool hasDeferredRetriesForService(const ContentRenderService* service) const;
+    bool flushDeferredRetriesForService(const ContentRenderService* service);
 
     /**
      * Vocoder submission / query entry points. All accesses to the underlying
@@ -180,6 +189,7 @@ public:
 
     std::size_t controlQueueDepth() const noexcept;
     std::size_t deferredRetryCount() const noexcept;
+    std::size_t deferredRetrySnapshotBytes() const;
     bool hasActiveTransaction() const noexcept;
     int domainSubmitInFlight() const noexcept;
     uint64_t vocoderGeneration() const noexcept;
@@ -187,6 +197,8 @@ public:
     bool isControlWorkerJoinable() const noexcept;
 
 private:
+    friend struct ProcessRenderRuntimeTestAccess;
+
     ProcessRenderRuntime();
     ~ProcessRenderRuntime() = default;
 
@@ -266,6 +278,7 @@ private:
     std::deque<ControlCommand> controlQueue_;
     mutable std::mutex shutdownMutex_;
     bool ensureVocoderQueued_{false}; // controlMutex_ protected
+    std::atomic<bool> deferredEnsureRetryPending_{false};
     std::atomic<bool> shuttingDown_{false}; // shutdownMutex_ serializes transitions
     std::atomic<uint64_t> shutdownGeneration_{0};
     std::atomic<bool> workerExitDispatchAttempted_{false};
@@ -281,26 +294,46 @@ private:
     bool vocoderReconfiguring_{false}; // vocoderMutex_ 保护：control worker 已摘除旧 domain
     uint64_t vocoderGeneration_{0};  // vocoderMutex_ 保护
 
-    // Deferred retry list: jobs that failed with generation mismatch or cancelled
-    // during reconfigureVocoder. Flushed after new domain is published and
-    // reconfiguring_ is cleared.
+    // Deferred retry list: retains the latest retry per cache/chunk until it is
+    // atomically admitted by RenderWorker or pruned as stale.
     struct DeferredRetry {
         std::weak_ptr<ContentRenderService> crs;
         RenderJob job;
         CompletionContext completion;
         void* ownerIdentity{nullptr};
+        const ContentRenderService* serviceIdentity{nullptr};
+        uint64_t audioRevision{0};
+        int audioSamples{0};
+        int audioChannels{0};
         juce::String reason;
+        struct PayloadAllocation {
+            const void* identity{nullptr};
+            std::size_t bytes{0};
+        };
+        std::vector<PayloadAllocation> payloads;
     };
 
-    void failDeferredRetries(std::vector<DeferredRetry> retries);
+    bool deferredSnapshotFitsLocked(const DeferredRetry& retry,
+                                    std::size_t budgetBytes) const;
+    void retainDeferredPayloadsLocked(const DeferredRetry& retry);
+    void releaseDeferredPayloadsLocked(const DeferredRetry& retry);
+    bool resumeDeferredRetries(const ContentRenderService* serviceIdentity = nullptr);
+    void postDeferredRetryEvent();
     std::vector<DeferredRetry> deferredRetries_; // vocoderMutex_ protected
+    struct DeferredPayloadReference {
+        std::size_t bytes{0};
+        std::size_t references{0};
+    };
+    std::unordered_map<const void*, DeferredPayloadReference> deferredPayloads_; // vocoderMutex_ protected
+    std::size_t deferredSnapshotBytes_{0}; // unique payload bytes; vocoderMutex_ protected
     static constexpr std::size_t kMaxControlQueueDepth = 100;
-    static constexpr std::size_t kMaxDeferredRetryDepth = 100;
+    std::atomic<bool> deferredRetryEventPosted_{false};
 
     void deferOrRequeue(std::shared_ptr<ContentRenderService> crs,
                         RenderJob job,
                         CompletionContext completion,
-                        juce::String reason);
+                        juce::String reason,
+                        std::size_t snapshotBudgetBytes = kDeferredSnapshotBudgetBytes);
 
     ProcessRenderRuntime(const ProcessRenderRuntime&) = delete;
     ProcessRenderRuntime& operator=(const ProcessRenderRuntime&) = delete;

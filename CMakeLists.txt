@@ -1899,6 +1899,7 @@ if(OPENTUNE_BUILD_TESTS)
     # providing test doubles for the render backends.
     foreach(render_contract IN ITEMS
             RenderRuntimeLifecycleTests
+            RenderRuntimeDeferredRetryTests
             RenderRuntimeBackpressureTests
             RenderRuntimeStressTests
             ARALifecycleContractTests
@@ -1941,6 +1942,10 @@ if(OPENTUNE_BUILD_TESTS)
         endif()
     endforeach()
 
+    # Deferred retry contracts exercise more than one hundred cache entries and
+    # deliberately run outside the short Lifecycle watchdog scenarios.
+    set_tests_properties(RenderRuntimeDeferredRetryTests PROPERTIES TIMEOUT 120)
+
     # Performance is only a test when the user-provided baseline/threshold
     # contract exists.  A placeholder executable must not be reported as a
     # performance regression or silently pass without approved parameters.
@@ -1963,7 +1968,10 @@ if(OPENTUNE_BUILD_TESTS)
     # Linking the production SharedCode into the runtime lifecycle tests pulls
     # the JUCE ARA model object implementations.  Keep the SDK plug-in side
     # dispatch test-only, just as for the dedicated ARA host harness.
-    foreach(_runtime_contract IN ITEMS RenderRuntimeLifecycleTests RenderRuntimeStressTests)
+    foreach(_runtime_contract IN ITEMS
+            RenderRuntimeLifecycleTests
+            RenderRuntimeDeferredRetryTests
+            RenderRuntimeStressTests)
         target_sources(${_runtime_contract} PRIVATE
             "${ARA_SDK_PATH}/ARA_Library/Dispatch/ARAPlugInDispatch.cpp"
             "${ARA_SDK_PATH}/ARA_Library/PlugIn/ARAPlug.cpp"

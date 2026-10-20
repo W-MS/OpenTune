@@ -3,6 +3,7 @@
 #include "RenderChunkPlanner.h"
 #include "Stage2TimeStretchRebuilder.h"
 #include "../Inference/SoundTouchStretcher.h"
+#include "../Runtime/ProcessRenderRuntime.h"
 #include "../Utils/TimeCoordinate.h"
 
 namespace OpenTune {
@@ -46,6 +47,7 @@ void ContentRenderService::publishPlaybackSource(ContentKey key, PlaybackReadSou
         || source.contentSnapshot->timeGrid->empty())
         return;
     playbackSources_.publish(key, source);
+    ProcessRenderRuntime::getInstance().renderQueueCapacityAvailable();
 }
 
 bool ContentRenderService::republishPlaybackSource(
@@ -78,6 +80,52 @@ bool ContentRenderService::getPlaybackReadSource(ContentKey key, PlaybackReadSou
     return playbackSources_.get(key, out);
 }
 
+ContentRenderService::DeferredSourceStatus ContentRenderService::restoreDeferredRenderJob(
+    RenderJob& job, uint64_t expectedAudioRevision,
+    int expectedAudioSamples, int expectedAudioChannels) const
+{
+    if (!isCurrentRenderCache(job.contentKey, job.renderCache))
+        return DeferredSourceStatus::Stale;
+
+    RenderCache::RunningChunkSnapshot running;
+    if (!job.renderCache->getRunningChunk(job.startSample, running)
+        || running.startSample != job.startSample
+        || running.endSampleExclusive != job.endSampleExclusive
+        || running.runningRevision != job.targetRevision)
+        return DeferredSourceStatus::Stale;
+
+    PlaybackReadSource source;
+    if (!getPlaybackReadSource(job.contentKey, source))
+        return DeferredSourceStatus::SourceUnavailable;
+    if (source.renderCache != job.renderCache)
+        return DeferredSourceStatus::Stale;
+    if (source.contentSnapshot == nullptr)
+        return DeferredSourceStatus::SourceUnavailable;
+    if (running.lastRequestedContentRevision != source.contentSnapshot->contentRevision)
+        return DeferredSourceStatus::PlanNotSynchronized;
+    if (source.audioBuffer == nullptr
+        || source.contentSnapshot->audioRevision != expectedAudioRevision
+        || source.audioSampleRate != job.audioSampleRate
+        || source.audioBuffer->getNumSamples() != expectedAudioSamples
+        || source.audioBuffer->getNumChannels() != expectedAudioChannels
+        || job.startSample < 0
+        || job.endSampleExclusive > source.audioBuffer->getNumSamples()
+        || job.endSampleExclusive <= job.startSample)
+        return DeferredSourceStatus::Stale;
+
+    job.contentSnapshot = std::move(source.contentSnapshot);
+    job.audioBuffer = std::move(source.audioBuffer);
+    job.audioSampleRate = source.audioSampleRate;
+    job.contentRevision = job.contentSnapshot->contentRevision;
+    return DeferredSourceStatus::Ready;
+}
+
+bool ContentRenderService::isCurrentRenderCache(
+    ContentKey key, const std::shared_ptr<RenderCache>& cache) const
+{
+    return cache != nullptr && renderCaches_.get(key) == cache;
+}
+
 void ContentRenderService::removePlaybackSource(ContentKey key)
 {
     playbackSources_.remove(key);
@@ -95,9 +143,14 @@ std::shared_ptr<RenderCache> ContentRenderService::getRenderCache(ContentKey key
 
 void ContentRenderService::removeRenderCache(ContentKey key)
 {
-    if (auto cache = renderCaches_.get(key))
+    auto cache = renderCaches_.get(key);
+    if (cache != nullptr) {
+        ProcessRenderRuntime::getInstance().pruneDeferredJobsForCache(cache);
         renderWorker_.discardStage1Queue(cache.get());
+    }
     renderCaches_.remove(key);
+    if (cache != nullptr)
+        ProcessRenderRuntime::getInstance().pruneDeferredJobsForCache(cache);
 }
 
 void ContentRenderService::attachExecutionLease(ExecutionLease lease)
@@ -172,6 +225,8 @@ void ContentRenderService::enqueueRender(RenderJob job)
         if (reconcileResult.stateChanged)
             timeStretchCache_.invalidate(job.contentKey);
     });
+    ProcessRenderRuntime::getInstance().pruneStaleDeferredJobsForCache(job.renderCache);
+    ProcessRenderRuntime::getInstance().renderQueueCapacityAvailable();
 }
 
 RenderWorker::RequeueResult ContentRenderService::requeueRenderChunk(const RenderJob& job)
@@ -182,6 +237,17 @@ RenderWorker::RequeueResult ContentRenderService::requeueRenderChunk(const Rende
     // queue mutex with owner detach.  A detached lease therefore rejects the
     // requeue before it can turn Running into an orphaned Pending chunk.
     return renderWorker_.requeueStage1Chunk(job);
+}
+
+std::vector<RenderWorker::RequeueResult> ContentRenderService::requeueRenderChunks(
+    const std::vector<RenderJob>& jobs)
+{
+    return renderWorker_.requeueStage1Chunks(jobs);
+}
+
+void ContentRenderService::setDeferredRetryCapacityCallback(std::function<void()> callback)
+{
+    renderWorker_.setStage1CapacityCallback(std::move(callback));
 }
 
 std::shared_ptr<RenderWorker::AsyncState> ContentRenderService::beginAsyncRenderJob()
@@ -207,6 +273,20 @@ void ContentRenderService::resumeRenderWorker()
 void ContentRenderService::drainRenderWorker()
 {
     renderWorker_.drain();
+}
+
+bool ContentRenderService::drainRenderWorkerForExport()
+{
+    auto& runtime = ProcessRenderRuntime::getInstance();
+    for (;;)
+    {
+        renderWorker_.drain();
+        if (!runtime.hasDeferredRetriesForService(this))
+            return true;
+        if (!runtime.flushDeferredRetriesForService(this)
+            && runtime.hasDeferredRetriesForService(this))
+            return false;
+    }
 }
 
 void ContentRenderService::waitAsyncRenderJobs()
@@ -242,9 +322,11 @@ void ContentRenderService::removeStretcher(ContentKey key)
 
 void ContentRenderService::clearAll()
 {
+    ProcessRenderRuntime::getInstance().pruneDeferredJobsForService(this);
     playbackSources_.clear();
     renderWorker_.discardAllStage1Queue();
     renderCaches_.clear();
+    ProcessRenderRuntime::getInstance().pruneDeferredJobsForService(this);
     stretchers_.clear();
     timeStretchCache_.clear();
 }

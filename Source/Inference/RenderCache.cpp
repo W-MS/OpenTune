@@ -756,6 +756,17 @@ std::vector<RenderCache::PendingJob> RenderCache::getPendingJobs() const
     return jobs;
 }
 
+bool RenderCache::getRunningChunk(int64_t startSample, RunningChunkSnapshot& out) const
+{
+    const juce::SpinLock::ScopedLockType guard(lock_);
+    const auto it = chunks_.find(startSample);
+    if (it == chunks_.end() || it->second.status != Chunk::Status::Running)
+        return false;
+    out = {it->second.startSample, it->second.endSampleExclusive,
+           it->second.runningRevision, it->second.lastRequestedContentRevision};
+    return true;
+}
+
 RenderCache::ChunkRenderResult RenderCache::completeChunkRenderWithAudio(int64_t startSample,
                                                                            int64_t endSampleExclusive,
                                                                            std::vector<float>&& audio,

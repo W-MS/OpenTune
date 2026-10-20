@@ -42,6 +42,17 @@ public:
         ContentKey key,
         std::shared_ptr<const EditableContentSnapshot> contentSnapshot);
     bool getPlaybackReadSource(ContentKey key, PlaybackReadSource& out) const;
+    enum class DeferredSourceStatus : uint8_t {
+        Ready,
+        SourceUnavailable,
+        PlanNotSynchronized,
+        Stale
+    };
+    DeferredSourceStatus restoreDeferredRenderJob(RenderJob& job,
+                                                   uint64_t expectedAudioRevision,
+                                                   int expectedAudioSamples,
+                                                   int expectedAudioChannels) const;
+    bool isCurrentRenderCache(ContentKey key, const std::shared_ptr<RenderCache>& cache) const;
     void removePlaybackSource(ContentKey key);
 
     std::shared_ptr<RenderCache> getOrCreateRenderCache(ContentKey key);
@@ -55,11 +66,14 @@ public:
     // stale-generation 回退：只回退 RenderCache 状态机（Running→Pending）并投递
     // 一个带 chunk 身份的队列项，不重算几何/快照、不 bump desired。
     RenderWorker::RequeueResult requeueRenderChunk(const RenderJob& job);
+    std::vector<RenderWorker::RequeueResult> requeueRenderChunks(const std::vector<RenderJob>& jobs);
+    void setDeferredRetryCapacityCallback(std::function<void()> callback);
     std::shared_ptr<RenderWorker::AsyncState> beginAsyncRenderJob();
     static void completeAsyncRenderJob(const std::shared_ptr<RenderWorker::AsyncState>& state) noexcept;
     void pauseRenderWorker();
     void resumeRenderWorker();
     void drainRenderWorker();
+    bool drainRenderWorkerForExport();
     void waitAsyncRenderJobs();
 
     std::size_t renderQueueDepth() const noexcept;

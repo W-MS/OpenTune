@@ -73,6 +73,89 @@ void ProcessRenderRuntime::notifyApplicationRenderFailure(ContentKey key,
 
 namespace {
 
+using PayloadFootprint = std::vector<std::pair<const void*, std::size_t>>;
+
+template <typename T>
+void addVectorPayload(const std::vector<T>& values,
+                      std::unordered_map<const void*, std::size_t>& allocations)
+{
+    if (values.capacity() > 0)
+        allocations.emplace(values.data(), values.capacity() * sizeof(T));
+}
+
+void addNotePayload(const std::vector<Note>& notes,
+                    std::unordered_map<const void*, std::size_t>& allocations)
+{
+    addVectorPayload(notes, allocations);
+    for (const auto& note : notes)
+        if (note.eq)
+            addVectorPayload(note.eq->filters, allocations);
+}
+
+void addPitchCurvePayload(const std::shared_ptr<const PitchCurveSnapshot>& curve,
+                          std::unordered_map<const void*, std::size_t>& allocations)
+{
+    if (curve == nullptr)
+        return;
+    addVectorPayload(curve->getOriginalF0(), allocations);
+    addVectorPayload(curve->getOriginalEnergy(), allocations);
+    addVectorPayload(curve->getErasedRanges(), allocations);
+    const auto& segments = curve->getCorrectionSegments();
+    addVectorPayload(segments, allocations);
+    for (const auto& segment : segments)
+    {
+        addVectorPayload(segment.f0Data, allocations);
+        addVectorPayload(segment.baseF0Data, allocations);
+    }
+    if (curve->getVocoderMaskPayloadBytes() > 0)
+        allocations.emplace(curve.get(), curve->getVocoderMaskPayloadBytes());
+    // JUCE String and allocator/control-block metadata have no portable
+    // payload-capacity API.
+}
+
+PayloadFootprint snapshotPayloadFootprint(
+    const std::shared_ptr<const EditableContentSnapshot>& snapshot,
+    const std::shared_ptr<const juce::AudioBuffer<float>>& jobAudio)
+{
+    std::unordered_map<const void*, std::size_t> allocations;
+    const auto addAudio = [&allocations](
+        const std::shared_ptr<const juce::AudioBuffer<float>>& audio) {
+        if (audio != nullptr)
+        {
+            // JUCE allocates each channel for getNumSamples(); its allocation
+            // capacity is not exposed. Count actual sample payload, not PCM cache data.
+            const auto channelBytes = static_cast<std::size_t>(audio->getNumSamples())
+                * sizeof(float);
+            for (int channel = 0; channel < audio->getNumChannels(); ++channel)
+                allocations.emplace(audio->getReadPointer(channel), channelBytes);
+        }
+    };
+    addAudio(jobAudio);
+    if (snapshot != nullptr)
+    {
+        addAudio(snapshot->audioBuffer);
+        addNotePayload(snapshot->notes, allocations);
+        addVectorPayload(snapshot->silentGaps, allocations);
+        addVectorPayload(snapshot->volumeEnvelope.points(), allocations);
+        addNotePayload(snapshot->referenceFeatures.pitch.notes, allocations);
+        addVectorPayload(snapshot->referenceFeatures.timing.anchors, allocations);
+        addPitchCurvePayload(snapshot->pitchCurve, allocations);
+        if (snapshot->timeGrid != nullptr)
+            addVectorPayload(snapshot->timeGrid->handles(), allocations);
+        for (const auto& payload : {snapshot->hnsepHarmonicAudio, snapshot->hnsepResidualAudio})
+            if (payload != nullptr)
+                addVectorPayload(*payload, allocations);
+        if (snapshot->originalF0FailureReason.capacity() > 0)
+            allocations.emplace(snapshot.get(), snapshot->originalF0FailureReason.capacity() + 1);
+    }
+
+    PayloadFootprint footprint;
+    footprint.reserve(allocations.size());
+    for (const auto& allocation : allocations)
+        footprint.emplace_back(allocation.first, allocation.second);
+    return footprint;
+}
+
 // ==============================================================================
 // Effective F0 Materialization
 // ==============================================================================
@@ -398,6 +481,7 @@ void ProcessRenderRuntime::retainOwner()
         {
             std::lock_guard<std::mutex> controlLock(controlMutex_);
             ensureVocoderQueued_ = false;
+            deferredEnsureRetryPending_.store(false, std::memory_order_release);
             activeTransaction_.reset();
             controlQueue_.clear();
         }
@@ -547,6 +631,8 @@ void ProcessRenderRuntime::finishShutdown(uint64_t generation)
     std::vector<DeferredRetry> deferred;
     {
         std::lock_guard<std::mutex> lock(vocoderMutex_);
+        for (const auto& retry : deferredRetries_)
+            releaseDeferredPayloadsLocked(retry);
         deferred = std::move(deferredRetries_);
         vocoderReconfiguring_ = false;
     }
@@ -663,13 +749,15 @@ ProcessRenderRuntime::ControlResult ProcessRenderRuntime::reconfigureVocoder(
 
     if (shuttingDown_.load(std::memory_order_acquire))
     {
-        std::vector<DeferredRetry> failedRetries;
+        std::vector<DeferredRetry> releasedRetries;
         {
             std::lock_guard<std::mutex> lock(vocoderMutex_);
             vocoderReconfiguring_ = false;
-            failedRetries = std::move(deferredRetries_);
+            for (const auto& retry : deferredRetries_)
+                releaseDeferredPayloadsLocked(retry);
+            releasedRetries = std::move(deferredRetries_);
         }
-        failDeferredRetries(std::move(failedRetries));
+        releasedRetries.clear();
         return ControlResult::Failed;
     }
 
@@ -682,7 +770,6 @@ ProcessRenderRuntime::ControlResult ProcessRenderRuntime::reconfigureVocoder(
     // 严格先销毁旧 Session，再创建新 Session；新旧显存不并存。
     auto newDomain = createVocoderDomain(targetWeight, errorMessage);
 
-    std::vector<DeferredRetry> readyRetries;
     {
         std::lock_guard<std::mutex> lock(vocoderMutex_);
         if (!shuttingDown_.load(std::memory_order_acquire)
@@ -693,80 +780,43 @@ ProcessRenderRuntime::ControlResult ProcessRenderRuntime::reconfigureVocoder(
                 ++vocoderGeneration_; // 新 domain 获得独立代际
         }
         vocoderReconfiguring_ = false;
-        readyRetries = std::move(deferredRetries_);
     }
-    // Flush deferred retries outside vocoderMutex_: new domain is already
-    // published (or creation failed and vocoderDomain_ remains null).
-    // Directly check domain presence — never call acquireVocoderConfig here
-    // which would trigger recursive domain creation.
     bool domainAvailable = false;
     {
         std::lock_guard<std::mutex> lock(vocoderMutex_);
         domainAvailable = !shuttingDown_.load(std::memory_order_acquire)
             && vocoderDomain_ != nullptr;
     }
-    for (auto& retry : readyRetries)
+    if (domainAvailable)
+        resumeDeferredRetries();
+    else if (!shuttingDown_.load(std::memory_order_acquire))
     {
-        std::unique_lock<std::mutex> gateLock;
-        if (retry.completion.gate != nullptr)
-            gateLock = std::unique_lock<std::mutex>(retry.completion.gate->mutex);
-
-        // Serialize the decision with owner close using gate -> runtime state.
-        // The gate is released before requeue itself, while the runtime state
-        // lock is retained through ContentRenderService/RenderWorker enqueue.
-        // Owner close must acquire the same state lock after closing the gate,
-        // so it cannot remove this item before that enqueue is complete.
-        std::unique_lock<std::mutex> stateLock(vocoderMutex_);
-        const bool gateClosed = retry.completion.gate != nullptr
-            && retry.completion.gate->closed;
-        auto crsShared = retry.crs.lock();
-        const bool ownerUnavailable = crsShared == nullptr;
-        domainAvailable = !shuttingDown_.load(std::memory_order_acquire)
-            && vocoderDomain_ != nullptr;
-        if (domainAvailable && !gateClosed && !ownerUnavailable)
+        std::vector<DeferredRetry> failedRetries;
         {
-            auto requeueResult = RenderWorker::RequeueResult::InvalidJob;
-            if (gateLock.owns_lock())
-                gateLock.unlock();
-            requeueResult = crsShared->requeueRenderChunk(retry.job);
-            if (requeueResult == RenderWorker::RequeueResult::Requeued)
-            {
-                stateLock.unlock();
-                continue;
-            }
-            retry.reason += "; requeue rejected because "
-                + (requeueResult == RenderWorker::RequeueResult::LeaseUnavailable
-                    ? juce::String("the RenderWorker execution lease is unavailable")
-                    : requeueResult == RenderWorker::RequeueResult::QueueFull
-                        ? juce::String("the RenderWorker queue is full")
-                        : requeueResult == RenderWorker::RequeueResult::CacheRejected
-                            ? juce::String("RenderCache rejected the Running-to-Pending transition")
-                            : juce::String("the render job is invalid"));
+            std::lock_guard<std::mutex> lock(vocoderMutex_);
+            for (const auto& retry : deferredRetries_)
+                releaseDeferredPayloadsLocked(retry);
+            failedRetries = std::move(deferredRetries_);
         }
-        if (gateLock.owns_lock())
-            gateLock.unlock();
-        stateLock.unlock();
-
-        if (retry.job.renderCache != nullptr
-            && retry.job.renderCache->completeChunkRenderFailure(
-                retry.job.startSample, retry.job.targetRevision)
-            && !gateClosed && !ownerUnavailable
-            && !shuttingDown_.load(std::memory_order_acquire))
+        for (const auto& retry : failedRetries)
         {
-            const auto reason = !domainAvailable
-                ? (errorMessage.isNotEmpty()
-                    ? errorMessage + "; deferred task: " + retry.reason
-                    : retry.reason)
+            const auto reason = errorMessage.isNotEmpty()
+                ? errorMessage + "; deferred task: " + retry.reason
                 : retry.reason;
-            notifyChunkFailed(retry.completion, retry.job.contentKey,
-                              retry.job.targetRevision, reason, false);
-            deferredFailureNotifications.push_back({
-                retry.job.contentKey,
-                retry.completion.contentRevision,
-                retry.job.targetRevision,
-                reason,
-                retry.job.renderCache,
-                retry.completion.gate});
+            if (retry.job.renderCache != nullptr
+                && retry.job.renderCache->completeChunkRenderFailure(
+                    retry.job.startSample, retry.job.targetRevision))
+            {
+                notifyChunkFailed(retry.completion, retry.job.contentKey,
+                                  retry.job.targetRevision, reason, false);
+                deferredFailureNotifications.push_back({
+                    retry.job.contentKey,
+                    retry.completion.contentRevision,
+                    retry.job.targetRevision,
+                    reason,
+                    retry.job.renderCache,
+                    retry.completion.gate});
+            }
         }
     }
     if (!domainAvailable && errorMessage.isEmpty())
@@ -793,6 +843,8 @@ bool ProcessRenderRuntime::postControlCommand(ControlCommand command)
             {
                 AppLogger::error("[ProcessRenderRuntime] control queue full; Failed");
                 rejected = true;
+                if (command.type == ControlCommand::Type::EnsureVocoder)
+                    deferredEnsureRetryPending_.store(true, std::memory_order_release);
             }
             else if (command.type == ControlCommand::Type::EnsureVocoder)
             {
@@ -866,13 +918,14 @@ void ProcessRenderRuntime::controlWorkerLoop()
                 ensureVocoderQueued_ = false;
             activeTransaction_ = command.transaction;
         }
-
         if (command.type == ControlCommand::Type::Stop)
         {
             std::vector<DeferredRetry> deferred;
             std::unique_ptr<VocoderDomain> domain;
             {
                 std::lock_guard<std::mutex> lock(vocoderMutex_);
+                for (const auto& retry : deferredRetries_)
+                    releaseDeferredPayloadsLocked(retry);
                 deferred = std::move(deferredRetries_);
                 domain = std::move(vocoderDomain_);
                 vocoderReconfiguring_ = false;
@@ -887,7 +940,6 @@ void ProcessRenderRuntime::controlWorkerLoop()
                     return domainSubmitInFlight_ == 0;
                 });
             }
-            failDeferredRetries(std::move(deferred));
             domain.reset();
 
             // GAME inference is process-scoped and not cancellable.  Join its
@@ -939,6 +991,10 @@ void ProcessRenderRuntime::controlWorkerLoop()
             std::lock_guard<std::mutex> lock(controlMutex_);
             ensureVocoderQueued_ = false;
         }
+        if (command.type == ControlCommand::Type::EnsureVocoder)
+            deferredEnsureRetryPending_.store(false, std::memory_order_release);
+        else if (deferredEnsureRetryPending_.exchange(false, std::memory_order_acq_rel))
+            postDeferredRetryEvent();
 
         auto transaction = std::move(command.transaction);
         auto completion = std::move(command.completion);
@@ -1085,9 +1141,10 @@ void ProcessRenderRuntime::detachDeferredJobs(
     {
         std::lock_guard<std::mutex> lock(vocoderMutex_);
         auto it = std::remove_if(deferredRetries_.begin(), deferredRetries_.end(),
-            [owner, &detached](DeferredRetry& retry) {
+            [this, owner, &detached](DeferredRetry& retry) {
                 if (retry.ownerIdentity != owner)
                     return false;
+                releaseDeferredPayloadsLocked(retry);
                 detached.push_back(std::move(retry));
                 return true;
             });
@@ -1096,7 +1153,10 @@ void ProcessRenderRuntime::detachDeferredJobs(
 
     if (gateLock.owns_lock())
         gateLock.unlock();
-    failDeferredRetries(std::move(detached));
+    const bool removed = !detached.empty();
+    detached.clear();
+    if (removed)
+        postDeferredRetryEvent();
 }
 
 ProcessRenderRuntime::VocoderSubmitResult ProcessRenderRuntime::submitVocoderJob(
@@ -1183,18 +1243,6 @@ bool ProcessRenderRuntime::acquireVocoderConfig(VocoderConfig& out)
     return false;
 }
 
-void ProcessRenderRuntime::failDeferredRetries(std::vector<DeferredRetry> retries)
-{
-    for (auto& retry : retries)
-    {
-        if (retry.job.renderCache != nullptr
-            && retry.job.renderCache->completeChunkRenderFailure(
-                retry.job.startSample, retry.job.targetRevision))
-            AppLogger::info("[ProcessRenderRuntime] deferred render cancelled with owner lifecycle: "
-                + retry.reason);
-    }
-}
-
 bool ProcessRenderRuntime::isVocoderReady() const noexcept
 {
     std::lock_guard<std::mutex> lock(vocoderMutex_);
@@ -1223,6 +1271,322 @@ std::size_t ProcessRenderRuntime::deferredRetryCount() const noexcept
 {
     std::lock_guard<std::mutex> lock(vocoderMutex_);
     return deferredRetries_.size();
+}
+
+bool ProcessRenderRuntime::hasDeferredRetriesForService(
+    const ContentRenderService* service) const
+{
+    std::lock_guard<std::mutex> lock(vocoderMutex_);
+    return std::any_of(deferredRetries_.begin(), deferredRetries_.end(),
+        [service](const DeferredRetry& retry) {
+            return retry.serviceIdentity == service;
+        });
+}
+
+bool ProcessRenderRuntime::flushDeferredRetriesForService(
+    const ContentRenderService* service)
+{
+    if (!hasDeferredRetriesForService(service))
+        return true;
+    return resumeDeferredRetries(service);
+}
+
+std::size_t ProcessRenderRuntime::deferredRetrySnapshotBytes() const
+{
+    std::lock_guard<std::mutex> lock(vocoderMutex_);
+    return deferredSnapshotBytes_;
+}
+
+bool ProcessRenderRuntime::deferredSnapshotFitsLocked(
+    const DeferredRetry& retry, std::size_t budgetBytes) const
+{
+    const auto limit = std::min(budgetBytes, kDeferredSnapshotBudgetBytes);
+    if (deferredSnapshotBytes_ > limit)
+        return false;
+    std::size_t projected = deferredSnapshotBytes_;
+    for (const auto& allocation : retry.payloads)
+    {
+        if (deferredPayloads_.find(allocation.identity) != deferredPayloads_.end())
+            continue;
+        if (allocation.bytes > limit - projected)
+            return false;
+        projected += allocation.bytes;
+    }
+    return true;
+}
+
+void ProcessRenderRuntime::retainDeferredPayloadsLocked(const DeferredRetry& retry)
+{
+    for (const auto& allocation : retry.payloads)
+    {
+        auto it = deferredPayloads_.try_emplace(
+            allocation.identity, DeferredPayloadReference{allocation.bytes, 0}).first;
+        if (it->second.references == 0)
+            deferredSnapshotBytes_ += it->second.bytes;
+        ++it->second.references;
+    }
+}
+
+void ProcessRenderRuntime::releaseDeferredPayloadsLocked(const DeferredRetry& retry)
+{
+    for (const auto& allocation : retry.payloads)
+    {
+        const auto it = deferredPayloads_.find(allocation.identity);
+        jassert(it != deferredPayloads_.end() && it->second.references > 0);
+        if (--it->second.references == 0)
+        {
+            deferredSnapshotBytes_ -= it->second.bytes;
+            deferredPayloads_.erase(it);
+        }
+    }
+}
+
+void ProcessRenderRuntime::postDeferredRetryEvent()
+{
+    {
+        std::lock_guard<std::mutex> lock(vocoderMutex_);
+        if (deferredRetries_.empty())
+            return;
+    }
+    if (deferredRetryEventPosted_.exchange(true, std::memory_order_acq_rel))
+        return;
+    const bool posted = juce::MessageManager::callAsync([this]() {
+        deferredRetryEventPosted_.store(false, std::memory_order_release);
+        resumeDeferredRetries();
+    });
+    if (!posted)
+        deferredRetryEventPosted_.store(false, std::memory_order_release);
+}
+
+void ProcessRenderRuntime::renderQueueCapacityAvailable()
+{
+    postDeferredRetryEvent();
+}
+
+void ProcessRenderRuntime::pruneDeferredJobsForCache(
+    const std::shared_ptr<RenderCache>& cache)
+{
+    if (cache == nullptr)
+        return;
+    std::vector<DeferredRetry> released;
+    {
+        std::lock_guard<std::mutex> lock(vocoderMutex_);
+        auto it = std::remove_if(deferredRetries_.begin(), deferredRetries_.end(),
+            [this, &released, cache](DeferredRetry& retry) {
+                if (retry.job.renderCache != cache)
+                    return false;
+                releaseDeferredPayloadsLocked(retry);
+                released.push_back(std::move(retry));
+                return true;
+            });
+        deferredRetries_.erase(it, deferredRetries_.end());
+    }
+    const bool removed = !released.empty();
+    released.clear();
+    if (removed)
+        postDeferredRetryEvent();
+}
+
+void ProcessRenderRuntime::pruneStaleDeferredJobsForCache(
+    const std::shared_ptr<RenderCache>& cache)
+{
+    if (cache == nullptr)
+        return;
+    std::vector<DeferredRetry> released;
+    {
+        std::lock_guard<std::mutex> lock(vocoderMutex_);
+        auto it = std::remove_if(deferredRetries_.begin(), deferredRetries_.end(),
+            [this, &released, &cache](DeferredRetry& retry) {
+                if (retry.job.renderCache != cache)
+                    return false;
+                RenderCache::RunningChunkSnapshot running;
+                if (cache->getRunningChunk(retry.job.startSample, running)
+                    && running.startSample == retry.job.startSample
+                    && running.endSampleExclusive == retry.job.endSampleExclusive
+                    && running.runningRevision == retry.job.targetRevision)
+                    return false;
+                releaseDeferredPayloadsLocked(retry);
+                released.push_back(std::move(retry));
+                return true;
+            });
+        deferredRetries_.erase(it, deferredRetries_.end());
+    }
+    const bool removed = !released.empty();
+    released.clear();
+    if (removed)
+        postDeferredRetryEvent();
+}
+
+void ProcessRenderRuntime::pruneDeferredJobsForService(const ContentRenderService* service)
+{
+    std::vector<DeferredRetry> released;
+    {
+        std::lock_guard<std::mutex> lock(vocoderMutex_);
+        auto it = std::remove_if(deferredRetries_.begin(), deferredRetries_.end(),
+            [this, &released, service](DeferredRetry& retry) {
+                if (retry.serviceIdentity != service)
+                    return false;
+                releaseDeferredPayloadsLocked(retry);
+                released.push_back(std::move(retry));
+                return true;
+            });
+        deferredRetries_.erase(it, deferredRetries_.end());
+    }
+    const bool removed = !released.empty();
+    released.clear();
+    if (removed)
+        postDeferredRetryEvent();
+}
+
+bool ProcessRenderRuntime::resumeDeferredRetries(
+    const ContentRenderService* serviceIdentity)
+{
+    struct DeferredCandidate {
+        std::weak_ptr<ContentRenderService> crs;
+        RenderJob job;
+        CompletionContext completion;
+        const ContentRenderService* serviceIdentity{nullptr};
+        uint64_t audioRevision{0};
+        int audioSamples{0};
+        int audioChannels{0};
+    };
+    std::vector<DeferredCandidate> snapshot;
+    bool domainAvailable = false;
+    {
+        std::lock_guard<std::mutex> lock(vocoderMutex_);
+        if (shuttingDown_.load(std::memory_order_acquire) || vocoderReconfiguring_)
+            return false;
+        if (deferredRetries_.empty())
+            return false;
+        domainAvailable = vocoderDomain_ != nullptr;
+        if (domainAvailable)
+        {
+            snapshot.reserve(deferredRetries_.size());
+            for (const auto& retry : deferredRetries_)
+            {
+                if (serviceIdentity != nullptr && retry.serviceIdentity != serviceIdentity)
+                    continue;
+                DeferredCandidate candidate;
+                candidate.crs = retry.crs;
+                candidate.job.kind = retry.job.kind;
+                candidate.job.contentKey = retry.job.contentKey;
+                candidate.job.renderCache = retry.job.renderCache;
+                candidate.job.audioSampleRate = retry.job.audioSampleRate;
+                candidate.job.startSample = retry.job.startSample;
+                candidate.job.endSampleExclusive = retry.job.endSampleExclusive;
+                candidate.job.queuedChunkStartSample = retry.job.queuedChunkStartSample;
+                candidate.job.contentRevision = retry.job.contentRevision;
+                candidate.job.targetRevision = retry.job.targetRevision;
+                candidate.completion = retry.completion;
+                candidate.serviceIdentity = retry.serviceIdentity;
+                candidate.audioRevision = retry.audioRevision;
+                candidate.audioSamples = retry.audioSamples;
+                candidate.audioChannels = retry.audioChannels;
+                snapshot.push_back(std::move(candidate));
+            }
+        }
+    }
+    if (!domainAvailable)
+    {
+        ControlCommand command;
+        command.type = ControlCommand::Type::EnsureVocoder;
+        postControlCommand(std::move(command));
+        return false;
+    }
+
+    bool removedAny = false;
+    bool admittedAny = false;
+    for (const auto& candidate : snapshot)
+    {
+        auto crs = candidate.crs.lock();
+        std::vector<DeferredRetry> released;
+        std::vector<RenderJob> readyJobs;
+        std::unique_lock<std::mutex> gateLock;
+        if (candidate.completion.gate != nullptr)
+            gateLock = std::unique_lock<std::mutex>(candidate.completion.gate->mutex);
+        const bool gateClosed = candidate.completion.gate != nullptr
+            && candidate.completion.gate->closed;
+        auto job = candidate.job;
+
+        {
+            std::unique_lock<std::mutex> stateLock(vocoderMutex_);
+            if (shuttingDown_.load(std::memory_order_acquire)
+                || vocoderReconfiguring_ || vocoderDomain_ == nullptr)
+                continue;
+
+            const auto removeMatching = [&]() {
+                auto it = std::find_if(deferredRetries_.begin(), deferredRetries_.end(),
+                    [&candidate](const DeferredRetry& current) {
+                        return current.serviceIdentity == candidate.serviceIdentity
+                            && current.job.renderCache == candidate.job.renderCache
+                            && current.job.startSample == candidate.job.startSample
+                            && current.job.targetRevision == candidate.job.targetRevision;
+                    });
+                if (it != deferredRetries_.end()) {
+                    releaseDeferredPayloadsLocked(*it);
+                    released.push_back(std::move(*it));
+                    deferredRetries_.erase(it);
+                    removedAny = true;
+                }
+            };
+
+            if (gateClosed || crs == nullptr)
+            {
+                removeMatching();
+            }
+            else
+            {
+                auto it = std::find_if(deferredRetries_.begin(), deferredRetries_.end(),
+                    [&candidate](const DeferredRetry& current) {
+                        return current.serviceIdentity == candidate.serviceIdentity
+                            && current.job.renderCache == candidate.job.renderCache
+                            && current.job.startSample == candidate.job.startSample
+                            && current.job.targetRevision == candidate.job.targetRevision;
+                    });
+                if (it != deferredRetries_.end())
+                {
+                    const auto sourceStatus = crs->restoreDeferredRenderJob(
+                        job, candidate.audioRevision, candidate.audioSamples, candidate.audioChannels);
+                    if (sourceStatus == ContentRenderService::DeferredSourceStatus::Stale)
+                    {
+                        removeMatching();
+                    }
+                    else if (sourceStatus == ContentRenderService::DeferredSourceStatus::Ready)
+                    {
+                        it->completion.contentRevision = job.contentRevision;
+
+                        DeferredRetry restoredPayloads;
+                        for (const auto& allocation : snapshotPayloadFootprint(
+                                 job.contentSnapshot, job.audioBuffer))
+                            restoredPayloads.payloads.push_back(
+                                {allocation.first, allocation.second});
+                        if (deferredSnapshotFitsLocked(
+                                restoredPayloads, kDeferredSnapshotBudgetBytes))
+                        {
+                            retainDeferredPayloadsLocked(restoredPayloads);
+                            readyJobs.push_back(job);
+                            const auto results = crs->requeueRenderChunks(readyJobs);
+                            const auto result = results.front();
+                            admittedAny = result == RenderWorker::RequeueResult::Requeued
+                                || admittedAny;
+                            if (result != RenderWorker::RequeueResult::QueueFull
+                                && result != RenderWorker::RequeueResult::LeaseUnavailable)
+                                removeMatching();
+                            releaseDeferredPayloadsLocked(restoredPayloads);
+                        }
+                    }
+                }
+            }
+        }
+        if (gateLock.owns_lock())
+            gateLock.unlock();
+        released.clear();
+        readyJobs.clear();
+    }
+    snapshot.clear();
+    if (removedAny)
+        postDeferredRetryEvent();
+    return removedAny || admittedAny;
 }
 
 bool ProcessRenderRuntime::hasActiveTransaction() const noexcept
@@ -1259,111 +1623,159 @@ void ProcessRenderRuntime::deferOrRequeue(
     std::shared_ptr<ContentRenderService> crs,
     RenderJob job,
     CompletionContext completion,
-    juce::String reason)
+    juce::String reason,
+    std::size_t snapshotBudgetBytes)
 {
-    const auto failureCache = job.renderCache;
-    const auto failureContentKey = job.contentKey;
-    const auto failureStartSample = job.startSample;
-    const auto failureRevision = job.targetRevision;
-    bool shouldDefer = false;
-    bool deferredCapacityRejected = false;
-    bool shuttingDown = false;
-    bool gateClosed = false;
+    if (crs == nullptr || job.renderCache == nullptr)
+        return;
+
+    const auto audioRevision = job.contentSnapshot != nullptr
+        ? job.contentSnapshot->audioRevision : 0;
+    const int audioSamples = job.audioBuffer != nullptr
+        ? job.audioBuffer->getNumSamples()
+        : (job.contentSnapshot != nullptr && job.contentSnapshot->audioBuffer != nullptr
+            ? job.contentSnapshot->audioBuffer->getNumSamples() : 0);
+    const int audioChannels = job.audioBuffer != nullptr
+        ? job.audioBuffer->getNumChannels()
+        : (job.contentSnapshot != nullptr && job.contentSnapshot->audioBuffer != nullptr
+            ? job.contentSnapshot->audioBuffer->getNumChannels() : 0);
+    auto sourceStatus = crs->restoreDeferredRenderJob(
+        job, audioRevision, audioSamples, audioChannels);
+    if (sourceStatus == ContentRenderService::DeferredSourceStatus::Stale)
+        return;
+
+    crs->setDeferredRetryCapacityCallback([this]() { renderQueueCapacityAvailable(); });
     std::unique_lock<std::mutex> gateLock;
     if (completion.gate != nullptr)
     {
         gateLock = std::unique_lock<std::mutex>(completion.gate->mutex);
-        gateClosed = completion.gate->closed;
+        if (completion.gate->closed)
+            return;
     }
+
+    DeferredRetry retry;
+    retry.crs = crs;
+    retry.job = std::move(job);
+    retry.completion = std::move(completion);
+    retry.ownerIdentity = crs.get();
+    retry.serviceIdentity = crs.get();
+    retry.audioRevision = audioRevision;
+    retry.audioSamples = audioSamples;
+    retry.audioChannels = audioChannels;
+    retry.reason = std::move(reason);
+    if (sourceStatus == ContentRenderService::DeferredSourceStatus::Ready)
+        retry.completion.contentRevision = retry.job.contentRevision;
+    for (const auto& allocation : snapshotPayloadFootprint(
+             retry.job.contentSnapshot, retry.job.audioBuffer))
+        retry.payloads.push_back({allocation.first, allocation.second});
+
+    std::vector<DeferredRetry> released;
+    std::shared_ptr<const EditableContentSnapshot> droppedSnapshot;
+    std::shared_ptr<const juce::AudioBuffer<float>> droppedAudio;
+    bool shouldEnsureVocoder = false;
+    bool shouldPostRetry = false;
+    bool releasedDeferredEntry = false;
     {
-        std::lock_guard<std::mutex> lock(vocoderMutex_);
-        shuttingDown = shuttingDown_.load(std::memory_order_acquire);
-        shouldDefer = !gateClosed && !shuttingDown
-            && (vocoderReconfiguring_ || vocoderDomain_ == nullptr);
-        if (shouldDefer && deferredRetries_.size() < ProcessRenderRuntime::kMaxDeferredRetryDepth)
-            deferredRetries_.push_back(
-                {crs, std::move(job), std::move(completion), crs.get(), std::move(reason)});
-        else if (shouldDefer)
+        std::unique_lock<std::mutex> lock(vocoderMutex_);
+        if (shuttingDown_.load(std::memory_order_acquire))
+            return;
+        if (!crs->isCurrentRenderCache(retry.job.contentKey, retry.job.renderCache))
+            return;
+
+        RenderCache::RunningChunkSnapshot running;
+        if (!retry.job.renderCache->getRunningChunk(retry.job.startSample, running)
+            || running.endSampleExclusive != retry.job.endSampleExclusive
+            || running.runningRevision != retry.job.targetRevision)
+            return;
+
+        const bool domainAvailable = vocoderDomain_ != nullptr && !vocoderReconfiguring_;
+        if (domainAvailable && sourceStatus == ContentRenderService::DeferredSourceStatus::Ready)
         {
-            shouldDefer = false;
-            deferredCapacityRejected = true;
+            if (gateLock.owns_lock())
+                gateLock.unlock();
+            const auto result = crs->requeueRenderChunk(retry.job);
+            if (result == RenderWorker::RequeueResult::Requeued)
+            {
+                const auto previous = std::find_if(deferredRetries_.begin(), deferredRetries_.end(),
+                    [&retry](const DeferredRetry& current) {
+                        return current.job.renderCache == retry.job.renderCache
+                            && current.job.startSample == retry.job.startSample;
+                    });
+                if (previous != deferredRetries_.end())
+                {
+                    releaseDeferredPayloadsLocked(*previous);
+                    released.push_back(std::move(*previous));
+                    deferredRetries_.erase(previous);
+                    releasedDeferredEntry = true;
+                }
+                lock.unlock();
+                released.clear();
+                if (releasedDeferredEntry)
+                    postDeferredRetryEvent();
+                return;
+            }
+            if (result != RenderWorker::RequeueResult::QueueFull
+                && result != RenderWorker::RequeueResult::LeaseUnavailable)
+            {
+                const auto stale = std::find_if(deferredRetries_.begin(), deferredRetries_.end(),
+                    [&retry](const DeferredRetry& current) {
+                        return current.job.renderCache == retry.job.renderCache
+                            && current.job.startSample == retry.job.startSample
+                            && current.job.targetRevision == retry.job.targetRevision;
+                    });
+                if (stale != deferredRetries_.end())
+                {
+                    releaseDeferredPayloadsLocked(*stale);
+                    released.push_back(std::move(*stale));
+                    deferredRetries_.erase(stale);
+                    releasedDeferredEntry = true;
+                }
+                lock.unlock();
+                released.clear();
+                if (releasedDeferredEntry)
+                    postDeferredRetryEvent();
+                return;
+            }
         }
+
+        const auto existing = std::find_if(deferredRetries_.begin(), deferredRetries_.end(),
+            [&retry](const DeferredRetry& current) {
+                return current.job.renderCache == retry.job.renderCache
+                    && current.job.startSample == retry.job.startSample;
+            });
+        if (existing != deferredRetries_.end())
+        {
+            releaseDeferredPayloadsLocked(*existing);
+            released.push_back(std::move(*existing));
+            deferredRetries_.erase(existing);
+        }
+
+        if (!deferredSnapshotFitsLocked(retry, snapshotBudgetBytes))
+        {
+            droppedSnapshot = std::move(retry.job.contentSnapshot);
+            droppedAudio = std::move(retry.job.audioBuffer);
+            retry.payloads.clear();
+        }
+        else
+            retainDeferredPayloadsLocked(retry);
+        deferredRetries_.push_back(std::move(retry));
+        shouldEnsureVocoder = vocoderDomain_ == nullptr && !vocoderReconfiguring_;
+        shouldPostRetry = !vocoderReconfiguring_ && !shouldEnsureVocoder
+            && sourceStatus == ContentRenderService::DeferredSourceStatus::Ready;
     }
     if (gateLock.owns_lock())
         gateLock.unlock();
-    if (gateClosed)
-    {
-        if (job.renderCache != nullptr)
-            job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision);
-        return;
-    }
-    if (shuttingDown)
-    {
-        if (job.renderCache != nullptr)
-            job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision);
-        return;
-    }
-    if (shouldDefer)
+    released.clear();
+    droppedSnapshot.reset();
+    droppedAudio.reset();
+    if (shouldEnsureVocoder)
     {
         ControlCommand command;
         command.type = ControlCommand::Type::EnsureVocoder;
-        if (!postControlCommand(std::move(command)))
-        {
-            DeferredRetry failed;
-            {
-                std::lock_guard<std::mutex> lock(vocoderMutex_);
-                const auto failedRetry = std::find_if(
-                    deferredRetries_.begin(), deferredRetries_.end(),
-                    [failureCache, failureContentKey, failureStartSample, failureRevision](
-                        const DeferredRetry& retry) {
-                        return retry.job.renderCache == failureCache
-                            && retry.job.contentKey == failureContentKey
-                            && retry.job.startSample == failureStartSample
-                            && retry.job.targetRevision == failureRevision;
-                    });
-                if (failedRetry != deferredRetries_.end())
-                {
-                    failed = std::move(*failedRetry);
-                    deferredRetries_.erase(failedRetry);
-                }
-            }
-            if (failed.job.renderCache != nullptr
-                && failed.job.renderCache->completeChunkRenderFailure(
-                    failed.job.startSample, failed.job.targetRevision)
-                && !shuttingDown_.load(std::memory_order_acquire))
-                notifyChunkFailed(failed.completion, failed.job.contentKey,
-                                  failed.job.targetRevision,
-                                  "Vocoder initialization could not be queued: control queue is full; "
-                                      + failed.reason);
-        }
+        postControlCommand(std::move(command));
     }
-    else if (deferredCapacityRejected)
-    {
-        if (job.renderCache != nullptr
-            && job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision))
-            notifyChunkFailed(completion, job.contentKey, job.targetRevision,
-                "Vocoder deferred-job capacity exceeded (capacity="
-                    + juce::String(ProcessRenderRuntime::kMaxDeferredRetryDepth)
-                    + "); " + reason);
-    }
-    else
-    {
-        const auto requeueResult = crs->requeueRenderChunk(job);
-        if (requeueResult != RenderWorker::RequeueResult::Requeued
-            && job.renderCache != nullptr
-            && job.renderCache->completeChunkRenderFailure(job.startSample, job.targetRevision))
-        {
-            const auto rejectionReason = requeueResult == RenderWorker::RequeueResult::LeaseUnavailable
-                ? juce::String("RenderWorker execution lease is unavailable")
-                : requeueResult == RenderWorker::RequeueResult::QueueFull
-                    ? juce::String("RenderWorker queue is full")
-                    : requeueResult == RenderWorker::RequeueResult::CacheRejected
-                        ? juce::String("RenderCache rejected the Running-to-Pending transition")
-                        : juce::String("RenderWorker rejected an invalid render job");
-            notifyChunkFailed(completion, job.contentKey, job.targetRevision,
-                reason + "; requeue rejected: " + rejectionReason);
-        }
-    }
+    else if (shouldPostRetry)
+        postDeferredRetryEvent();
 }
 
 void ProcessRenderRuntime::processChunkRenderJob(std::shared_ptr<ContentRenderService> crs,
