@@ -2,6 +2,7 @@
 #include "../../Content/EditableContentSnapshot.h"
 #include "../../Utils/AppPreferences.h"
 #include "../../Utils/PendingSeekPolicy.h"
+#include "../../Utils/WheelPan.h"
 #include "../../Utils/PlayHeadState.h"
 #include "../../Utils/LocalizationManager.h"
 #include "../Utils/AppLogger.h"
@@ -545,26 +546,24 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
     toolCtx.getAudioEditingScheme = [this]() { return audioEditingScheme_; };
     toolCtx.notifyPlayheadChange = [this](double time, bool commit) {
         const uint64_t seekEpoch = playHeadState_.presentationEpoch.load(std::memory_order_acquire);
-        bool accepted = false;
-        listeners_.call([&accepted, time, commit](Listener& l) {
+        const double hostTime = playHeadState_.timeInSeconds.load(std::memory_order_relaxed);
+        bool hostAccepted = false;
+        listeners_.call([&hostAccepted, time, commit](Listener& l) {
             const bool ok = commit ? l.playheadPositionChangeRequested(time)
                                    : l.playheadPositionPreviewRequested(time);
             if (ok)
-                accepted = true;
+                hostAccepted = true;
         });
-        if (accepted) {
-            pendingSeekTime_ = time;
-            pendingSeekEpoch_ = seekEpoch;
-            pendingSeekIssuedAtSeconds_ = juce::Time::getMillisecondCounterHiRes() * 0.001;
-            playheadTimeForPaint_ = time;
-            overlay_->repaint();
-        } else if (commit) {
-            pendingSeekTime_ = -1.0;
-            pendingSeekEpoch_ = 0;
-            playheadTimeForPaint_ = playHeadState_.getPresentedPositionSeconds();
-            overlay_->repaint();
-        }
-        userScrollHold_ = false;
+        // The edit cursor always moves. Host transport is optional.
+        pendingSeekTime_ = time;
+        pendingSeekEpoch_ = seekEpoch;
+        pendingSeekIssuedAtSeconds_ = juce::Time::getMillisecondCounterHiRes() * 0.001;
+        pendingSeekHostBound_ = hostAccepted;
+        pendingSeekHostTimeAtGesture_ = hostTime;
+        playheadTimeForPaint_ = time;
+        overlay_->repaint();
+        if (!hostAccepted)
+            userScrollHold_ = true;
     };
     toolCtx.notifyPitchCurveEdited = [this](int s, int e) {
         listeners_.call([s, e](Listener& l) { l.pitchCurveEdited(s, e); });
@@ -2297,6 +2296,11 @@ void PianoRollComponent::paint(juce::Graphics& g)
             g.drawImage(contentSurface_, 0, 0, vpW, vpH,
                         0, 0, contentSurface_.getWidth(), contentSurface_.getHeight(), false);
         }
+        if (trackCaptureTint_) {
+            g.setColour(juce::Colour(0x55E07A2F));
+            g.fillRect(getTimelineContentStartX(), rulerHeight_,
+                       getTimelineContentViewportWidth(), getTimelineContentViewportHeight());
+        }
         if (!shouldShowPianoKeys() && labelsSurface_.isValid()) {
             g.drawImage(labelsSurface_, 0, 0, pianoKeyWidth_, getHeight(),
                         0, 0, labelsSurface_.getWidth(), labelsSurface_.getHeight(), false);
@@ -2836,6 +2840,110 @@ void PianoRollComponent::applyRasterCamera(const TimelineViewportCamera& newCame
 
     // Normal scroll: only repaint timeAxisRect, not full component
     repaint(timeAxisRect());
+}
+
+void PianoRollComponent::applyVerticalPan()
+{
+    if (zoomPreviewActive_) {
+        repaint();
+        overlay_->repaint();
+        return;
+    }
+    if (!staticSurface_.isValid() || !contentSurface_.isValid()
+        || staticDirty_ || contentDirty_ || renderScale_ <= 0.0f) {
+        staticDirty_ = true;
+        contentDirty_ = true;
+        rasterizeDirtySurfaces();
+        updateScrollBars();
+        repaint();
+        return;
+    }
+
+    const int contentH = getTimelineContentViewportHeight();
+    const int dPixels = juce::roundToInt(verticalScrollOffset_ - surfaceView_.verticalScrollOffset);
+    if (contentH <= 0 || std::abs(dPixels) >= contentH) {
+        staticDirty_ = true;
+        contentDirty_ = true;
+        rasterizeDirtySurfaces();
+        updateScrollBars();
+        repaint();
+        return;
+    }
+    if (dPixels == 0) {
+        updateScrollBars();
+        return;
+    }
+
+    const int physDelta = juce::roundToInt(static_cast<double>(dPixels) * static_cast<double>(renderScale_));
+    if (physDelta == 0) {
+        updateScrollBars();
+        return;
+    }
+
+    surfaceView_.verticalScrollOffset += static_cast<float>(dPixels);
+
+    const int viewportW = getTimelineViewportBounds().getWidth();
+    const int viewportH = getTimelineViewportBounds().getHeight();
+    const int physWidth = static_cast<int>(std::ceil(static_cast<float>(viewportW) * renderScale_));
+    const int physRulerHeight = static_cast<int>(std::floor(static_cast<float>(rulerHeight_) * renderScale_));
+    const int physContentBottom = static_cast<int>(std::ceil(static_cast<float>(viewportH) * renderScale_));
+    const int physContentH = physContentBottom - physRulerHeight;
+    const int travel = std::abs(physDelta);
+    const int srcY = physRulerHeight + (physDelta > 0 ? physDelta : 0);
+    const int dstY = physRulerHeight + (physDelta > 0 ? 0 : -physDelta);
+    const int moveH = physContentH - travel;
+    if (moveH > 0 && physWidth > 0) {
+        staticSurface_.moveImageSection(0, dstY, 0, srcY, physWidth, moveH);
+        contentSurface_.moveImageSection(0, dstY, 0, srcY, physWidth, moveH);
+    }
+
+    int stripY = physRulerHeight;
+    int stripH = travel;
+    if (physDelta > 0)
+        stripY = physRulerHeight + physContentH - physDelta;
+    stripY = juce::jmax(physRulerHeight, stripY);
+    stripH = juce::jmin(stripH, physContentH);
+    if (stripH > 0 && physWidth > 0) {
+        const juce::Rectangle<int> physicalStrip(0, stripY, physWidth, stripH);
+        const juce::Rectangle<float> strip(0.0f,
+                                           static_cast<float>(stripY) / renderScale_,
+                                           static_cast<float>(viewportW),
+                                           static_cast<float>(stripH) / renderScale_);
+        const auto stripLogical = strip.getSmallestIntegerContainer();
+        rasterizeStatic(stripLogical, physicalStrip);
+        rasterizeContent(stripLogical, physicalStrip);
+    }
+
+    updateScrollBars();
+    repaint();
+}
+
+void PianoRollComponent::handleHorizontalScrollPixels(double pixelDelta)
+{
+    const double pps = camera_.pixelsPerSecond;
+    if (!(pps > 0.0) || pixelDelta == 0.0)
+        return;
+    userScrollHold_ = true;
+    commitViewportRequest(makeViewportRequest(
+        TimelineViewportRequest::Kind::Manual,
+        camera_.visibleStartSeconds - pixelDelta / pps,
+        0.0,
+        pps));
+}
+
+void PianoRollComponent::handleVerticalScrollPixels(double pixelDelta)
+{
+    if (pixelDelta == 0.0)
+        return;
+    verticalScrollOffset_ -= static_cast<float>(pixelDelta);
+    const float totalHeight = getTotalHeight();
+    const float visibleHeight = static_cast<float>(getTimelineContentViewportHeight());
+    const float maxScroll = totalHeight - visibleHeight;
+    if (maxScroll > 0.0f)
+        verticalScrollOffset_ = juce::jlimit(0.0f, maxScroll, verticalScrollOffset_);
+    else
+        verticalScrollOffset_ = 0.0f;
+    applyVerticalPan();
 }
 
 std::vector<PianoRollRenderer::ContentRenderItem> PianoRollComponent::buildContentRenderItems() const
@@ -3966,19 +4074,28 @@ void PianoRollComponent::onScrollVBlankCallback(double timestampSec)
 
     double playheadTime = playHeadState_.getPresentedPositionSeconds();
     if (pendingSeekTime_ >= 0.0) {
-        const PendingSeekPolicy::Decision decision = PendingSeekPolicy::evaluate({
-            pendingSeekTime_,
-            playHeadState_.timeInSeconds.load(std::memory_order_relaxed),
-            pendingSeekIssuedAtSeconds_,
-            juce::Time::getMillisecondCounterHiRes() * 0.001,
-            pendingSeekEpoch_,
-            playHeadState_.presentationEpoch.load(std::memory_order_acquire)
-        });
+        PendingSeekPolicy::Input pendingSeekInput;
+        pendingSeekInput.pendingTimeSeconds = pendingSeekTime_;
+        pendingSeekInput.canonicalTimeSeconds = playHeadState_.timeInSeconds.load(std::memory_order_relaxed);
+        pendingSeekInput.hostTimeAtGestureSeconds = pendingSeekHostTimeAtGesture_;
+        pendingSeekInput.issuedAtSeconds = pendingSeekIssuedAtSeconds_;
+        pendingSeekInput.nowSeconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
+        pendingSeekInput.pendingEpoch = pendingSeekEpoch_;
+        pendingSeekInput.currentEpoch = playHeadState_.presentationEpoch.load(std::memory_order_acquire);
+        pendingSeekInput.hostBound = pendingSeekHostBound_;
+        const PendingSeekPolicy::Decision decision = PendingSeekPolicy::evaluate(pendingSeekInput);
         if (decision.clearPending) {
             pendingSeekTime_ = -1.0;
             pendingSeekEpoch_ = 0;
-        } else if (decision.holdPending) {
-            playheadTime = pendingSeekTime_;
+            pendingSeekHostBound_ = false;
+            userScrollHold_ = false;
+        } else {
+            if (decision.detachFromHost) {
+                pendingSeekHostBound_ = false;
+                pendingSeekHostTimeAtGesture_ = playHeadState_.timeInSeconds.load(std::memory_order_relaxed);
+            }
+            if (decision.holdPending)
+                playheadTime = pendingSeekTime_;
         }
     }
 
@@ -4350,6 +4467,14 @@ void PianoRollComponent::setBackgroundBrightness(float brightness)
     repaint();
 }
 
+void PianoRollComponent::setTrackCaptureTint(bool active)
+{
+    if (trackCaptureTint_ == active)
+        return;
+    trackCaptureTint_ = active;
+    repaint();
+}
+
 void PianoRollComponent::setCorrectedF0Colour(juce::Colour colour)
 {
     colour = colour.withAlpha(1.0f);
@@ -4649,23 +4774,8 @@ void PianoRollComponent::handleHorizontalScrollWheel(float deltaX, float deltaY)
 }
 
 void PianoRollComponent::handleVerticalScrollWheel(float deltaY) {
-    const auto& settings = zoomSensitivity_;
-    float scrollDelta = deltaY * settings.scrollSpeed;
-    verticalScrollOffset_ -= scrollDelta;
-    float totalHeight = getTotalHeight();
-    float visibleHeight = static_cast<float>(getTimelineContentViewportHeight());
-    float maxScroll = totalHeight - visibleHeight;
-    if (maxScroll > 0.0f) {
-        verticalScrollOffset_ = juce::jlimit(0.0f, maxScroll, verticalScrollOffset_);
-    } else {
-        verticalScrollOffset_ = 0.0f;
-    }
-        staticDirty_ = true;
-        contentDirty_ = true;
-        rasterizeDirtySurfaces();
-        updateScrollBars();
-        repaint();
-    }
+    handleVerticalScrollPixels(static_cast<double>(deltaY) * static_cast<double>(zoomSensitivity_.scrollSpeed));
+}
 
 void PianoRollComponent::handleHorizontalZoomWheel(const juce::MouseEvent& e, float deltaY) {
     if (!zoomPreviewActive_ || zoomAnchorTime_ < 0.0) {
@@ -4699,11 +4809,11 @@ void PianoRollComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::M
         || e.mods.isCommandDown() || e.mods.isAltDown())
         return;
 
-    if (deltaX != 0.0f && deltaY == 0.0f) {
-        handleHorizontalScrollWheel(deltaX, 0.0f);
-    } else {
-        handleVerticalScrollWheel(deltaY);
-    }
+    const auto pan = wheelEventToPixels(deltaX, deltaY, wheel.isSmooth, zoomSensitivity_.scrollSpeed);
+    if (pan.x != 0.0)
+        handleHorizontalScrollPixels(pan.x);
+    if (pan.y != 0.0)
+        handleVerticalScrollPixels(pan.y);
 }
 
 void PianoRollComponent::beginOpenDyneZoomPan(const juce::MouseEvent& e) {

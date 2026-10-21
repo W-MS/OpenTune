@@ -35,6 +35,8 @@ static void testPendingSeekHoldsUntilHostMatches()
     in.nowSeconds = 10.2;
     in.pendingEpoch = 4;
     in.currentEpoch = 9;
+    in.hostBound = true;
+    in.hostTimeAtGestureSeconds = 1.0;
 
     const auto held = PendingSeekPolicy::evaluate(in);
     check(held.holdPending && !held.clearPending,
@@ -61,18 +63,46 @@ static void testPendingSeekDeadline()
     in.nowSeconds = 1.0 + PendingSeekPolicy::holdDeadlineSeconds - 0.01;
     in.pendingEpoch = 1;
     in.currentEpoch = 8;
+    in.hostBound = true;
+    in.hostTimeAtGestureSeconds = 0.0;
 
     const auto held = PendingSeekPolicy::evaluate(in);
     check(held.holdPending && !held.clearPending, "pending seek holds inside the deadline");
 
     in.nowSeconds = 1.0 + PendingSeekPolicy::holdDeadlineSeconds;
+    in.hostBound = true;
     const auto expired = PendingSeekPolicy::evaluate(in);
-    check(!expired.holdPending && expired.clearPending,
-          "pending seek snaps back when the host never applies it");
+    check(expired.holdPending && expired.detachFromHost && !expired.clearPending,
+          "an ignored host seek stays on the edit cursor");
 
     in.pendingTimeSeconds = -1.0;
     const auto idle = PendingSeekPolicy::evaluate(in);
     check(!idle.holdPending && !idle.clearPending, "no pending seek is a no-op");
+}
+
+static void testLocalEditCursor()
+{
+    PendingSeekPolicy::Input in;
+    in.pendingTimeSeconds = 8.0;
+    in.canonicalTimeSeconds = 1.0;
+    in.hostTimeAtGestureSeconds = 1.0;
+    in.pendingEpoch = 2;
+    in.currentEpoch = 6;
+    in.hostBound = false;
+
+    const auto held = PendingSeekPolicy::evaluate(in);
+    check(held.holdPending && !held.clearPending,
+          "a host that cannot seek keeps the in-plugin edit cursor");
+
+    in.canonicalTimeSeconds = 8.02;
+    const auto landed = PendingSeekPolicy::evaluate(in);
+    check(landed.clearPending, "the edit cursor follows once the host lands on it");
+
+    in.canonicalTimeSeconds = 3.5;
+    in.hostTimeAtGestureSeconds = 1.0;
+    const auto moved = PendingSeekPolicy::evaluate(in);
+    check(moved.clearPending && !moved.holdPending,
+          "moving the DAW playhead releases the local edit cursor");
 }
 
 static void testLogicRestartRule()
@@ -165,6 +195,7 @@ int main()
 {
     testPendingSeekHoldsUntilHostMatches();
     testPendingSeekDeadline();
+    testLocalEditCursor();
     testLogicRestartRule();
     testCoalescedTimelineCommit();
     testPlainSeekAndTransportOverrides();

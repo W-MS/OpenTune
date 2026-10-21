@@ -103,6 +103,7 @@ public:
     void scaleChanged(int rootNote, int scaleType) override;
     void viewToggled(bool workspaceView) override;
     void recordRequested() override;
+    void externalEditRequested() override;
     void timelineDisplayModeChanged(TimelineDisplayMode mode) override;
 
     bool playheadPositionChangeRequested(double timeSeconds) override;
@@ -221,6 +222,8 @@ private:
     std::shared_ptr<const juce::AudioBuffer<float>> lastPianoRollBuffer_;
     int lastPianoRollSampleRate_{0};
     PitchShiftSettings lastPitchShiftIndicatorSettings_;
+    juce::File externalEditSessionDir_;
+    ContentKey externalEditContentKey_;
 
     static constexpr int TOP_BAR_HEIGHT = 88;
     static constexpr int PARAMETER_PANEL_WIDTH = 240;

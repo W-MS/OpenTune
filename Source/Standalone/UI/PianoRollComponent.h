@@ -200,6 +200,8 @@ public:
     void setNoteNameMode(NoteNameMode noteNameMode);
     void setShowUnvoicedFrames(bool shouldShow);
     void setBackgroundBrightness(float brightness);
+    /** Non-ARA capture is writing unscanned host audio. The timeline wash is the activity cue. */
+    void setTrackCaptureTint(bool active);
     void setCorrectedF0Colour(juce::Colour colour);
     void setOriginalF0Colour(juce::Colour colour);
     void setInferenceActive(bool active);
@@ -385,6 +387,9 @@ private:
 
     // ── 保留式相机更新 ────────────────────────────────────────
     void applyRasterCamera(const TimelineViewportCamera& newCamera);
+    void applyVerticalPan();
+    void handleHorizontalScrollPixels(double pixelDelta);
+    void handleVerticalScrollPixels(double pixelDelta);
 
     // ── 缩放事务 ──────────────────────────────────────────────
     void beginZoomPreview(const juce::MouseEvent& e, float deltaY);
@@ -705,7 +710,10 @@ private:
     double playheadTimeForPaint_ = 0.0;
     double pendingSeekTime_ = -1.0;  // -1.0 sentinel: no pending seek
     double pendingSeekIssuedAtSeconds_ = 0.0;
+    double pendingSeekHostTimeAtGesture_ = 0.0;
     uint64_t pendingSeekEpoch_ = 0;
+    bool pendingSeekHostBound_ = false;
+    bool trackCaptureTint_ = false;
 
     juce::ListenerList<Listener> listeners_;
     

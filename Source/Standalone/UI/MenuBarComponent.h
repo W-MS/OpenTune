@@ -90,6 +90,7 @@ public:
     void setTrackColorMode(TrackColorMode mode);
     void setShowPianoKeyboard(bool shouldShow);
     void setScaleAssistEnabled(bool enabled);
+    void setProfile(Profile profile);
 
     juce::StringArray getMenuBarNames() override;
     juce::PopupMenu getMenuForIndex(int topLevelMenuIndex, const juce::String& menuName) override;

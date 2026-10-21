@@ -712,6 +712,9 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/PianoKeyAudition.h
         Source/Utils/AppLogger.cpp
         Source/Utils/AppLogger.h
+        Source/Utils/ExternalEditSession.cpp
+        Source/Utils/ExternalEditSession.h
+        Source/Utils/ExternalEditLaunch.h
         Source/Utils/EditorUiSync.h
         Source/Utils/ChannelLayoutLogger.cpp
         Source/Utils/ChannelLayoutLogger.h
@@ -1771,6 +1774,16 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTuneHostTransportTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME HostTransportTests COMMAND OpenTuneHostTransportTests)
+
+    add_executable(OpenTuneViewCapturePlanTests
+        Tests/ViewCapturePlanTests.cpp
+    )
+    target_include_directories(OpenTuneViewCapturePlanTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    if(MSVC)
+        target_compile_options(OpenTuneViewCapturePlanTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME ViewCapturePlanTests COMMAND OpenTuneViewCapturePlanTests)
 
     # Arrangement composite cache keeps independent per-tile, per-layer generations.
     add_executable(OpenTuneTimelineCompositeCacheTests

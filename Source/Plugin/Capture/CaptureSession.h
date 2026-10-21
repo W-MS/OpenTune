@@ -129,11 +129,19 @@ public:
     int getCaptureChannels() const noexcept { return captureChannels_.load(std::memory_order_acquire); }
 
     // ─── User actions (message thread) ─────────────────────────────────────
-    /** Start a new capture. Returns false if a Capturing or Processing segment already exists. */
+    /** Start a new capture. Returns false if a Capturing or Pending segment already exists. */
     bool armNewCapture();
 
     /** Stop the active capture (no-op if none Capturing). */
     void stopCapture();
+
+    /** Playback of time that has never been scanned is captured while this is on.
+     *  Turning it off ends the current take. Defaults to on after the plugin loads. */
+    void setScanArmed(bool armed);
+    bool isScanArmed() const noexcept { return scanArmed_.load(std::memory_order_acquire); }
+
+    /** Message thread, before tick(). Arms or stops from the last host position. */
+    void updateTransportScan();
 
     // ─── Audio thread ──────────────────────────────────────────────────────
     /**
@@ -280,6 +288,12 @@ private:
     // from the host's declared input bus, snapshotted into each CaptureSegment at
     // arm time. Always 1 or 2 — see channel-layout-policy spec.
     std::atomic<int> captureChannels_ { 1 };
+
+    // Auto-scan is on as soon as the plugin is loaded. The record button toggles it.
+    std::atomic<bool> scanArmed_ { true };
+    // Last host position published by the audio thread for updateTransportScan().
+    std::atomic<int64_t> lastHostSample_ { -1 };
+    std::atomic<bool> lastHostPlaying_ { false };
 };
 
 }  // namespace OpenTune::Capture

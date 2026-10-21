@@ -32,11 +32,12 @@ struct TierMetrics
     int bpmWidth;
     int rootWidth;
     int typeWidth;
+    int externalEditWidth;
 };
 
-constexpr TierMetrics kFullStandaloneMetrics { 50, 3, 5, 156, 110, 50, 180 };
-constexpr TierMetrics kFullVst3Metrics       { 50, 3, 5, 140, 110, 50, 180 };
-constexpr TierMetrics kCompactMetrics        { 40, 2, 4, 120, 100, 40, 140 };
+constexpr TierMetrics kFullStandaloneMetrics { 50, 3, 5, 156, 110, 50, 180, 0 };
+constexpr TierMetrics kFullVst3Metrics       { 50, 3, 5, 140, 110, 50, 180, 96 };
+constexpr TierMetrics kCompactMetrics        { 40, 2, 4, 120, 100, 40, 140, 88 };
 
 TransportBarComponent::TierLayout buildTierLayout(TransportBarComponent::LayoutProfile profile,
                                                   TransportBarComponent::LayoutTier tier,
@@ -63,7 +64,13 @@ TransportBarComponent::TierLayout buildTierLayout(TransportBarComponent::LayoutP
     auto skip = [&](int gap) { cursor += gap; };
 
     const bool vst3 = profile == TransportBarComponent::LayoutProfile::VST3AraSingleClip;
+    const bool external = profile == TransportBarComponent::LayoutProfile::ExternalEdit;
     const bool overflow = tier == LayoutTier::Overflow;
+
+    if (external)
+    {
+        place(out.saveAndReturnButton, 148); skip(m.spacing);
+    }
 
     place(out.fileButton, m.buttonWidth); skip(m.spacing);
     place(out.editButton, m.buttonWidth); skip(m.spacing);
@@ -82,8 +89,11 @@ TransportBarComponent::TierLayout buildTierLayout(TransportBarComponent::LayoutP
         place(out.stopButton, m.buttonWidth); skip(m.spacing);
         place(out.loopButton, m.buttonWidth); skip(m.groupGap);
 
-        place(out.trackViewButton, m.buttonWidth);
-        place(out.pianoViewButton, m.buttonWidth); skip(m.spacing);
+        if (!external)
+        {
+            place(out.trackViewButton, m.buttonWidth);
+            place(out.pianoViewButton, m.buttonWidth); skip(m.spacing);
+        }
 
         place(out.timeDisplay, m.timeWidth); skip(m.spacing);
         place(out.bpmField, m.bpmWidth); skip(m.spacing);
@@ -93,6 +103,11 @@ TransportBarComponent::TierLayout buildTierLayout(TransportBarComponent::LayoutP
     if (overflow)
     {
         // More 固定最右侧：唯一溢出入口，Root/Scale 只从该菜单到达。
+        if (vst3 && m.externalEditWidth > 0)
+        {
+            skip(m.groupGap);
+            place(out.externalEditButton, m.externalEditWidth);
+        }
         skip(m.groupGap);
         out.moreButton = { bounds.getRight() - margin - m.buttonWidth, y, m.buttonWidth, controlHeight };
         out.requiredWidth = margin + cursor + m.buttonWidth + margin;
@@ -101,6 +116,11 @@ TransportBarComponent::TierLayout buildTierLayout(TransportBarComponent::LayoutP
     {
         place(out.scaleRootSelector, m.rootWidth); skip(margin);
         place(out.scaleTypeSelector, m.typeWidth);
+        if (vst3 && m.externalEditWidth > 0)
+        {
+            skip(m.spacing);
+            place(out.externalEditButton, m.externalEditWidth);
+        }
         out.requiredWidth = margin + cursor + margin;
     }
 
@@ -1205,6 +1225,20 @@ TransportBarComponent::TransportBarComponent()
     scaleTypeSelector_.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(scaleTypeSelector_);
 
+    externalEditButton_.setButtonText(LOC(kExternalEdit));
+    externalEditButton_.setTooltip(LOC(kExternalEdit));
+    externalEditButton_.onClick = [this] {
+        listeners_.call([](Listener& listener) { listener.externalEditRequested(); });
+    };
+    addAndMakeVisible(externalEditButton_);
+
+    saveAndReturnButton_.setButtonText(LOC(kSaveAndReturn));
+    saveAndReturnButton_.setTooltip(LOC(kSaveAndReturn));
+    saveAndReturnButton_.onClick = [this] {
+        listeners_.call([](Listener& listener) { listener.saveAndReturnRequested(); });
+    };
+    addChildComponent(saveAndReturnButton_);
+
     applyTheme();
 }
 
@@ -1227,6 +1261,10 @@ void TransportBarComponent::refreshLocalizedText()
     pianoViewButton_.setTooltip(LOC(kTooltipPianoRollView));
     tapButton_.setTooltip(LOC(kTooltipTapTempo));
     moreButton_.setTooltip(LOC(kScale));
+    externalEditButton_.setButtonText(LOC(kExternalEdit));
+    externalEditButton_.setTooltip(LOC(kExternalEdit));
+    saveAndReturnButton_.setButtonText(LOC(kSaveAndReturn));
+    saveAndReturnButton_.setTooltip(LOC(kSaveAndReturn));
 
     repaint();
 }
@@ -1242,6 +1280,13 @@ void TransportBarComponent::applyTheme()
     scaleTypeSelector_.setColour(juce::ComboBox::textColourId, UIColors::textPrimary);
     scaleTypeSelector_.setColour(juce::ComboBox::outlineColourId, UIColors::panelBorder);
     scaleTypeSelector_.setColour(juce::ComboBox::arrowColourId, UIColors::accent);
+
+    for (auto* button : { &externalEditButton_, &saveAndReturnButton_ }) {
+        button->setColour(juce::TextButton::buttonColourId, UIColors::backgroundLight);
+        button->setColour(juce::TextButton::buttonOnColourId, UIColors::primaryPurple);
+        button->setColour(juce::TextButton::textColourOffId, UIColors::textPrimary);
+        button->setColour(juce::TextButton::textColourOnId, UIColors::textPrimary);
+    }
 
     repaint();
 }
@@ -1433,6 +1478,8 @@ void TransportBarComponent::resized()
     apply(tapButton_, layout.tapButton);
     apply(scaleRootSelector_, layout.scaleRootSelector);
     apply(scaleTypeSelector_, layout.scaleTypeSelector);
+    apply(externalEditButton_, layout.externalEditButton);
+    apply(saveAndReturnButton_, layout.saveAndReturnButton);
 
     bpmField_.setReadOnly(layoutProfile_ == LayoutProfile::VST3AraSingleClip);
 }
@@ -1541,13 +1588,17 @@ void TransportBarComponent::setRecordButtonState(RecordButtonState state)
             recordButton_.setToggleState(false, juce::dontSendNotification);
             recordButton_.setEnabled(true);
             break;
+        case RecordButtonState::Armed:
+            recordButton_.setToggleState(true, juce::dontSendNotification);
+            recordButton_.setEnabled(true);
+            break;
         case RecordButtonState::Capturing:
             recordButton_.setToggleState(true, juce::dontSendNotification);
             recordButton_.setEnabled(true);
             break;
         case RecordButtonState::Processing:
-            recordButton_.setToggleState(false, juce::dontSendNotification);
-            recordButton_.setEnabled(false);
+            recordButton_.setToggleState(true, juce::dontSendNotification);
+            recordButton_.setEnabled(true);
             break;
     }
     recordButton_.repaint();
