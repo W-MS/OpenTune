@@ -106,6 +106,7 @@ public:
     void timelineDisplayModeChanged(TimelineDisplayMode mode) override;
 
     bool playheadPositionChangeRequested(double timeSeconds) override;
+    bool playheadPositionPreviewRequested(double timeSeconds) override;
     void playPauseToggleRequested() override;
     void stopPlaybackRequested() override;
     bool pointerShortcutRequested(KeyShortcutConfig::ShortcutId id) override;
