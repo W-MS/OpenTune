@@ -321,12 +321,7 @@ private:
 inline const ShortcutInfo kShortcutInfos[] = {
     { ShortcutId::PlayPause, "shared.shortcuts.playPause", Loc::Keys::kPlayPause,
       kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
-#if JUCE_MAC
-      { KeyBinding(juce::KeyPress::spaceKey,
-                   juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier) } },
-#else
       { KeyBinding(juce::KeyPress::spaceKey, {}) } },
-#endif
 #if JUCE_MAC
     { ShortcutId::Stop, "shared.shortcuts.stop", Loc::Keys::kStop,
       kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
