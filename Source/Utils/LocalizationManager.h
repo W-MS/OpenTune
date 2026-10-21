@@ -187,6 +187,10 @@ constexpr const char* kOpenProject = "Open Project...";
 constexpr const char* kRecentProjects = "Recent Projects";
 constexpr const char* kClearRecentProjects = "Clear Recent Projects";
 constexpr const char* kOptions = "Options";
+constexpr const char* kExternalEdit = "External Edit";
+constexpr const char* kSaveAndReturn = "Save and Return";
+constexpr const char* kExternalEditNeedsAudio = "Read audio before opening the external editor.";
+constexpr const char* kExternalEditUnavailable = "The OpenTune standalone editor was not found.";
 
 constexpr const char* kUndo = "Undo";
 constexpr const char* kRedo = "Redo";
@@ -534,6 +538,10 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kRecentProjects, "Recent Projects", "最近工程", "最近のプロジェクト", "Недавние проекты", "Proyectos recientes" },
         { Keys::kClearRecentProjects, "Clear Recent Projects", "清除最近工程", "最近のプロジェクトをクリア", "Очистить список", "Limpiar proyectos recientes" },
         { Keys::kOptions, "Options", "选项", "オプション", "Настройки", "Opciones" },
+        { Keys::kExternalEdit, "External Edit", "外部编辑", "外部編集", "Внешний редактор", "Edición externa" },
+        { Keys::kSaveAndReturn, "Save and Return", "保存并返回", "保存して戻る", "Сохранить и вернуться", "Guardar y volver" },
+        { Keys::kExternalEditNeedsAudio, "Read audio before opening the external editor.", "请先读取音频，再打开外部编辑器。", "外部エディタを開く前にオーディオを読み込んでください。", "Сначала загрузите аудио.", "Lee el audio antes de abrir el editor externo." },
+        { Keys::kExternalEditUnavailable, "The OpenTune standalone editor was not found.", "没有找到 OpenTune 独立编辑器。", "OpenTune スタンドアロンが見つかりません。", "Автономный редактор OpenTune не найден.", "No se encontró el editor independiente de OpenTune." },
         
         { Keys::kUndo, "Undo", "撤销", "元に戻す", "Отменить", "Deshacer" },
         { Keys::kRedo, "Redo", "重做", "やり直す", "Повтор", "Rehacer" },

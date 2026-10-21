@@ -14,6 +14,7 @@
 #include "Runtime/ProcessF0Runtime.h"
 #include "Utils/ModelPathResolver.h"
 #include "Utils/AppLogger.h"
+#include "Utils/ExternalEditSession.h"
 #include "Utils/ChannelLayoutLogger.h"
 #if !JucePlugin_Build_Standalone
 #include "Plugin/Capture/CaptureSession.h"
@@ -3128,8 +3129,10 @@ void OpenTuneAudioProcessor::handleAsyncUpdate()
 #if !JucePlugin_Build_Standalone
 void OpenTuneAudioProcessor::timerCallback()
 {
-    if (auto* session = getCaptureSession())
+    if (auto* session = getCaptureSession()) {
+        session->updateTransportScan();
         session->tick();
+    }
 }
 #endif // !JucePlugin_Build_Standalone
 
@@ -4966,6 +4969,32 @@ bool OpenTuneAudioProcessor::replaceContentNotesForFullMutation(ContentKey key, 
     // republishPlaybackSource；requestContentRefresh 经 onContentFullMutationCompleted
     // → render 请求内 requestRenderForLocalMutationRange 的 republishPlaybackSource
     // 重建包络。此处不再发布，避免同一变更两次 publish（不含包络的中间态双发布）。
+    return true;
+}
+
+bool OpenTuneAudioProcessor::applyReturnedExternalEdit(ContentKey key, const ExternalEditDocument& document)
+{
+    if (!key.isValid())
+        return false;
+
+    commitVolumeEnvelope(key, document.envelope);
+
+    if (document.pitchCurve != nullptr) {
+        if (!writePitchCurveToOwner(key, PitchCurve::fromSnapshot(document.pitchCurve->getSnapshot())))
+            return false;
+        if (document.pitchCurve->hasUsableOriginalF0())
+            setContentOriginalF0State(key, OriginalF0State::Ready);
+
+        PitchShiftEditState shift;
+        shift.settings = document.pitchShift;
+        shift.notes = document.notes;
+        shift.segments = document.pitchCurve->getSnapshot()->copyCorrectionSegments();
+        return applyContentPitchShiftState(key, shift);
+    }
+
+    if (!replaceContentNotesForFullMutation(key, document.notes))
+        return false;
+    onContentFullMutationCompleted(key);
     return true;
 }
 
