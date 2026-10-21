@@ -172,7 +172,8 @@ public:
         std::function<void()> grabKeyboardFocus;
         std::function<void(ToolId)> setCurrentTool;
         std::function<void()> showToolSelectionMenu;
-        std::function<void(double)> notifyPlayheadChange;
+        // timeSeconds, commit. commit == false is a scrub preview.
+        std::function<void(double, bool)> notifyPlayheadChange;
         std::function<void(int, int)> notifyPitchCurveEdited;
         std::function<void()> notifyAutoTuneRequested;
         std::function<void()> notifyPlayPauseToggle;
@@ -374,6 +375,10 @@ private:
     // 分离线容差（像素）：鼠标在分离线 ±10px 内 → 不显示竖虚线、单击无效、双击合并。
     static constexpr int kScissorsSeparatorTolerancePx = 10;
     static constexpr float kEraserBrushRadiusPx = 18.0f;
+
+    void armTimelineSeek(const juce::MouseEvent& e, bool commit);
+    bool timelineSeekActive_ = false;
+    double timelineSeekTime_ = -1.0;
 
     juce::Point<int> dragStartPos_;
     // EQ 工具：mouseDown 命中的 pending 主音符 index（纯点击 mouseUp 时消费一次）。

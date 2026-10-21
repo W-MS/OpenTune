@@ -1759,6 +1759,16 @@ if(OPENTUNE_BUILD_TESTS)
     endif()
     add_test(NAME PitchLaneVisualPolicyTests COMMAND OpenTunePitchLaneVisualPolicyTests)
 
+    add_executable(OpenTuneHostTransportTests
+        Tests/HostTransportTests.cpp
+    )
+    target_include_directories(OpenTuneHostTransportTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    if(MSVC)
+        target_compile_options(OpenTuneHostTransportTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME HostTransportTests COMMAND OpenTuneHostTransportTests)
+
     # Arrangement composite cache keeps independent per-tile, per-layer generations.
     add_executable(OpenTuneTimelineCompositeCacheTests
         Tests/TimelineCompositeCacheTests.cpp

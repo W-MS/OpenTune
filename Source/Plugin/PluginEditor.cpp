@@ -1298,8 +1298,7 @@ void OpenTuneAudioProcessorEditor::stopRequested()
 void OpenTuneAudioProcessorEditor::surfaceRegularVst3HostControlledTransport(const char* actionName)
 {
     const juce::String action(actionName);
-    const juce::String message = "Regular VST3 " + action + " requested: host-controlled transport";
-    AppLogger::log("VST3Editor: " + message);
+    AppLogger::log("PluginEditor: " + action + " requested: host-controlled transport");
     transportBar_.setRenderStatusText(LOC(kHostControlledTransport));
 }
 
@@ -1469,12 +1468,26 @@ bool OpenTuneAudioProcessorEditor::playheadPositionChangeRequested(double timeSe
 {
 #if JucePlugin_Enable_ARA
     if (auto* docController = processorRef_.getDocumentController()) {
-        return docController->requestSetPlaybackPosition(timeSeconds);
+        if (docController->requestCommitPlaybackPosition(timeSeconds))
+            return true;
+        transportBar_.setRenderStatusText(LOC(kHostControlledTransport));
+        return false;
     }
 #endif
-    // Non-ARA VST3: playhead is host-controlled only. Do NOT call setPosition().
-    // the host would ignore it and the next processBlock would overwrite the value.
-    // PianoRoll click/drag on timeline should not change plugin-internal position.
+    // Non-ARA: Logic and other hosts expose no plug-in API that moves the
+    // arrangement playhead. Do NOT call setPosition(); the next processBlock
+    // would overwrite it, and a local clock would drift from the mix.
+    surfaceRegularVst3HostControlledTransport("seek");
+    juce::ignoreUnused(timeSeconds);
+    return false;
+}
+
+bool OpenTuneAudioProcessorEditor::playheadPositionPreviewRequested(double timeSeconds)
+{
+#if JucePlugin_Enable_ARA
+    if (auto* docController = processorRef_.getDocumentController())
+        return docController->requestSetPlaybackPosition(timeSeconds);
+#endif
     juce::ignoreUnused(timeSeconds);
     return false;
 }

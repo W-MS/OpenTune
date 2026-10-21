@@ -1,6 +1,7 @@
 ﻿#include "PianoRollComponent.h"
 #include "../../Content/EditableContentSnapshot.h"
 #include "../../Utils/AppPreferences.h"
+#include "../../Utils/PendingSeekPolicy.h"
 #include "../../Utils/PlayHeadState.h"
 #include "../../Utils/LocalizationManager.h"
 #include "../Utils/AppLogger.h"
@@ -453,19 +454,22 @@ PianoRollToolHandler::Context PianoRollComponent::buildToolHandlerContext() {
     toolCtx.setMouseCursor = [this](const juce::MouseCursor& c) { setMouseCursor(c); };
     toolCtx.grabKeyboardFocus = [this]() { grabKeyboardFocus(); };
     toolCtx.getAudioEditingScheme = [this]() { return audioEditingScheme_; };
-    toolCtx.notifyPlayheadChange = [this](double time) {
+    toolCtx.notifyPlayheadChange = [this](double time, bool commit) {
         const uint64_t seekEpoch = playHeadState_.presentationEpoch.load(std::memory_order_acquire);
         bool accepted = false;
-        listeners_.call([&accepted, time](Listener& l) {
-            if (l.playheadPositionChangeRequested(time))
+        listeners_.call([&accepted, time, commit](Listener& l) {
+            const bool ok = commit ? l.playheadPositionChangeRequested(time)
+                                   : l.playheadPositionPreviewRequested(time);
+            if (ok)
                 accepted = true;
         });
         if (accepted) {
             pendingSeekTime_ = time;
             pendingSeekEpoch_ = seekEpoch;
+            pendingSeekIssuedAtSeconds_ = juce::Time::getMillisecondCounterHiRes() * 0.001;
             playheadTimeForPaint_ = time;
             overlay_->repaint();
-        } else {
+        } else if (commit) {
             pendingSeekTime_ = -1.0;
             pendingSeekEpoch_ = 0;
             playheadTimeForPaint_ = playHeadState_.getPresentedPositionSeconds();
@@ -3861,13 +3865,18 @@ void PianoRollComponent::onScrollVBlankCallback(double timestampSec)
 
     double playheadTime = playHeadState_.getPresentedPositionSeconds();
     if (pendingSeekTime_ >= 0.0) {
-        const uint64_t currentEpoch = playHeadState_.presentationEpoch.load(std::memory_order_acquire);
-        const double canonicalTime = playHeadState_.timeInSeconds.load(std::memory_order_relaxed);
-        if (currentEpoch != pendingSeekEpoch_
-            && (canonicalTime == pendingSeekTime_ || playingNow)) {
-            pendingSeekTime_ = -1.0;  // host observed the request or started playback
+        const PendingSeekPolicy::Decision decision = PendingSeekPolicy::evaluate({
+            pendingSeekTime_,
+            playHeadState_.timeInSeconds.load(std::memory_order_relaxed),
+            pendingSeekIssuedAtSeconds_,
+            juce::Time::getMillisecondCounterHiRes() * 0.001,
+            pendingSeekEpoch_,
+            playHeadState_.presentationEpoch.load(std::memory_order_acquire)
+        });
+        if (decision.clearPending) {
+            pendingSeekTime_ = -1.0;
             pendingSeekEpoch_ = 0;
-        } else {
+        } else if (decision.holdPending) {
             playheadTime = pendingSeekTime_;
         }
     }

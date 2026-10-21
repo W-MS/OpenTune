@@ -23,6 +23,7 @@
 #include "../Content/ContentKey.h"
 #include "../Content/OriginalF0FailureEvent.h"
 #include "../Utils/PlayHeadState.h"
+#include "../Utils/HostTransportCoalescer.h"
 #include "PlaybackRegion.h"
 
 namespace OpenTune {
@@ -140,6 +141,10 @@ public:
     void willDestroyAudioSource(juce::ARAAudioSource* audioSource) override;
 
     bool requestSetPlaybackPosition(double timeInSeconds);
+    // Committed seek. On Logic, a seek issued while the host is playing is
+    // flushed as stop, then position, then start. Other hosts get a position
+    // request only. Availability is returned immediately; the host call is deferred.
+    bool requestCommitPlaybackPosition(double timeInSeconds);
     bool requestStartPlayback(double pendingSeekTime = -1.0);
     bool requestStopPlayback();
     bool requestTogglePlayback(bool fallbackObservedPlaying, double pendingSeekTime = -1.0);
@@ -207,6 +212,14 @@ private:
     static constexpr std::uint64_t kStateVersionIncrement = 1ull << 4;
     std::atomic<std::uint64_t> playbackCommandState_{0};
     void markPlaybackRequest(bool shouldPlay) noexcept;
+    bool logicHostIsPlaying() const noexcept;
+
+    struct HostTransportRelayState;
+    std::shared_ptr<HostTransportRelayState> transportRelay_;
+    void enqueueHostTransport(const std::function<void(HostTransportCoalescer&)>& mutate);
+    void scheduleHostTransportFlush();
+    void performHostTransportBatch(const HostTransportBatch& batch);
+    bool hostPlaybackTransportAvailable();
 
     // DC/ARA model ownership、F0 completion 和 DC destruction 均遵守消息线程契约。
     // gate 只由消息线程访问；排队 completion 持有 shared_ptr，先检查 closed 再访问 DC。
