@@ -516,7 +516,7 @@ void OpenTuneAudioProcessorEditor::timerCallback()
             const bool applied = processorRef_.applyReturnedExternalEdit(externalEditContentKey_, *returned);
             if (applied) {
                 externalEditSessionDir_.deleteRecursively();
-                externalEditSessionDir_ = {};
+                externalEditSessionDir_ = juce::File();
                 externalEditContentKey_ = {};
                 syncContentProjectionToPianoRoll();
             }
