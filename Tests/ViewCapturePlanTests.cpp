@@ -1,4 +1,5 @@
 #include "../Source/Utils/ExternalEditLaunch.h"
+#include "../Source/Utils/MagnifyZoom.h"
 #include "../Source/Utils/WheelPan.h"
 #include "../Source/Plugin/Capture/CaptureScanPlan.h"
 
@@ -56,6 +57,26 @@ static void testScanPlan()
     check(decideScanTransport(disarmed) == ScanTransportAction::Hold, "a disarmed scan stays idle");
 }
 
+static void testMagnifyZoom()
+{
+    const auto idle = magnifyScaleToZoom(1.0f);
+    check(!idle.apply, "a pinch with no scale change does not zoom");
+
+    const auto enlarge = magnifyScaleToZoom(1.02f);
+    check(enlarge.apply && enlarge.factor > 1.019 && enlarge.factor < 1.021,
+          "a pinch-out step enlarges by that factor");
+
+    const auto shrink = magnifyScaleToZoom(0.9f);
+    check(shrink.apply && shrink.factor > 0.899 && shrink.factor < 0.901,
+          "a pinch-in step shrinks by that factor");
+
+    check(!magnifyScaleToZoom(0.0f).apply, "a zero scale is ignored");
+    check(!magnifyScaleToZoom(-0.2f).apply, "a negative scale is ignored");
+
+    const auto spike = magnifyScaleToZoom(20.0f);
+    check(spike.apply && spike.factor == 4.0, "one pinch event cannot enlarge more than four times");
+}
+
 static void testExternalEditLaunch()
 {
     const char* args[] = { "OpenTune", "--external-edit", "/tmp/session" };
@@ -73,6 +94,7 @@ static void testExternalEditLaunch()
 int main()
 {
     testWheelPan();
+    testMagnifyZoom();
     testScanPlan();
     testExternalEditLaunch();
     if (failures == 0) {

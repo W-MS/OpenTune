@@ -437,6 +437,7 @@ private:
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseDoubleClick(const juce::MouseEvent& e) override;
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
+    void mouseMagnify(const juce::MouseEvent& e, float scaleFactor) override;
 public:
     bool keyPressed(const juce::KeyPress& key) override;
 
