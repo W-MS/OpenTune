@@ -8,6 +8,7 @@
 #include "TimelineLayerComposer.h"
 #include "../Utils/ZoomSensitivityConfig.h"
 #include "../../Utils/KeyShortcutConfig.h"
+#include "../../Utils/MagnifyZoom.h"
 #include "../../Utils/PlacementActions.h"
 #include "../../Utils/PlacementClipboard.h"
 #include "../../Utils/LocalizationManager.h"
@@ -2858,6 +2859,17 @@ void ArrangementViewComponent::mouseWheelMove(const juce::MouseEvent& e, const j
             camera_.pixelsPerSecond);
         commitViewportRequest(req);
     }
+}
+
+void ArrangementViewComponent::mouseMagnify(const juce::MouseEvent& e, float scaleFactor)
+{
+    const auto zoom = magnifyScaleToZoom(scaleFactor);
+    if (!zoom.apply || camera_.pixelsPerSecond <= 0.0)
+        return;
+
+    const double anchorX = static_cast<double>(e.x - kArrangementContentStartX);
+    const double anchorTime = camera_.visibleStartSeconds + anchorX / camera_.pixelsPerSecond;
+    applyHorizontalZoom(zoom.factor, anchorTime, anchorX);
 }
 
 void ArrangementViewComponent::handleVerticalZoomWheel(float deltaY, bool keepViewportCentre)

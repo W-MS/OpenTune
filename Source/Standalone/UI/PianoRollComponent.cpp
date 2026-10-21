@@ -2,6 +2,7 @@
 #include "../../Content/EditableContentSnapshot.h"
 #include "../../Utils/AppPreferences.h"
 #include "../../Utils/PendingSeekPolicy.h"
+#include "../../Utils/MagnifyZoom.h"
 #include "../../Utils/WheelPan.h"
 #include "../../Utils/PlayHeadState.h"
 #include "../../Utils/LocalizationManager.h"
@@ -4814,6 +4815,17 @@ void PianoRollComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::M
         handleHorizontalScrollPixels(pan.x);
     if (pan.y != 0.0)
         handleVerticalScrollPixels(pan.y);
+}
+
+void PianoRollComponent::mouseMagnify(const juce::MouseEvent& e, float scaleFactor)
+{
+    const auto zoom = magnifyScaleToZoom(scaleFactor);
+    if (!zoom.apply)
+        return;
+
+    beginZoomPreviewAt(e.x - getTimelineContentStartX(), zoom.factor);
+    handleVerticalZoomAt(static_cast<float>(zoom.factor),
+                         static_cast<float>(e.y - rulerHeight_));
 }
 
 void PianoRollComponent::beginOpenDyneZoomPan(const juce::MouseEvent& e) {
