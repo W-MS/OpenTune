@@ -5088,7 +5088,7 @@ bool OpenTuneAudioProcessor::applyReturnedExternalEdit(ContentKey key, const Ext
         PitchShiftEditState shift;
         shift.settings = document.pitchShift;
         shift.notes = document.notes;
-        shift.segments = document.pitchCurve->getSnapshot()->copyCorrectionSegments();
+        shift.segments = document.pitchCurve->copyCorrectionSegments();
         return applyContentPitchShiftState(key, shift);
     }
 
