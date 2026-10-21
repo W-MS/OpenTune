@@ -80,18 +80,7 @@ juce::String buildAutoButtonTooltip(const ParameterPanel::AutoButtonPresentation
 {
     juce::String tooltip = presentation.tooltip;
     if (tooltip.isEmpty()) {
-        switch (presentation.mode) {
-            case ParameterPanel::AutoButtonPresentation::Mode::ReferenceAuto:
-                tooltip = LOC_RAW("Reference Clip AUTO aligns pitch and timing to the reference.");
-                break;
-            case ParameterPanel::AutoButtonPresentation::Mode::ReferenceBoundButFallbackToAuto:
-                tooltip = LOC_RAW("A reference is bound, but GAME backend/models are unavailable; standard AUTO will run.");
-                break;
-            case ParameterPanel::AutoButtonPresentation::Mode::StandardAuto:
-            default:
-                tooltip = LOC_RAW("AUTO corrects pitch by snapping to nearby scale notes.");
-                break;
-        }
+        tooltip = LOC_RAW("AUTO corrects pitch by snapping to nearby scale notes.");
     }
 
     return tooltip;
@@ -1077,17 +1066,7 @@ void ParameterPanel::setAutoButtonPresentation(const AutoButtonPresentation& pre
     // OpenTune（CorrectedF0Primary）显示 AUTO；OpenDyne（NotesPrimary）显示 SNAP。
     // setOpenDyneMode → refreshLocalizedText → setAutoButtonPresentation 自动同步。
     autoTuneToolButton_->setTextIcon(openDyneMode_ ? "SNAP" : "AUTO");
-    const bool hasReference = autoButtonPresentation_.mode == AutoButtonPresentation::Mode::ReferenceAuto;
-    const auto resolvedTooltip = buildAutoButtonTooltip(autoButtonPresentation_);
-    if (hasReference)
-    {
-        autoTuneToolButton_->setSubTextIcon("(Ref)");
-    }
-    else
-    {
-        autoTuneToolButton_->setSubTextIcon({});
-    }
-    autoTuneToolButton_->setTooltip(resolvedTooltip);
+    autoTuneToolButton_->setTooltip(buildAutoButtonTooltip(autoButtonPresentation_));
 }
 
 // Getters and Setters

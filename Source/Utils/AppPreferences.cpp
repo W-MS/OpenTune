@@ -26,7 +26,6 @@ constexpr const char* kStandaloneCursorStyleKey = "standalone.cursorStyle";
 constexpr const char* kSharedRenderingPriorityKey = "shared.rendering.priority";
 constexpr const char* kSharedVocoderWeightKey = "shared.rendering.vocoderWeight";
 constexpr const char* kSharedExperimentalFeaturesEnabledKey = "shared.features.experimentalEnabled";
-constexpr const char* kSharedExperimentalReferenceAlignKey = "shared.align.experimental";
 constexpr const char* kSharedRecentProjectsKey = "shared.recentProjects";
 constexpr const char* kSharedSnapEnabledKey = "shared.snap.enabled";
 constexpr const char* kSharedSnapModeKey = "shared.snap.mode";
@@ -244,23 +243,6 @@ static F0ModelType fromF0ModelTypeToken(const juce::String& token)
     return F0ModelType::FCPE;
 }
 
-static juce::String toExperimentalRefAlignModeToken(ExperimentalReferenceAlignMode mode)
-{
-    switch (mode) {
-        case ExperimentalReferenceAlignMode::StandardAuto: return "standard-auto";
-        case ExperimentalReferenceAlignMode::Game:         return "game";
-    }
-    return "standard-auto";
-}
-
-static ExperimentalReferenceAlignMode fromExperimentalRefAlignModeToken(const juce::String& token)
-{
-    if (token == "game") {
-        return ExperimentalReferenceAlignMode::Game;
-    }
-    return ExperimentalReferenceAlignMode::StandardAuto;
-}
-
 const char* toTrackColorModeToken(TrackColorMode mode)
 {
     switch (mode) {
@@ -440,9 +422,6 @@ AppPreferencesState loadStateFromProperties(const juce::PropertiesFile& properti
         kSharedEqSuppressRemoveConfirmationKey,
         state.shared.suppressEqRemoveConfirmation);
     state.shared.onboardingShown = properties.getBoolValue(kSharedOnboardingShownKey, state.shared.onboardingShown);
-    state.shared.experimentalReferenceAlignMode = fromExperimentalRefAlignModeToken(
-        properties.getValue(kSharedExperimentalReferenceAlignKey,
-                            toExperimentalRefAlignModeToken(state.shared.experimentalReferenceAlignMode)));
     state.shared.snap.enabled = properties.getBoolValue(kSharedSnapEnabledKey, false);
     state.shared.snap.mode = static_cast<SnapSettings::Mode>(
         properties.getIntValue(kSharedSnapModeKey, static_cast<int>(SnapSettings::Mode::Off)));
@@ -511,8 +490,6 @@ void writeStateToProperties(juce::PropertiesFile& properties, const AppPreferenc
     properties.setValue(kSharedEqSuppressRemoveConfirmationKey,
                         state.shared.suppressEqRemoveConfirmation);
     properties.setValue(kSharedOnboardingShownKey, state.shared.onboardingShown);
-    properties.setValue(kSharedExperimentalReferenceAlignKey,
-                        toExperimentalRefAlignModeToken(state.shared.experimentalReferenceAlignMode));
     properties.setValue(kSharedSnapEnabledKey, state.shared.snap.enabled);
     properties.setValue(kSharedSnapModeKey, static_cast<int>(state.shared.snap.mode));
     properties.setValue(kSharedTrackColorModeKey, toTrackColorModeToken(state.shared.trackColorMode));
@@ -712,13 +689,6 @@ void AppPreferences::setExperimentalFeaturesEnabled(bool enabled)
 {
     const std::lock_guard<std::mutex> lock(mutex_);
     state_.shared.experimentalFeaturesEnabled = enabled;
-    saveLocked();
-}
-
-void AppPreferences::setExperimentalReferenceAlignMode(ExperimentalReferenceAlignMode mode)
-{
-    const std::lock_guard<std::mutex> lock(mutex_);
-    state_.shared.experimentalReferenceAlignMode = mode;
     saveLocked();
 }
 

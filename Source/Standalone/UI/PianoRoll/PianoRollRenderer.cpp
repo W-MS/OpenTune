@@ -1380,61 +1380,6 @@ void PianoRollRenderer::drawSelectedNoteHighlights(juce::Graphics& g,
         g.drawRect(noteBounds, playheadHighlight ? 1.4f : (isAurora ? 1.5f : 1.2f));
     }
 }
-
-void PianoRollRenderer::drawGhostNotes(juce::Graphics& g, const RenderContext& ctx, const ReferenceOverlay& overlay)
-{
-    if (overlay.ghostNotes.empty())
-        return;
-
-    static constexpr float kDashLengths[] = { 2.0f, 4.0f };
-    const juce::Colour fillColour = overlay.ghostColour.withMultipliedAlpha(overlay.ghostOpacity);
-    const juce::Colour borderColour = overlay.ghostColour.withMultipliedAlpha(overlay.ghostOpacity * 0.7f);
-
-    ContentRenderItem overlayItem;
-    overlayItem.projection = overlay.sourceProjection;
-    overlayItem.timeGrid = overlay.timeGrid;
-    jassert(overlayItem.timeGrid);
-
-    for (const auto& note : overlay.ghostNotes)
-    {
-        const float adjustedPitch = note.getAdjustedPitch();
-        if (adjustedPitch <= 0.0f)
-            continue;
-
-        const int x1 = sourceTimeToScreenX(note.startTime, ctx, overlayItem);
-        const int x2 = sourceTimeToScreenX(note.endTime, ctx, overlayItem);
-        if (x2 <= ctx.contentStartX || x1 >= ctx.width)
-            continue;
-
-        const float midi = ctx.coords.freqToMidi(adjustedPitch);
-        const float y = ctx.coords.midiToY(midi) - (ctx.pixelsPerSemitone * 0.5f);
-        const float w = std::max(1.0f, static_cast<float>(x2 - x1));
-        const float h = ctx.pixelsPerSemitone;
-        const auto noteBounds = juce::Rectangle<float>(static_cast<float>(x1), y, w, h);
-
-        g.setColour(fillColour);
-        g.fillRect(noteBounds);
-
-        g.setColour(borderColour);
-        g.drawDashedLine(
-            juce::Line<float>(noteBounds.getX(), noteBounds.getY(),
-                              noteBounds.getRight(), noteBounds.getY()),
-            kDashLengths, 2, 1.0f);
-        g.drawDashedLine(
-            juce::Line<float>(noteBounds.getX(), noteBounds.getBottom(),
-                              noteBounds.getRight(), noteBounds.getBottom()),
-            kDashLengths, 2, 1.0f);
-        g.drawDashedLine(
-            juce::Line<float>(noteBounds.getX(), noteBounds.getY(),
-                              noteBounds.getX(), noteBounds.getBottom()),
-            kDashLengths, 2, 1.0f);
-        g.drawDashedLine(
-            juce::Line<float>(noteBounds.getRight(), noteBounds.getY(),
-                              noteBounds.getRight(), noteBounds.getBottom()),
-            kDashLengths, 2, 1.0f);
-    }
-}
-
 // ============================================================================
 // TimeGrid Anchors (cached slot — neutral lines, no interaction)
 // ============================================================================

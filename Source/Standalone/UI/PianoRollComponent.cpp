@@ -1,4 +1,4 @@
-﻿#include "PianoRollComponent.h"
+#include "PianoRollComponent.h"
 #include "../../Content/EditableContentSnapshot.h"
 #include "../../Utils/AppPreferences.h"
 #include "../../Utils/PlayHeadState.h"
@@ -2684,9 +2684,6 @@ void PianoRollComponent::drawContent(juce::Graphics& g, const ViewportState& vie
     for (const auto& item : renderCtx.contents)
         renderer_->drawTimeGridAnchors(g, renderCtx, item);
 
-    if (referenceOverlay_.has_value() && referenceOverlay_->enabled) {
-        renderer_->drawGhostNotes(g, renderCtx, *referenceOverlay_);
-    }
 }
 
 void PianoRollComponent::rasterizeContent(
@@ -5360,15 +5357,6 @@ void PianoRollComponent::visibilityChanged()
     }
 }
 
-void PianoRollComponent::setReferenceOverlay(std::optional<PianoRollRenderer::ReferenceOverlay> overlay)
-{
-    if (overlay && overlay->enabled && !overlay->sourceProjection.isValid())
-        overlay.reset();
-    referenceOverlay_ = std::move(overlay);
-    contentDirty_ = true;
-    rasterizeDirtySurfaces();
-    repaint();
-}
 
 int PianoRollComponent::getTimelineContentViewportWidth() const
 {

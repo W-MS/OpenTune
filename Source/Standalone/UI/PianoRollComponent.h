@@ -267,7 +267,6 @@ public:
 
     /** 设置 reference overlay 数据（ghost notes + anchors）。
      *  传入 std::nullopt 清除 overlay。 */
-    void setReferenceOverlay(std::optional<PianoRollRenderer::ReferenceOverlay> overlay);
 
     void setPlayheadColour(juce::Colour colour) {
         playheadColour_ = colour;
@@ -647,7 +646,6 @@ private:
     std::vector<Note> cachedNotes_;
     std::vector<Note> notesClipboard_;   // Note Copy/Paste 剪贴板
 
-    std::optional<PianoRollRenderer::ReferenceOverlay> referenceOverlay_;
 
     // Undo support
     juce::String pendingUndoDescription_;

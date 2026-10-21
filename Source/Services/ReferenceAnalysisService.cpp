@@ -72,7 +72,7 @@ void ReferenceAnalysisService::shutdown()
     }
     std::map<ContentKey, ReferenceJob> discardedJobs;
     std::optional<ReferenceJob> discardedActiveJob;
-    // 关闭 owner：清空 pending 与 active，唤醒并 join worker；活跃 GAME 任务
+    // 关闭 owner：清空 pending 与 active，唤醒并 join worker；活跃异步任务
     // 允许在 shutdown 期间完成（进程级共享 generator，永不 terminateRun）。
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
@@ -140,41 +140,15 @@ void ReferenceAnalysisService::submitAnalysis(ContentKey key,
     }
 }
 
-void ReferenceAnalysisService::submitAsyncAnalysis(ContentKey key,
-                                                   int64_t inputFingerprint,
-                                                   ReferenceFeatureProducer producer,
-                                                   ReferenceAnalysisService::AsyncAnalysisFunc analysis,
-                                                   CompletionFunc completion)
-{
-    if (!key.isValid() || !analysis || !completion)
-        return;
-
-    ReferenceJob job;
-    job.key = {key, inputFingerprint, producer};
-    job.asyncAnalysis = std::move(analysis);
-    job.completion = std::move(completion);
-
-    {
-        std::lock_guard<std::mutex> lock(state_->mutex);
-        if (!state_->running.load(std::memory_order_acquire))
-            return;
-        if (state_->activeJob.has_value() && *state_->activeJob == job)
-            return;
-        state_->pendingJobs.insert_or_assign(key, std::move(job));
-    }
-    state_->cv.notify_one();
-}
-
 void ReferenceAnalysisService::workerLoop(std::shared_ptr<SharedState> state)
 {
     while (true) {
         ReferenceJob job;
-        std::map<ContentKey, ReferenceJob>::node_type pendingNode;
         {
             std::unique_lock<std::mutex> lock(state->mutex);
             state->cv.wait(lock, [&state]() {
                 return !state->running.load(std::memory_order_acquire)
-                    || (state->activeJob == std::nullopt && !state->pendingJobs.empty());
+                    || !state->pendingJobs.empty();
             });
 
             if (!state->running.load(std::memory_order_acquire)) {
@@ -182,68 +156,9 @@ void ReferenceAnalysisService::workerLoop(std::shared_ptr<SharedState> state)
             }
 
             auto it = state->pendingJobs.begin();
-            pendingNode = state->pendingJobs.extract(it);
+            auto pendingNode = state->pendingJobs.extract(it);
             job = std::move(pendingNode.mapped());
             state->activeJob = job;
-        }
-
-        if (job.asyncAnalysis) {
-            auto asyncAnalysis = std::move(job.asyncAnalysis);
-            auto completion = std::move(job.completion);
-            const auto key = job.key;
-            auto completionClaim = std::make_shared<std::atomic<bool>>(false);
-            auto completeAsync = [state, key, completionClaim,
-                                  completion = std::move(completion)]
-                                 (ReferenceFeatureSet result) mutable {
-                if (completionClaim->exchange(true, std::memory_order_acq_rel))
-                    return;
-                NotificationDispatcher dispatcher;
-                {
-                    std::lock_guard<std::mutex> lock(state->mutex);
-                    if (state->activeJob.has_value() && state->activeJob->key == key)
-                        state->activeJob.reset();
-                    if (!state->running.load(std::memory_order_acquire))
-                        return;
-                    dispatcher = state->notificationDispatcher;
-                }
-                auto notify = [key, result, completion = std::move(completion)]() mutable {
-                    completion(key, result);
-                };
-                if (dispatcher)
-                    dispatcher(std::move(notify));
-                else
-                {
-                    const bool posted = juce::MessageManager::callAsync(notify);
-                    if (!posted)
-                    {
-                        AppLogger::error("[ReferenceAnalysisService] async completion dispatcher rejected; mailbox fallback");
-                        state->dispatcherFailureMailbox->enqueue(std::move(notify));
-                    }
-                }
-                state->cv.notify_one();
-            };
-            try
-            {
-                asyncAnalysis(key, completeAsync);
-            }
-            catch (const std::exception& e)
-            {
-                AppLogger::error("[ReferenceAnalysisService] async analysis submission failed: "
-                    + juce::String(e.what()));
-                ReferenceFeatureSet failed;
-                failed.status = ReferenceFeatureStatus::Failed;
-                failed.errorMessage = "async_analysis_submission_exception";
-                completeAsync(std::move(failed));
-            }
-            catch (...)
-            {
-                AppLogger::error("[ReferenceAnalysisService] async analysis submission failed: unknown exception");
-                ReferenceFeatureSet failed;
-                failed.status = ReferenceFeatureStatus::Failed;
-                failed.errorMessage = "async_analysis_submission_exception";
-                completeAsync(std::move(failed));
-            }
-            continue;
         }
 
         // 锁外执行同步 analysis：纯数据函数，不访问 owner。

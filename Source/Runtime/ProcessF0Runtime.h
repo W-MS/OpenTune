@@ -11,21 +11,16 @@
 #include <vector>
 
 #include "../Inference/IF0Extractor.h"
-#include "../Inference/INoteGenerator.h"
 
 namespace Ort { struct Env; }
 
 namespace OpenTune {
 
 class F0InferenceService;
-class GameNoteGenerator;
-struct NoteGeneratorInput;
-struct Note;
 
 /**
  * Process-level inference runtime singleton.
- * Owns the single Ort::Env, the process-level F0InferenceService and
- * the process-level GameNoteGenerator (GAME-small, single lazy instance).
+ * Owns the single Ort::Env and the process-level F0InferenceService.
  * All processors and document controllers share this one instance.
  *
  * Process-lifetime heap singleton: getInstance() allocates once and never
@@ -50,52 +45,14 @@ public:
     std::shared_ptr<F0InferenceService> getF0Service() const;
     bool isReady() const { return ready_.load(std::memory_order_acquire); }
 
-    /**
-     * Process-level GAME transcription entry point (single interface):
-     * lazily creates the single GameNoteGenerator on the shared Ort::Env and
-     * runs generate() serialized by the process-level gameMutex_. The shared
-     * generator is process-lifetime and never terminated for a single owner
-     * (terminateRun 已删除：owner 卸载后活跃 GAME 推理允许在后台完成，调用方
-     * 经 completion gate 丢弃结果)；调用方不得持有 per-processor GAME session。
-     * Returns {} on failure (Env not initialized / model load failure) —
-     * matching GameNoteGenerator::generate's failure signal.
-     */
-    std::vector<Note> generateNotes(const NoteGeneratorInput& input);
-
-    bool submitNotes(NoteGeneratorInput input,
-                     std::function<void(std::vector<Note>)> completion);
-
-    // Stops and joins the process-level GAME worker.  Must be called by the
-    // process owner after its F0 owners have stopped submitting work.
-    void shutdown() noexcept;
-
 private:
     ProcessF0Runtime() = default;
     ~ProcessF0Runtime() = default;
 
-    // 锁前置条件：调用方已持有 initMutex_。在共享 ortEnv_ 上创建单一 GAME
-    // 实例；失败返回 nullptr，下一次显式提交时重试创建（无后台重试循环）。
-    std::shared_ptr<GameNoteGenerator> createGameNoteGeneratorLocked();
-
     std::shared_ptr<Ort::Env> ortEnv_;
     std::shared_ptr<F0InferenceService> f0Service_;
-    std::shared_ptr<GameNoteGenerator> gameNoteGenerator_;  // initMutex_ 保护
     std::atomic<bool> ready_{false};
     mutable std::mutex initMutex_;
-    mutable std::mutex gameMutex_;  // 进程级 GAME 推理串行互斥
-
-    struct GameJob {
-        NoteGeneratorInput input;
-        std::function<void(std::vector<Note>)> completion;
-    };
-    std::mutex gameQueueMutex_;
-    std::mutex gameLifecycleMutex_;
-    std::condition_variable gameQueueCv_;
-    std::deque<GameJob> gameQueue_;
-    std::thread gameWorker_;
-    bool gameStopping_{false}; // gameQueueMutex_ protected
-
-    void gameWorkerLoop();
 
     ProcessF0Runtime(const ProcessF0Runtime&) = delete;
     ProcessF0Runtime& operator=(const ProcessF0Runtime&) = delete;

@@ -19,7 +19,7 @@ enum class ReferenceFeatureStatus : uint8_t {
 enum class ReferenceFeatureProducer : uint8_t {
     Unknown = 0,
     StandardAuto = 1,
-    Game = 2
+    Game = 2  // legacy persisted value (pre-retirement GAME backend); no longer produced
 };
 
 enum class ReferenceTimingAnchorKind : uint8_t {

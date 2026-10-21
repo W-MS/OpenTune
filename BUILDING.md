@@ -159,9 +159,8 @@ ThirdParty/microsoft.direct3d.d3d12.1.619.5/
 |------|--------------|------------------------|
 | FCPE (F0 提取) | [KCKT0112/HachiTune：`fcpe.onnx`（固定提交）](https://github.com/KCKT0112/HachiTune/blob/d68808c37dede264d80d2d1050dce27af34ad654/Resources/models/fcpe.onnx)；上游模型作者为 [CNChTu/FCPE](https://github.com/CNChTu/FCPE) | `models/fcpe.onnx` → `<output>/models/fcpe.onnx` |
 | PC-NSF HifiGAN (声码器) | [OpenVPI 官方 2025.02 `.oudep` 包](https://github.com/openvpi/vocoders/releases/download/pc-nsf-hifigan-44.1k-hop512-128bin-2025.02/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.oudep)。它本身是 zip，解压后 ONNX 在包根目录。同页的 `.zip` 只有 PyTorch `model.ckpt`，不含 ONNX。 | `pc_nsf_hifigan_44.1k_ONNX/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` → `<output>/models/hifigan.onnx` |
-| GAME 音符生成（可选） | [OpenVPI 官方 GAME 1.0.3 small ONNX](https://github.com/openvpi/GAME/releases/download/v1.0.3/GAME-1.0.3-small-onnx.zip) | `models/GAME/` → `<output>/models/GAME/` |
 
-> GAME 与 HifiGAN 使用 OpenVPI 官方发布的权重。OpenTune 当前 `models/fcpe.onnx` 与上述 HachiTune 文件逐字节一致（SHA-256：`013b507acd406de122b61ee497300ac6be082511101bc2136b886e48d9737e5d`）；CNChTu 是 FCPE 上游作者，提供 `.pt` checkpoint，但该 checkpoint 到此 ONNX 文件的导出过程未在 HachiTune 仓库中说明。GAME 模型包可选，缺失时运行时回退到 Legacy 流程。
+> HifiGAN 使用 OpenVPI 官方发布的权重。OpenTune 当前 `models/fcpe.onnx` 与上述 HachiTune 文件逐字节一致（SHA-256：`013b507acd406de122b61ee497300ac6be082511101bc2136b886e48d9737e5d`）；CNChTu 是 FCPE 上游作者，提供 `.pt` checkpoint，但该 checkpoint 到此 ONNX 文件的导出过程未在 HachiTune 仓库中说明。
 
 ### macOS Buildbot 所需的外部依赖
 
@@ -176,8 +175,6 @@ ThirdParty/microsoft.direct3d.d3d12.1.619.5/
 | `ThirdParty/onnxruntime-osx-universal2-1.20.0/` | 必需 | 运行 `./scripts/build-onnxruntime-macos.sh` 生成。该脚本从 [Microsoft ONNX Runtime v1.20.0](https://github.com/microsoft/onnxruntime/tree/v1.20.0) 源码构建，并从 [Eigen 官方仓库固定 revision](https://gitlab.com/libeigen/eigen/-/archive/e7248b26a1ed53fa030c5c459f7ea095dfd276ac/eigen-e7248b26a1ed53fa030c5c459f7ea095dfd276ac.zip) 获取 Eigen；分别构建 arm64、x86_64。打包脚本不会调用此脚本。 |
 | `models/fcpe.onnx` | 必需 | 从 [KCKT0112/HachiTune 固定提交](https://raw.githubusercontent.com/KCKT0112/HachiTune/d68808c37dede264d80d2d1050dce27af34ad654/Resources/models/fcpe.onnx) 下载；核对 SHA-256 为 `013b507acd406de122b61ee497300ac6be082511101bc2136b886e48d9737e5d`。模型上游作者为 [CNChTu/FCPE](https://github.com/CNChTu/FCPE)。 |
 | `pc_nsf_hifigan_44.1k_ONNX/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` | 必需 | 下载上方的 `.oudep` 并按 zip 解压，把包内的 `pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` 放到该路径。构建时复制为 `models/hifigan.onnx`。 |
-| `models/GAME/` | 可选 | 下载并解压上方链接的 OpenVPI GAME 1.0.3 small ONNX ZIP；缺失时回退到 Legacy 流程。 |
-
 推荐的 macOS Buildbot 顺序：从第三方来源获取以上必需依赖和模型；依赖未缓存时运行 `./scripts/build-onnxruntime-macos.sh`；随后运行 `./scripts/package-macos.sh --format pkg`。打包脚本会配置并构建 Universal2，再验证和生成 PKG。`Installer/NOTICE.md` 随仓库提供。
 
 ## 完整目录结构概览

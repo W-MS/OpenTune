@@ -173,15 +173,6 @@ struct ProjectContentEntry {
 };
 
 // ============================================================================
-// Reference binding（clip 间的参考关系）
-// ============================================================================
-
-struct ProjectReferenceBinding {
-    uint64_t targetPlacementId{0};
-    uint64_t referencePlacementId{0};
-};
-
-// ============================================================================
 // Track 与 Placement 持久化条目
 // ============================================================================
 
@@ -217,7 +208,6 @@ struct ProjectSnapshot {
     std::vector<ProjectSourceEntry> sources;
     std::vector<ProjectContentEntry> contents;
     std::vector<ProjectTrackEntry> tracks;
-    std::vector<ProjectReferenceBinding> referenceBindings;
 
     /** 生成唯一的工程 ID（时间戳 + 随机数） */
     static juce::String generateProjectId();

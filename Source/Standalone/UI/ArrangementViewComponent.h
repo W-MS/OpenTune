@@ -80,8 +80,6 @@ public:
         virtual void placementSelectionChanged(int trackId, uint64_t placementId) = 0;
         virtual void placementTimingChanged(int trackId, int placementIndex) = 0;
         virtual void placementDoubleClicked(int /*trackId*/, int /*placementIndex*/) {}
-        virtual void referenceButtonClicked(int /*trackId*/, uint64_t /*placementId*/,
-                                              juce::Rectangle<int> /*buttonScreenArea*/ = {}) {}
         // Y轴缩放回调 - 通知外部轨道高度变化（用于同步TrackPanel）
         virtual void trackHeightChanged(int newHeight) { juce::ignoreUnused(newHeight); }
         // Y轴滚动回调 - 通知外部垂直滚动偏移变化（用于同步TrackPanel）
@@ -128,7 +126,6 @@ public:
     void setVerticalScrollOffset(int offset);
     void setVisibleTrackCount(int count);
     void setInferenceActive(bool active) { inferenceActive_ = active; }
-    void setExperimentalReferenceControlsEnabled(bool enabled);
     void setZoomSensitivity(const ZoomSensitivityConfig::ZoomSensitivitySettings& settings) { zoomSensitivity_ = settings; }
     void setShortcutSettings(const KeyShortcutConfig::KeyShortcutSettings& settings) { shortcutSettings_ = settings; }
     void setTimelineDisplayMode(TimelineDisplayMode mode);
@@ -210,7 +207,6 @@ private:
     void drawPlayhead(juce::Graphics& g);
     void drawImportDropPreview(juce::Graphics& g);
     void drawMoveDragOverlay(juce::Graphics& g);
-    void drawReferenceHoverOverlay(juce::Graphics& g);
 
     OpenTuneAudioProcessor& processor_;
     const PlayHeadState& playHeadState_;
@@ -326,10 +322,7 @@ private:
     int selectedTrack_{0};
     int selectedPlacementIndex_{0};
     uint64_t selectedPlacementId_{0};
-    bool experimentalReferenceControlsEnabled_{false};
 
-    uint64_t hoveredReferencePlacementId_{0};
-    juce::Rectangle<int> hoveredReferenceButtonBounds_{};
 
     // === 多选支持 ===
     struct PlacementSelectionKey {

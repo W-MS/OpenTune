@@ -71,7 +71,6 @@ Part 3: Separately Licensed Third-Party Components
 ============================================================================
 
 - RMVPE: MIT License (https://github.com/yxlllc/RMVPE)
-- GAME (General Audio Mel Encoder): MIT License
 - SoundTouch: LGPL v2.1
 - ONNX Runtime: MIT License
 - JUCE Framework: GPL v3

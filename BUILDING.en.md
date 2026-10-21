@@ -152,9 +152,8 @@ Model files need to be placed in specified locations under the project root dire
 |-------|------------------------|-----------------------------------|
 | FCPE (F0 extraction) | [KCKT0112/HachiTune: `fcpe.onnx` (pinned commit)](https://github.com/KCKT0112/HachiTune/blob/d68808c37dede264d80d2d1050dce27af34ad654/Resources/models/fcpe.onnx); upstream model author: [CNChTu/FCPE](https://github.com/CNChTu/FCPE) | `models/fcpe.onnx` → `<output>/models/fcpe.onnx` |
 | PC-NSF HifiGAN (vocoder) | [OpenVPI official 2025.02 `.oudep` package](https://github.com/openvpi/vocoders/releases/download/pc-nsf-hifigan-44.1k-hop512-128bin-2025.02/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.oudep). The file is a zip; the ONNX is at the package root. The `.zip` on the same release page contains only the PyTorch `model.ckpt`, not the ONNX. | `pc_nsf_hifigan_44.1k_ONNX/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` → `<output>/models/hifigan.onnx` |
-| GAME note generator (optional) | [OpenVPI official GAME 1.0.3 small ONNX](https://github.com/openvpi/GAME/releases/download/v1.0.3/GAME-1.0.3-small-onnx.zip) | `models/GAME/` → `<output>/models/GAME/` |
 
-> GAME and HifiGAN use OpenVPI's official releases. OpenTune's current `models/fcpe.onnx` is byte-for-byte identical to the HachiTune file linked above (SHA-256: `013b507acd406de122b61ee497300ac6be082511101bc2136b886e48d9737e5d`). CNChTu is the upstream FCPE author and provides a `.pt` checkpoint, but HachiTune does not document how that checkpoint was exported to this ONNX file. The GAME model bundle is optional; when absent, the runtime falls back to the Legacy workflow.
+> HifiGAN uses OpenVPI's official release. OpenTune's current `models/fcpe.onnx` is byte-for-byte identical to the HachiTune file linked above (SHA-256: `013b507acd406de122b61ee497300ac6be082511101bc2136b886e48d9737e5d`). CNChTu is the upstream FCPE author and provides a `.pt` checkpoint, but HachiTune does not document how that checkpoint was exported to this ONNX file.
 
 ### External Dependencies Required by a macOS Buildbot
 
@@ -169,8 +168,6 @@ Except for the r8brain source included in the repository, obtain the following d
 | `ThirdParty/onnxruntime-osx-universal2-1.20.0/` | Yes | Generate it with `./scripts/build-onnxruntime-macos.sh`. The script builds from [Microsoft ONNX Runtime v1.20.0](https://github.com/microsoft/onnxruntime/tree/v1.20.0) and fetches Eigen at [this official repository revision](https://gitlab.com/libeigen/eigen/-/archive/e7248b26a1ed53fa030c5c459f7ea095dfd276ac/eigen-e7248b26a1ed53fa030c5c459f7ea095dfd276ac.zip), then builds arm64 and x86_64 separately. The packaging script does not invoke this builder. |
 | `models/fcpe.onnx` | Yes | Download from this [pinned KCKT0112/HachiTune commit](https://raw.githubusercontent.com/KCKT0112/HachiTune/d68808c37dede264d80d2d1050dce27af34ad654/Resources/models/fcpe.onnx); verify SHA-256 `013b507acd406de122b61ee497300ac6be082511101bc2136b886e48d9737e5d`. The upstream model author is [CNChTu/FCPE](https://github.com/CNChTu/FCPE). |
 | `pc_nsf_hifigan_44.1k_ONNX/pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` | Yes | Download the `.oudep` linked above and unzip it. Place its `pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx` at this path. The build copies it to `models/hifigan.onnx`. |
-| `models/GAME/` | No | Download and extract the OpenVPI GAME 1.0.3 small ONNX ZIP linked above; the runtime falls back to the Legacy workflow if absent. |
-
 Recommended macOS Buildbot order: obtain the required dependencies and models above from their third-party sources; run `./scripts/build-onnxruntime-macos.sh` if the ORT package is not cached; then run `./scripts/package-macos.sh --format pkg`. The packaging script configures and builds Universal2, validates the artifacts, and creates the PKG. `Installer/NOTICE.md` is included in the repository.
 
 ## Complete Directory Structure Overview

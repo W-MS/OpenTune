@@ -1,4 +1,4 @@
-﻿#include "PluginProcessor.h"
+#include "PluginProcessor.h"
 #if JucePlugin_Build_Standalone
 #include "SourceStore.h"
 #include "StandaloneArrangement.h"
@@ -23,13 +23,11 @@
 #include "Plugin/Capture/CapturePersistence.h"
 #include "Plugin/Vst3ProcessorStateCodec.h"
 #elif JucePlugin_Build_Standalone
-#include "DSP/ReferenceAutoAlign.h"
 #include "Plugin/StandaloneProcessorStateCodec.h"
 #endif
 #include "Utils/TimeCoordinate.h"
 #include "Utils/LocalizationManager.h"
 #include "Utils/PlacementFade.h"
-#include "Inference/GameNoteGenerator.h"      // GAME NoteGeneratorInput/Note DTO（进程级 GAME 入口）
 #include "Utils/LegacyNoteGenerator.h"
 #include "Utils/PitchControlConfig.h"
 #include "Utils/ScaleUiMapping.h"
@@ -647,26 +645,6 @@ std::shared_ptr<const TimeGridSnapshot> buildCopiedRangeTimeGrid(
 // host-plugin targets own the OTST processor state payload (encoded/decoded by
 // Vst3ProcessorStateCodec).
 
-ReferenceFeatureProducer OpenTuneAudioProcessor::resolveReferenceFeatureProducer() const
-{
-    if (experimentalReferenceAlignMode_ == ExperimentalReferenceAlignMode::StandardAuto)
-        return ReferenceFeatureProducer::StandardAuto;
-
-    // GAME 后端只由环境变量与 GAME 模型文件存在性决定：GAME 生成器是进程级
-    // 共享单例（ProcessF0Runtime），不存在 per-instance generator 可探测。
-    const auto envBackend = juce::SystemStats::getEnvironmentVariable("OPENTUNE_NOTE_BACKEND", {})
-                                .trim()
-                                .toLowerCase();
-    if (envBackend == "legacy")
-        return ReferenceFeatureProducer::StandardAuto;
-
-    const auto gameDir = juce::File(juce::String(ModelPathResolver::getModelsDirectory()))
-                             .getChildFile("GAME");
-    return gameDir.getChildFile("encoder.onnx").existsAsFile()
-        ? ReferenceFeatureProducer::Game
-        : ReferenceFeatureProducer::StandardAuto;
-}
-
 ReferenceFeatureSet OpenTuneAudioProcessor::buildStandardAutoReferenceFeatureSet(
     const EditableContentSnapshot& snapshot, int analysisRevision)
 {
@@ -677,7 +655,7 @@ ReferenceFeatureSet OpenTuneAudioProcessor::buildStandardAutoReferenceFeatureSet
     failed.analysisRevision = analysisRevision;
 
     if (snapshot.originalF0State != OriginalF0State::Ready || snapshot.pitchCurve == nullptr) {
-        failed.errorMessage = "AUTO Ref standard analysis requires Original F0";
+        failed.errorMessage = "Reference standard analysis requires Original F0";
         return failed;
     }
 
@@ -687,7 +665,7 @@ ReferenceFeatureSet OpenTuneAudioProcessor::buildStandardAutoReferenceFeatureSet
     const int hopSize = pitchSnapshot->getHopSize();
     const double sampleRate = pitchSnapshot->getSampleRate();
     if (originalF0.empty() || hopSize <= 0 || sampleRate <= 0.0) {
-        failed.errorMessage = "AUTO Ref standard analysis requires valid Original F0";
+        failed.errorMessage = "Reference standard analysis requires valid Original F0";
         return failed;
     }
 
@@ -711,7 +689,7 @@ ReferenceFeatureSet OpenTuneAudioProcessor::buildStandardAutoReferenceFeatureSet
         analysisRevision,
         sourceDurationSeconds,
         std::move(notes),
-        "AUTO Ref standard analysis found no notes or timing anchors");
+        "Reference standard analysis found no notes or timing anchors");
 }
 
 void OpenTuneAudioProcessor::analysisFinished(
@@ -722,7 +700,7 @@ void OpenTuneAudioProcessor::analysisFinished(
     if (!snap) return;
 
     if (result.inputFingerprint != static_cast<int64_t>(snap->audioRevision)
-        || result.producer != resolveReferenceFeatureProducer()) {
+        || result.producer != ReferenceFeatureProducer::StandardAuto) {
         return;
     }
 
@@ -1318,74 +1296,10 @@ OpenTuneAudioProcessor::~OpenTuneAudioProcessor() {
 
     ProcessRenderRuntime::getInstance().releaseOwner();
 
-    // Vocoder / F0 / GAME / AppLogger 全部是进程级资源（ProcessRenderRuntime /
+    // Vocoder / F0 / AppLogger 全部是进程级资源（ProcessRenderRuntime /
     // ProcessF0Runtime 单例与进程寿命 logger）：实例析构不 shutdown、不 reset、
     // 不等待推理，后续实例直接复用。
 }
-
-#if JucePlugin_Build_Standalone
-OpenTuneAudioProcessor::AutoRefAvailability
-OpenTuneAudioProcessor::queryAutoRefAvailability(uint64_t targetPlacementId) const
-{
-    AutoRefAvailability availability;
-    availability.targetPlacementId = targetPlacementId;
-
-    if (targetPlacementId == 0 || standaloneArrangement_ == nullptr) {
-        availability.status = AutoRefAvailability::Status::InvalidSelection;
-        availability.message = juce::String("No usable clip is selected; using regular AUTO.");
-        return availability;
-    }
-
-    StandaloneArrangement::Placement targetPlacement;
-    int targetTrackId = -1;
-    for (int trackId = 0; trackId < MAX_TRACKS; ++trackId) {
-        if (getPlacementById(trackId, targetPlacementId, targetPlacement)) {
-            targetTrackId = trackId;
-            break;
-        }
-    }
-
-    if (targetTrackId < 0) {
-        availability.status = AutoRefAvailability::Status::InvalidSelection;
-        availability.message = juce::String("No usable clip is selected; using regular AUTO.");
-        return availability;
-    }
-
-    availability.referencePlacementId =
-        standaloneArrangement_->getPlacementReferencePlacement(targetTrackId, targetPlacementId);
-    if (availability.referencePlacementId == 0) {
-        availability.status = AutoRefAvailability::Status::NoReference;
-        availability.message = juce::String("The selected clip has no reference clip bound; using regular AUTO.");
-        return availability;
-    }
-
-    if (availability.referencePlacementId == targetPlacementId) {
-        availability.status = AutoRefAvailability::Status::InvalidSelection;
-        availability.message = juce::String("The reference clip binding is invalid; using regular AUTO.");
-        return availability;
-    }
-
-    StandaloneArrangement::Placement referencePlacement;
-    bool referenceFound = false;
-    for (int trackId = 0; trackId < MAX_TRACKS; ++trackId) {
-        if (getPlacementById(trackId, availability.referencePlacementId, referencePlacement)) {
-            referenceFound = true;
-            break;
-        }
-    }
-    if (!referenceFound) {
-        availability.status = AutoRefAvailability::Status::InvalidSelection;
-        availability.message = juce::String("The reference clip is unavailable; using regular AUTO.");
-        return availability;
-    }
-
-    availability.status = AutoRefAvailability::Status::Ready;
-    availability.message = resolveReferenceFeatureProducer() == ReferenceFeatureProducer::Game
-        ? juce::String("AUTO(Ref) will analyze the reference clip with GAME.")
-        : juce::String("AUTO(Ref) will analyze the reference clip with standard AUTO.");
-    return availability;
-}
-#endif // JucePlugin_Build_Standalone
 
 void OpenTuneAudioProcessor::resetInferenceBackend(bool forceCpu, std::function<void()> beforeResume)
 {
@@ -3299,47 +3213,6 @@ ContentRenderService* OpenTuneAudioProcessor::resolveMutableLocalContentRenderSe
     return nullptr;
 }
 
-OpenTuneAudioProcessor::AnalysisAudioProvider
-OpenTuneAudioProcessor::resolveAnalysisAudioProvider(ContentKey key)
-{
-    AnalysisAudioProvider result;
-
-    // 优先从 CRS PlaybackReadSource 获取（适用于所有域，包括 ARA）
-    const ContentRenderService* readableCrs = resolveReadableContentRenderService(key);
-    PlaybackReadSource readSource;
-    if (readableCrs != nullptr
-        && readableCrs->getPlaybackReadSource(key, readSource)
-        && readSource.audioBuffer != nullptr
-        && readSource.audioBuffer->getNumSamples() > 0
-        && readSource.audioSampleRate > 0.0)
-    {
-        result.audioBuffer = readSource.audioBuffer;
-        // F0 is mono; stereo input uses channel 0 (left).
-        result.samples = readSource.audioBuffer->getReadPointer(0);
-        result.numSamples = readSource.audioBuffer->getNumSamples();
-        result.sampleRate = readSource.audioSampleRate;
-        result.valid = true;
-        return result;
-    }
-
-    if (auto snap = getContentSnapshot(key))
-    {
-        if (snap->audioBuffer
-            && snap->audioBuffer->getNumSamples() > 0
-            && snap->audioSampleRate > 0.0)
-        {
-            result.audioBuffer = snap->audioBuffer;
-            // F0 is mono; stereo input uses channel 0 (left).
-            result.samples = snap->audioBuffer->getReadPointer(0);
-            result.numSamples = snap->audioBuffer->getNumSamples();
-            result.sampleRate = snap->audioSampleRate;
-            result.valid = true;
-        }
-    }
-
-    return result;
-}
-
 void OpenTuneAudioProcessor::onContentLocalMutationCompleted(ContentKey key,
                                                               ContentEditRangeFrames affectedRange)
 {
@@ -4067,7 +3940,7 @@ OpenTuneAudioProcessor::CommittedPlacement OpenTuneAudioProcessor::commitPrepare
 
 // ============================================================================
 // requestContentRefresh -- Standalone / unbound-plugin F0 refresh.
-// Normally refreshes F0 only -- does NOT run GAME note generation.
+// Normally refreshes F0 only.
 // An OpenDyne import request may additionally carry a one-shot whole-content
 // note generation intent (generateNotesWholeContentOnReady), executed here
 // once F0 is Ready.
@@ -4490,14 +4363,6 @@ PitchShiftSettings OpenTuneAudioProcessor::getPitchShiftSettings(ContentKey key)
     return snap ? snap->pitchShiftSettings : PitchShiftSettings{};
 }
 
-ReferenceFeatureSet OpenTuneAudioProcessor::getReferenceFeatures(ContentKey key) const
-{
-    auto snap = getContentSnapshot(key);
-    if (!snap) return {};
-    return snap->referenceFeatures;
-}
-
-// ============================================================================
 // vocal-time-stretch §3.6 -- TimeGrid processor accessors
 // ============================================================================
 
@@ -4522,7 +4387,7 @@ bool OpenTuneAudioProcessor::ensureTimeToolAnchorSeed(ContentKey key)
         }
     }
 
-    const auto desiredProducer = resolveReferenceFeatureProducer();
+    constexpr auto desiredProducer = ReferenceFeatureProducer::StandardAuto;
     auto& features = snap->referenceFeatures;
     const bool featuresReady = features.isReady()
         && features.producer == desiredProducer
@@ -4531,7 +4396,7 @@ bool OpenTuneAudioProcessor::ensureTimeToolAnchorSeed(ContentKey key)
 
     if (!featuresReady) {
         pendingTimeToolSeedKeys_.insert(key);
-        const auto preheatStatus = preheatReferenceAlignmentFeatures(key);
+        const auto preheatStatus = preheatReferenceFeatures(key);
         if (preheatStatus == ReferenceAnalysisPreheatStatus::InvalidContent
             || preheatStatus == ReferenceAnalysisPreheatStatus::AnalysisFailed) {
             pendingTimeToolSeedKeys_.erase(key);
@@ -4610,7 +4475,7 @@ bool OpenTuneAudioProcessor::ensureTimeToolAnchorSeed(ContentKey key)
 }
 
 OpenTuneAudioProcessor::ReferenceAnalysisPreheatStatus
-OpenTuneAudioProcessor::preheatReferenceAlignmentFeatures(ContentKey key)
+OpenTuneAudioProcessor::preheatReferenceFeatures(ContentKey key)
 {
     if (!key.isValid() || key.domainKind != DomainKind::StandaloneClip) {
         return ReferenceAnalysisPreheatStatus::InvalidContent;
@@ -4621,31 +4486,29 @@ OpenTuneAudioProcessor::preheatReferenceAlignmentFeatures(ContentKey key)
         return ReferenceAnalysisPreheatStatus::InvalidContent;
     }
 
-    const auto producer = resolveReferenceFeatureProducer();
+    constexpr auto producer = ReferenceFeatureProducer::StandardAuto;
     const auto inputFingerprint = static_cast<int64_t>(snap->audioRevision);
     auto& features = snap->referenceFeatures;
-    if (producer == ReferenceFeatureProducer::StandardAuto) {
-        switch (snap->originalF0State) {
-            case OriginalF0State::NotRequested: {
-                ContentRefreshRequest refreshRequest;
-                refreshRequest.contentKey = key;
-                refreshRequest.preserveCorrectionsOutsideChangedRange = true;
-                return requestContentRefresh(refreshRequest)
-                    ? ReferenceAnalysisPreheatStatus::WaitingForSource
-                    : ReferenceAnalysisPreheatStatus::AnalysisFailed;
-            }
-            case OriginalF0State::Extracting:
-                return ReferenceAnalysisPreheatStatus::WaitingForSource;
-            case OriginalF0State::Failed:
-                return ReferenceAnalysisPreheatStatus::AnalysisFailed;
-            case OriginalF0State::Ready:
-                break;
+    switch (snap->originalF0State) {
+        case OriginalF0State::NotRequested: {
+            ContentRefreshRequest refreshRequest;
+            refreshRequest.contentKey = key;
+            refreshRequest.preserveCorrectionsOutsideChangedRange = true;
+            return requestContentRefresh(refreshRequest)
+                ? ReferenceAnalysisPreheatStatus::WaitingForSource
+                : ReferenceAnalysisPreheatStatus::AnalysisFailed;
         }
-
-        if (snap->pitchCurve == nullptr
-            || snap->pitchCurve->getOriginalF0().empty()) {
+        case OriginalF0State::Extracting:
+            return ReferenceAnalysisPreheatStatus::WaitingForSource;
+        case OriginalF0State::Failed:
             return ReferenceAnalysisPreheatStatus::AnalysisFailed;
-        }
+        case OriginalF0State::Ready:
+            break;
+    }
+
+    if (snap->pitchCurve == nullptr
+        || snap->pitchCurve->getOriginalF0().empty()) {
+        return ReferenceAnalysisPreheatStatus::AnalysisFailed;
     }
 
     if (features.isReady()
@@ -4682,14 +4545,6 @@ OpenTuneAudioProcessor::preheatReferenceAlignmentFeatures(ContentKey key)
     // 以 completion gate 决定是否访问 owner。
     const int analysisRevision = extracting.analysisRevision;
     const std::shared_ptr<const EditableContentSnapshot> analysisSnap = snap;
-    AnalysisAudioProvider audio;
-    double sourceDurationSeconds = 0.0;
-    if (producer == ReferenceFeatureProducer::Game) {
-        audio = resolveAnalysisAudioProvider(key);
-        sourceDurationSeconds = audio.valid
-            ? TimeCoordinate::samplesToSeconds(audio.numSamples, audio.sampleRate)
-            : 0.0;
-    }
 
     auto gate = completionGate_;
     auto* processor = this;
@@ -4711,320 +4566,21 @@ OpenTuneAudioProcessor::preheatReferenceAlignmentFeatures(ContentKey key)
             // StandardAuto：提交时捕获的纯数据快照。
             if (!analysisSnap) {
                 failed.status = ReferenceFeatureStatus::Failed;
-                failed.errorMessage = "AUTO Ref analysis could not read content snapshot";
+                failed.errorMessage = "Reference analysis could not read content snapshot";
                 return failed;
             }
             if (static_cast<int64_t>(analysisSnap->audioRevision) != jobKey.inputFingerprint) {
                 failed.status = ReferenceFeatureStatus::Failed;
-                failed.errorMessage = "AUTO Ref analysis job is stale";
+                failed.errorMessage = "Reference analysis job is stale";
                 return failed;
             }
             return buildStandardAutoReferenceFeatureSet(*analysisSnap, analysisRevision);
         };
 
-    if (producer == ReferenceFeatureProducer::Game) {
-        referenceAnalysisService_->submitAsyncAnalysis(
-            key, inputFingerprint, producer,
-            [audio, sourceDurationSeconds, analysisRevision](
-                const ReferenceAnalysisService::AnalysisJobKey& jobKey,
-                std::function<void(ReferenceFeatureSet)> done) {
-                if (!audio.valid || audio.numSamples <= 0) {
-                    ReferenceFeatureSet failed;
-                    failed.status = ReferenceFeatureStatus::Failed;
-                    failed.producer = jobKey.producer;
-                    failed.inputFingerprint = jobKey.inputFingerprint;
-                    failed.analysisRevision = analysisRevision;
-                    done(std::move(failed));
-                    return;
-                }
-                NoteGeneratorInput input;
-                input.sampleRate = audio.sampleRate;
-                input.audio.assign(audio.samples, audio.samples + audio.numSamples);
-                auto gameCompletion =
-                    [jobKey, sourceDurationSeconds, analysisRevision, done = std::move(done)]
-                    (std::vector<Note> notes) mutable {
-                        done(makeReferenceFeatureSetFromNotes(
-                            ReferenceFeatureProducer::Game,
-                            jobKey.inputFingerprint,
-                            analysisRevision,
-                            sourceDurationSeconds,
-                            notes,
-                            "AUTO Ref GAME analysis found no notes or timing anchors"));
-                    };
-                if (!ProcessF0Runtime::getInstance().submitNotes(
-                        std::move(input), gameCompletion))
-                {
-                    // The pure-data completion remains callable on this
-                    // worker and produces the normal Failed feature result;
-                    // it does not touch the processor.
-                    gameCompletion({});
-                }
-            }, completion);
-    } else {
-        referenceAnalysisService_->submitAnalysis(key, inputFingerprint, producer,
-                                                  std::move(analysis), std::move(completion));
-    }
+    referenceAnalysisService_->submitAnalysis(key, inputFingerprint, producer,
+                                              std::move(analysis), std::move(completion));
     return ReferenceAnalysisPreheatStatus::Queued;
 }
-
-#if JucePlugin_Build_Standalone
-OpenTuneAudioProcessor::ReferenceAlignmentResult
-OpenTuneAudioProcessor::executeReferenceAlignmentForPlacement(uint64_t targetPlacementId)
-{
-    ReferenceAlignmentResult result;
-
-    if (targetPlacementId == 0 || standaloneArrangement_ == nullptr) {
-        result.status = ReferenceAlignmentResult::Status::TargetPlacementNotFound;
-        result.message = "AUTO Ref target placement is not available";
-        return result;
-    }
-
-    int targetTrackId = -1;
-    StandaloneArrangement::Placement targetPlacement;
-    if (!findPlacementByIdGlobal(*standaloneArrangement_, targetPlacementId, targetTrackId, targetPlacement)) {
-        result.status = ReferenceAlignmentResult::Status::TargetPlacementNotFound;
-        result.message = "AUTO Ref target placement is not available";
-        return result;
-    }
-
-    const uint64_t referencePlacementId =
-        standaloneArrangement_->getPlacementReferencePlacement(targetTrackId, targetPlacementId);
-    if (referencePlacementId == 0) {
-        result.status = ReferenceAlignmentResult::Status::NoReferenceBinding;
-        result.message = "AUTO Ref target has no reference clip binding";
-        return result;
-    }
-
-    if (referencePlacementId == targetPlacementId) {
-        result.status = ReferenceAlignmentResult::Status::SelfReference;
-        result.message = "AUTO Ref cannot align a clip to itself";
-        return result;
-    }
-
-    int referenceTrackId = -1;
-    StandaloneArrangement::Placement referencePlacement;
-    if (!findPlacementByIdGlobal(*standaloneArrangement_, referencePlacementId, referenceTrackId, referencePlacement)) {
-        result.status = ReferenceAlignmentResult::Status::ReferencePlacementNotFound;
-        result.message = "AUTO Ref reference placement is not available";
-        return result;
-    }
-    juce::ignoreUnused(referenceTrackId);
-
-    const double overlapStart = std::max(targetPlacement.timelineStartSeconds,
-                                         referencePlacement.timelineStartSeconds);
-    const double overlapEnd = std::min(targetPlacement.timelineEndSeconds(),
-                                       referencePlacement.timelineEndSeconds());
-    if (overlapEnd <= overlapStart) {
-        result.status = ReferenceAlignmentResult::Status::NoOverlap;
-        result.message = "AUTO Ref target and reference clips do not overlap";
-        return result;
-    }
-
-    auto targetSnap = getContentSnapshot(targetPlacement.contentKey);
-    auto referenceSnap = getContentSnapshot(referencePlacement.contentKey);
-    if (!targetSnap) {
-        result.status = ReferenceAlignmentResult::Status::TargetAnalysisNotReady;
-        result.message = "AUTO Ref target analysis could not read content snapshot";
-        return result;
-    }
-    if (!referenceSnap) {
-        result.status = ReferenceAlignmentResult::Status::ReferenceAnalysisNotReady;
-        result.message = "AUTO Ref reference analysis could not read content snapshot";
-        return result;
-    }
-
-    const auto desiredProducer = resolveReferenceFeatureProducer();
-    const auto featureIsCurrent = [desiredProducer](const ReferenceFeatureSet& features,
-                                                     const EditableContentSnapshot& snapshot) {
-        return features.isReady()
-            && features.producer == desiredProducer
-            && features.inputFingerprint == static_cast<int64_t>(snapshot.audioRevision);
-    };
-
-    const ReferenceFeatureSet targetFeatures = targetSnap->referenceFeatures;
-    if (!featureIsCurrent(targetFeatures, *targetSnap)) {
-        const auto preheatStatus = preheatReferenceAlignmentFeatures(targetPlacement.contentKey);
-        result.status = ReferenceAlignmentResult::Status::TargetAnalysisNotReady;
-        result.message = targetFeatures.errorMessage.isNotEmpty()
-            ? targetFeatures.errorMessage
-            : preheatStatus == ReferenceAnalysisPreheatStatus::AnalysisFailed
-                ? juce::String("AUTO Ref target source analysis failed")
-                : juce::String("AUTO Ref target analysis is pending");
-        return result;
-    }
-
-    const ReferenceFeatureSet referenceFeatures = referenceSnap->referenceFeatures;
-    if (!featureIsCurrent(referenceFeatures, *referenceSnap)) {
-        const auto preheatStatus = preheatReferenceAlignmentFeatures(referencePlacement.contentKey);
-        result.status = ReferenceAlignmentResult::Status::ReferenceAnalysisNotReady;
-        result.message = referenceFeatures.errorMessage.isNotEmpty()
-            ? referenceFeatures.errorMessage
-            : preheatStatus == ReferenceAnalysisPreheatStatus::AnalysisFailed
-                ? juce::String("AUTO Ref reference source analysis failed")
-                : juce::String("AUTO Ref reference analysis is pending");
-        return result;
-    }
-
-    const auto oldNotes = targetSnap->notes;
-    const auto oldCurve = targetSnap->pitchCurve;
-    if (oldCurve == nullptr) {
-        result.status = ReferenceAlignmentResult::Status::TargetAnalysisNotReady;
-        result.message = "AUTO Ref target pitch curve is not available";
-        return result;
-    }
-
-    const auto oldSegments = oldCurve->getCorrectionSegments();
-    const double targetDurationSeconds = targetSnap->sourceWindow.isValid()
-        ? targetSnap->sourceWindow.durationSeconds()
-        : targetFeatures.sourceDurationSeconds;
-    const double referenceDurationSeconds = referenceSnap->sourceWindow.isValid()
-        ? referenceSnap->sourceWindow.durationSeconds()
-        : referenceFeatures.sourceDurationSeconds;
-    if (!(targetDurationSeconds > 0.0) || !(referenceDurationSeconds > 0.0)) {
-        result.status = ReferenceAlignmentResult::Status::InsufficientFeatures;
-        result.message = "AUTO Ref requires positive target and reference durations";
-        return result;
-    }
-
-    ReferenceAlignmentRequest request;
-    request.target.placementId = targetPlacement.placementId;
-    request.target.contentKey = targetPlacement.contentKey;
-    request.target.timelineStartSeconds = targetPlacement.timelineStartSeconds;
-    request.target.timelineEndSeconds = targetPlacement.timelineEndSeconds();
-    request.target.sourceStartSeconds = targetPlacement.clipInSeconds;
-    request.target.sourceEndSeconds = targetPlacement.clipInSeconds + targetPlacement.durationSeconds;
-    request.reference.placementId = referencePlacement.placementId;
-    request.reference.contentKey = referencePlacement.contentKey;
-    request.reference.timelineStartSeconds = referencePlacement.timelineStartSeconds;
-    request.reference.timelineEndSeconds = referencePlacement.timelineEndSeconds();
-    request.reference.sourceStartSeconds = referencePlacement.clipInSeconds;
-    request.reference.sourceEndSeconds = referencePlacement.clipInSeconds + referencePlacement.durationSeconds;
-    request.targetTimeMap = EffectiveTimeMap::fromTimeGrid(targetSnap->timeGrid, targetDurationSeconds);
-    request.referenceTimeMap = EffectiveTimeMap::fromTimeGrid(referenceSnap->timeGrid, referenceDurationSeconds);
-    request.targetFeatures = targetFeatures;
-    request.referenceFeatures = referenceFeatures;
-    request.targetNotesBefore = oldNotes;
-    request.overlapStartTimelineSeconds = overlapStart;
-    request.overlapEndTimelineSeconds = overlapEnd;
-
-    auto patch = ReferenceAutoAlign::align(request);
-    if (!patch.success) {
-        switch (patch.error) {
-            case AlignmentPatch::ErrorCode::NoOverlap:
-                result.status = ReferenceAlignmentResult::Status::NoOverlap;
-                break;
-            case AlignmentPatch::ErrorCode::TargetAnalysisNotReady:
-                result.status = ReferenceAlignmentResult::Status::TargetAnalysisNotReady;
-                break;
-            case AlignmentPatch::ErrorCode::ReferenceAnalysisNotReady:
-                result.status = ReferenceAlignmentResult::Status::ReferenceAnalysisNotReady;
-                break;
-            case AlignmentPatch::ErrorCode::InsufficientFeatures:
-                result.status = ReferenceAlignmentResult::Status::InsufficientFeatures;
-                break;
-            case AlignmentPatch::ErrorCode::NoMutation:
-                result.status = ReferenceAlignmentResult::Status::NoMutation;
-                break;
-            case AlignmentPatch::ErrorCode::InvalidRequest:
-            case AlignmentPatch::ErrorCode::None:
-                result.status = ReferenceAlignmentResult::Status::CommitFailed;
-                break;
-        }
-        result.message = patch.diagnostics;
-        result.targetContentKey = targetPlacement.contentKey;
-        return result;
-    }
-
-    const auto oldPitchSnapshot = oldCurve;
-    const int hopSize = oldPitchSnapshot->getHopSize();
-    const double pitchSampleRate = oldPitchSnapshot->getSampleRate();
-    const int frameCount = static_cast<int>(oldPitchSnapshot->getOriginalF0().size());
-    if (hopSize <= 0 || pitchSampleRate <= 0.0 || frameCount <= 0) {
-        result.status = ReferenceAlignmentResult::Status::TargetAnalysisNotReady;
-        result.message = "AUTO Ref target F0 coordinates are not available";
-        return result;
-    }
-
-    const auto affectedFrameRange = f0FrameRangeForSeconds(
-        hopSize,
-        pitchSampleRate,
-        frameCount,
-        patch.affectedSourceStartSeconds,
-        patch.affectedSourceEndSeconds);
-    if (!affectedFrameRange.has_value() || affectedFrameRange->isEmpty()) {
-        result.status = ReferenceAlignmentResult::Status::NoOverlap;
-        result.message = "AUTO Ref overlap maps to an empty F0 range";
-        return result;
-    }
-    const int affectedStartFrame = affectedFrameRange->startFrame;
-    const int affectedEndFrame = affectedFrameRange->endFrameExclusive;
-
-    const auto& normalizedNotes = patch.notesAfter;
-    const auto correctionRange = PitchCurve::expandNoteBasedCorrectionRange(
-        affectedStartFrame, affectedEndFrame, frameCount);
-    const ContentEditRangeFrames commitRange{
-        correctionRange.startFrame,
-        correctionRange.endFrameExclusive
-    };
-
-    const double secondsPerFrame = static_cast<double>(hopSize) / pitchSampleRate;
-    const double rangeStartSeconds = static_cast<double>(commitRange.startFrame) * secondsPerFrame;
-    const double rangeEndSeconds = static_cast<double>(commitRange.endFrameExclusive) * secondsPerFrame;
-
-    auto derivedCurve = PitchCurve::fromSnapshot(oldCurve);
-    derivedCurve->applyCorrectionToRange(
-        normalizedNotes,
-        affectedStartFrame,
-        affectedEndFrame,
-        static_cast<float>(targetSnap->pitchShiftSettings.getPitchRatio()),
-        PitchControlConfig::kDefaultRetuneSpeedNormalized,
-        PitchControlConfig::kDefaultVibratoDepth,
-        PitchControlConfig::kDefaultVibratoRateHz);
-
-    const auto segmentsInRange = clipSegmentsToFrameRange(
-        derivedCurve->copyCorrectionSegments(),
-        commitRange.startFrame,
-        commitRange.endFrameExclusive);
-    auto beforeNotesScoped = filterNotesToRange(oldNotes, rangeStartSeconds, rangeEndSeconds);
-    auto beforeSegmentsScoped = clipSegmentsToFrameRange(
-        oldSegments,
-        commitRange.startFrame,
-        commitRange.endFrameExclusive);
-
-    const auto commitSnap = commitContentNotesAndSegments(
-        targetPlacement.contentKey,
-        normalizedNotes,
-        segmentsInRange,
-        commitRange);
-    if (commitSnap == nullptr) {
-        result.status = ReferenceAlignmentResult::Status::CommitFailed;
-        result.message = "AUTO Ref could not commit the pitch patch";
-        result.targetContentKey = targetPlacement.contentKey;
-        result.affectedStartFrame = commitRange.startFrame;
-        result.affectedEndFrame = commitRange.endFrameExclusive;
-        return result;
-    }
-
-    undoManager_.addAction(std::make_unique<PianoRollEditAction>(
-        contentCommands_,
-        targetPlacement.contentKey,
-        "AUTO (Ref)",
-        std::move(beforeNotesScoped),
-        filterNotesToRange(commitSnap->notes, rangeStartSeconds, rangeEndSeconds),
-        std::move(beforeSegmentsScoped),
-        clipSegmentsToFrameRange(commitSnap->pitchCurve->getCorrectionSegments(),
-                                 commitRange.startFrame,
-                                 commitRange.endFrameExclusive),
-        commitRange));
-
-    result.status = ReferenceAlignmentResult::Status::Succeeded;
-    result.message = "AUTO Ref pitch correction applied";
-    result.targetContentKey = targetPlacement.contentKey;
-    result.affectedStartFrame = commitRange.startFrame;
-    result.affectedEndFrame = commitRange.endFrameExclusive;
-    return result;
-}
-#endif // JucePlugin_Build_Standalone
 
 bool OpenTuneAudioProcessor::replaceContentNotesForFullMutation(ContentKey key, std::vector<Note> notes)
 {

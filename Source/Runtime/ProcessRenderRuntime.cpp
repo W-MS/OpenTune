@@ -942,11 +942,6 @@ void ProcessRenderRuntime::controlWorkerLoop()
             }
             domain.reset();
 
-            // GAME inference is process-scoped and not cancellable.  Join its
-            // worker here, before publishing worker-exit, so the message
-            // thread only joins an already fully quiescent control worker.
-            ProcessF0Runtime::getInstance().shutdown();
-
             const auto generation = shutdownGeneration_.load(std::memory_order_acquire);
             const bool posted = juce::MessageManager::callAsync(
                 [this, generation]() { finishShutdown(generation); });

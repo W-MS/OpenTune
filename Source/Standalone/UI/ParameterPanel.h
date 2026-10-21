@@ -51,9 +51,7 @@ class ParameterPanel : public juce::Component
 public:
     struct AutoButtonPresentation {
         enum class Mode : uint8_t {
-            StandardAuto = 0,
-            ReferenceAuto,
-            ReferenceBoundButFallbackToAuto
+            StandardAuto = 0
         };
 
         Mode mode{Mode::StandardAuto};
@@ -91,9 +89,7 @@ public:
     /** Pitch Grid 全局开关回调：切换 No Snap / Chromatic / Key Scale 吸附模式。 */
     std::function<void(PitchGridMode)> onPitchGridModeChanged;
 
-    /** 设置 AUTO 按钮的模式显示（OpenTune 主文本 "AUTO"，OpenDyne 主文本 "SNAP"）。
-     *  @param presentation 携带 ReferenceAuto 模式时显示 "(Ref)" 副标题。
-     */
+    /** 设置 AUTO 按钮的模式显示（OpenTune 主文本 "AUTO"，OpenDyne 主文本 "SNAP"）。 */
     void setAutoButtonPresentation(const AutoButtonPresentation& presentation);
     
     // Setters for UI state

@@ -203,7 +203,7 @@ private:
     bool originalF0OverlayLatched_ = false;
     std::vector<ContentKey> originalF0OverlayTargetContentKeys_;
     // Tracks last-seen notesRevision per active content so the timer
-    // can pull fresh notes when an async note generator (GAME) commits late.
+    // can pull fresh notes when an async note generator commits late.
     // Tracks last-seen ContentKey for revision baseline only (not session last-active).
     ContentKey lastRevisionObservedContentKey_;
     std::optional<PianoRollPlacementIdentity> presentedPlacementIdentity_;

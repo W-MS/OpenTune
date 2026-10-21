@@ -46,7 +46,6 @@ public:
         juce::String name;
         bool isRetired{false};
 
-        uint64_t referencePlacementId{0};        // 0 = 无参考
 
         bool isValid() const noexcept
         {
@@ -175,16 +174,6 @@ public:
     struct RetiredPlacementEntry { int trackId; uint64_t placementId; ContentKey contentKey; };
     std::vector<RetiredPlacementEntry> getRetiredPlacements() const;
 
-    // ============================================================================
-    // Reference binding API
-    // ============================================================================
-    // referencePlacementId=0 允许清除绑定
-    bool setPlacementReferencePlacement(int trackId, uint64_t targetPlacementId, uint64_t referencePlacementId);
-    uint64_t getPlacementReferencePlacement(int trackId, uint64_t targetPlacementId) const;
-
-    // 查询能否设置 binding（共用与 set 完全相同的 unlocked 验证逻辑，无副作用）
-    bool canSetPlacementReferencePlacement(int trackId, uint64_t targetPlacementId, uint64_t referencePlacementId) const;
-
 private:
     juce::String defaultTrackName(int trackId) const;
     static bool isDefaultTrackName(const juce::String& name, int trackId);
@@ -196,13 +185,7 @@ private:
     void refreshSelectedPlacementUnlocked(int trackId, int preferredIndex);
     void publishPlaybackSnapshotLocked();
 
-    // Reference binding helpers (要求调用方已持有 stateLock_ 写锁)
     bool findPlacementByIdGlobalUnlocked(uint64_t placementId, int& outTrackId, size_t& outIndex) const;
-    bool isCyclicReferenceUnlocked(uint64_t targetPlacementId, uint64_t candidateReferenceId) const;
-    static bool placementsOverlap(const Placement& target, const Placement& reference) noexcept;
-    bool clearReferenceBindingUnlocked(Placement& target) noexcept;
-    bool validateReferenceBindingUnlocked(int trackId, uint64_t targetPlacementId, uint64_t referencePlacementId) const noexcept;
-    void clearInboundReferencesToPlacementUnlocked(uint64_t referencePlacementId);
 
     mutable juce::ReadWriteLock stateLock_;
     std::array<Track, kTrackCount> tracks_;

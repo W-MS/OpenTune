@@ -107,7 +107,6 @@ Source: "{#StandaloneBuildDir}\Standalone\D3D12\D3D12SDKLayers.dll"; DestDir: "{
 ; a copy next to the executable.
 Source: "{#StandaloneBuildDir}\Standalone\models\fcpe.onnx"; DestDir: "{commonappdata}\OpenTune\Models"; Components: standalone vst3plugin; Flags: ignoreversion
 Source: "{#StandaloneBuildDir}\Standalone\models\hifigan.onnx"; DestDir: "{commonappdata}\OpenTune\Models"; Components: standalone vst3plugin; Flags: ignoreversion
-Source: "{#StandaloneBuildDir}\Standalone\models\GAME\*"; DestDir: "{commonappdata}\OpenTune\Models\GAME"; Components: standalone vst3plugin; Flags: ignoreversion recursesubdirs
 ; Standalone - documents
 Source: "{#StandaloneBuildDir}\Standalone\docs\*"; DestDir: "{app}\docs"; Components: standalone; Flags: ignoreversion recursesubdirs
 
@@ -169,7 +168,6 @@ Name: "{app}\docs"; Components: standalone
 Name: "{app}\licenses"; Components: standalone
 Name: "{commonappdata}\OpenTune"; Components: standalone vst3plugin
 Name: "{commonappdata}\OpenTune\Models"; Components: standalone vst3plugin
-Name: "{commonappdata}\OpenTune\Models\GAME"; Components: standalone vst3plugin
 Name: "{commoncf}\ARA"; Components: vst3plugin
 
 [Icons]

@@ -743,8 +743,8 @@ std::optional<ContentState> restoreAudioModificationContent(const juce::XmlEleme
                 rfStatus > static_cast<int>(ReferenceFeatureStatus::Failed))
                 return std::nullopt;
             if (rfProducer != static_cast<int>(ReferenceFeatureProducer::Unknown) &&
-                rfProducer != static_cast<int>(ReferenceFeatureProducer::Game) &&
-                rfProducer != static_cast<int>(ReferenceFeatureProducer::StandardAuto))
+                rfProducer != static_cast<int>(ReferenceFeatureProducer::StandardAuto) &&
+                rfProducer != 2 /* legacy GAME producer: tolerated on read */)
                 return std::nullopt;
             content.analysis.referenceFeatures.status = static_cast<ReferenceFeatureStatus>(rfStatus);
             content.analysis.referenceFeatures.producer = static_cast<ReferenceFeatureProducer>(rfProducer);

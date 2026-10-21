@@ -27,12 +27,6 @@ enum class RenderingPriority {
     CpuFirst        // CPU first
 };
 
-enum class ExperimentalReferenceAlignMode
-{
-    StandardAuto = 0,
-    Game = 1
-};
-
 /// Track color assignment mode
 enum class TrackColorMode {
     Random = 0,   ///< New tracks get random colors (default)
@@ -69,7 +63,6 @@ struct SharedPreferencesState {
     RenderingPriority renderingPriority = RenderingPriority::GpuFirst;
     VocoderModelWeight vocoderModelWeight = kDefaultVocoderWeight;
     bool experimentalFeaturesEnabled = false;
-    ExperimentalReferenceAlignMode experimentalReferenceAlignMode = ExperimentalReferenceAlignMode::StandardAuto;
     std::vector<juce::String> recentProjects;   // Most recently used project paths (MRU, max 10)
     SnapSettings snap;
     TrackColorMode trackColorMode = TrackColorMode::Random;
@@ -129,7 +122,6 @@ public:
     void setRenderingPriority(RenderingPriority priority);
     void setVocoderModelWeight(const VocoderModelWeight& weight);
     void setExperimentalFeaturesEnabled(bool enabled);
-    void setExperimentalReferenceAlignMode(ExperimentalReferenceAlignMode mode);
     void setMouseTrailTheme(MouseTrailConfig::TrailTheme theme);
     void setCursorStyle(CursorStyleId style);
     void setSnapSettings(const SnapSettings& snap);

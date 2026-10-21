@@ -103,9 +103,6 @@ juce::ValueTree ProjectPersistence::toValueTree(const ProjectSnapshot& snapshot)
         root.addChild(tracksNode, -1, nullptr);
     }
 
-    for (const auto& binding : snapshot.referenceBindings) {
-        root.addChild(referenceBindingToValueTree(binding), -1, nullptr);
-    }
 
     return root;
 }
@@ -240,14 +237,6 @@ Result<ProjectSnapshot> ProjectPersistence::fromValueTree(const juce::ValueTree&
             if (child.hasType("Track")) {
                 snapshot.tracks.push_back(trackFromValueTree(child));
             }
-        }
-    }
-
-    // ReferenceBindings
-    for (int i = 0; i < tree.getNumChildren(); ++i) {
-        auto child = tree.getChild(i);
-        if (child.hasType("ReferenceBinding")) {
-            snapshot.referenceBindings.push_back(referenceBindingFromValueTree(child));
         }
     }
 
@@ -872,27 +861,6 @@ std::vector<ProjectPlacementEntry> ProjectPersistence::placementsFromValueTree(c
     return placements;
 }
 
-// ============================================================================
-// ReferenceBinding 序列化
-// ============================================================================
-
-juce::ValueTree ProjectPersistence::referenceBindingToValueTree(const ProjectReferenceBinding& binding)
-{
-    juce::ValueTree tree("ReferenceBinding");
-    tree.setProperty("targetPlacementId", static_cast<int64_t>(binding.targetPlacementId), nullptr);
-    tree.setProperty("referencePlacementId", static_cast<int64_t>(binding.referencePlacementId), nullptr);
-    return tree;
-}
-
-ProjectReferenceBinding ProjectPersistence::referenceBindingFromValueTree(const juce::ValueTree& tree)
-{
-    ProjectReferenceBinding rb;
-    rb.targetPlacementId = static_cast<uint64_t>(static_cast<int64_t>(tree.getProperty("targetPlacementId", 0)));
-    rb.referencePlacementId = static_cast<uint64_t>(static_cast<int64_t>(tree.getProperty("referencePlacementId", 0)));
-    return rb;
-}
-
-// ============================================================================
 // SilentGaps 序列化
 // ============================================================================
 

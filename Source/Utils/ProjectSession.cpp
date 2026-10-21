@@ -250,22 +250,6 @@ ProjectSnapshot ProjectSession::captureSnapshot() const
     snap.settings.selectedTrackId = arrangement->getActiveTrackId();
     snap.settings.visibleTrackCount = arrangement->getVisibleTrackCount();
 
-    // Reference bindings
-    for (int trackId = 0; trackId < numTracks; ++trackId) {
-        const int numPlacements = arrangement->getNumPlacements(trackId);
-        for (int pi = 0; pi < numPlacements; ++pi) {
-            StandaloneArrangement::Placement placement;
-            if (!arrangement->getPlacementByIndex(trackId, pi, placement)) { continue; }
-            if (placement.isRetired) { continue; }
-            if (placement.referencePlacementId == 0) { continue; }
-
-            ProjectReferenceBinding binding;
-            binding.targetPlacementId = placement.placementId;
-            binding.referencePlacementId = placement.referencePlacementId;
-            snap.referenceBindings.push_back(binding);
-        }
-    }
-
     // Settings
     snap.settings.bpm = processorRef_.getBpm();
     snap.settings.timeSignatureNumerator = processorRef_.getTimeSigNumerator();
@@ -664,39 +648,6 @@ Result<void> ProjectSession::commitPreparedOpen(PreparedOpen&& preparedOpen)
         snapshot.settings.selectedTrackId,
         visibilityHints));
 
-    // Restore reference bindings (不触发analysis)
-    bool anyBindingLost = false;
-    for (const auto& binding : snapshot.referenceBindings) {
-        // Find which track the target placement is on
-        bool restored = false;
-        for (int tid = 0; tid < arrangement->getNumTracks(); ++tid) {
-            StandaloneArrangement::Placement target;
-            if (!arrangement->getPlacementById(tid, binding.targetPlacementId, target)) { continue; }
-
-            // Verify reference placement still exists
-            bool refExists = false;
-            for (int rtid = 0; rtid < arrangement->getNumTracks(); ++rtid) {
-                StandaloneArrangement::Placement ref;
-                if (arrangement->getPlacementById(rtid, binding.referencePlacementId, ref)
-                    && !ref.isRetired) {
-                    refExists = true;
-                    break;
-                }
-            }
-
-            if (refExists
-                && arrangement->setPlacementReferencePlacement(tid, binding.targetPlacementId,
-                    binding.referencePlacementId)) {
-                restored = true;
-            } else {
-                anyBindingLost = true;
-            }
-            break; // Found target, stop searching
-        }
-        if (!restored) {
-            anyBindingLost = true;
-        }
-    }
     // 恢复工程设置
     processorRef_.setBpm(snapshot.settings.bpm);
     processorRef_.setTimeSignature(snapshot.settings.timeSignatureNumerator,
@@ -741,8 +692,6 @@ Result<void> ProjectSession::commitPreparedOpen(PreparedOpen&& preparedOpen)
     cachedProjectId_ = snapshot.header.projectId;
     cachedCreatedAt_ = snapshot.header.createdAt;
     clearDirty();
-    if (anyBindingLost)
-        markDirty();
     pushRecentProject(preparedOpen.projectFile);
 
     return Result<void>::success();

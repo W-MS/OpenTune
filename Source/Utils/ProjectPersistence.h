@@ -67,14 +67,12 @@ private:
     static juce::ValueTree sourceToValueTree(const ProjectSourceEntry& source);
     static juce::ValueTree contentToValueTree(const ProjectContentEntry& mat);
     static juce::ValueTree trackToValueTree(const ProjectTrackEntry& track);
-    static juce::ValueTree referenceBindingToValueTree(const ProjectReferenceBinding& binding);
 
     // 反序列化辅助
     static ProjectSettings settingsFromValueTree(const juce::ValueTree& tree);
     static ProjectSourceEntry sourceFromValueTree(const juce::ValueTree& tree);
     static ProjectContentEntry contentFromValueTree(const juce::ValueTree& tree, int formatVersion);
     static ProjectTrackEntry trackFromValueTree(const juce::ValueTree& tree);
-    static ProjectReferenceBinding referenceBindingFromValueTree(const juce::ValueTree& tree);
 
     // 子节点反序列化
     static std::vector<Note> notesFromValueTree(const juce::ValueTree& tree, int formatVersion);

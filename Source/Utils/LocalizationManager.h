@@ -403,9 +403,6 @@ constexpr const char* kSelectedPlacement = "Selected Placement (Track {0}, Clip 
 constexpr const char* kTrackTarget = "Track {0}";
 constexpr const char* kBusMasterMix = "Bus (Master Mix)";
 constexpr const char* kHelpFileNotFound = "Help file not found: {0}";
-constexpr const char* kReferenceMenuEntry = "Track {0} - {1} (Mat#{2})";
-constexpr const char* kAutoRef = "AUTO Ref";
-constexpr const char* kAutoRefAlignmentFailed = "AUTO Ref alignment failed.";
 constexpr const char* kHostManagedActionPrefix = "In VST3 mode this action is managed by your DAW.\n\n";
 constexpr const char* kVst3ImportAudio = "Please import audio from your DAW in VST3 mode.";
 constexpr const char* kVst3ExportAudio = "Please render/export from your DAW in VST3 mode.";
@@ -726,9 +723,6 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kTrackTarget, "Track {0}", "轨道 {0}", "トラック {0}", "Дорожка {0}", "Pista {0}" },
         { Keys::kBusMasterMix, "Bus (Master Mix)", "总线（主混音）", "バス（マスターミックス）", "Шина (мастер-микс)", "Bus (mezcla maestra)" },
         { Keys::kHelpFileNotFound, "Help file not found: {0}", "找不到帮助文件：{0}", "ヘルプファイルが見つかりません：{0}", "Файл справки не найден: {0}", "No se encontró el archivo de ayuda: {0}" },
-        { Keys::kReferenceMenuEntry, "Track {0} - {1} (Mat#{2})", "轨道 {0} - {1}（Mat#{2}）", "トラック {0} - {1}（Mat#{2}）", "Дорожка {0} — {1} (Mat#{2})", "Pista {0} - {1} (Mat#{2})" },
-        { Keys::kAutoRef, "AUTO Ref", "AUTO Ref", "AUTO Ref", "AUTO Ref", "AUTO Ref" },
-        { Keys::kAutoRefAlignmentFailed, "AUTO Ref alignment failed.", "AUTO Ref 对齐失败。", "AUTO Ref のアライメントに失敗しました。", "Не удалось выполнить выравнивание AUTO Ref.", "Falló la alineación de AUTO Ref." },
         { Keys::kHostManagedActionPrefix, "In VST3 mode this action is managed by your DAW.\n\n", "在 VST3 模式下，此操作由您的 DAW 管理。\n\n", "VST3モードでは、この操作はDAWによって管理されます。\n\n", "В режиме VST3 это действие управляется вашей DAW.\n\n", "En modo VST3, esta acción la gestiona tu DAW.\n\n" },
         { Keys::kVst3ImportAudio, "Please import audio from your DAW in VST3 mode.", "在 VST3 模式下，请从 DAW 导入音频。", "VST3モードではDAWからオーディオをインポートしてください。", "В режиме VST3 импортируйте аудио из DAW.", "Importa audio desde tu DAW en modo VST3." },
         { Keys::kVst3ExportAudio, "Please render/export from your DAW in VST3 mode.", "在 VST3 模式下，请从 DAW 渲染/导出。", "VST3モードではDAWからレンダー/エクスポートしてください。", "В режиме VST3 выполняйте рендеринг/экспорт из DAW.", "Renderiza/exporta desde tu DAW en modo VST3." },
@@ -863,10 +857,8 @@ inline juce::String get(Language lang, const char* key)
         { "Audition with the plugin host transport.", "Audition with the plugin host transport.", "使用插件宿主走带试听。", "プラグインホストのトランスポートで試聴します。", "Прослушивайте с помощью транспорта хоста плагина.", "Escucha con el transporte del host del plugin." },
         { "Options can change the editing mode and enable EQ. Help opens the user guide.", "Options can change the editing mode and enable EQ. Help opens the user guide.", "“选项”可更改编辑模式并启用 EQ。“帮助”可打开用户指南。", "「オプション」では編集モードを変更してEQを有効にできます。「ヘルプ」からユーザーガイドを開けます。", "«Настройки» меняют режим редактирования и включают EQ. «Справка» открывает руководство пользователя.", "Opciones puede cambiar el modo de edición y activar EQ. Ayuda abre la guía del usuario." },
         { "Pitch Detection Model", "Pitch Detection Model", "音高检测模型", "ピッチ検出モデル", "Модель определения высоты тона", "Modelo de detección de tono" },
-        { "Enable Experimental Features (Reference Track, Time Stretch Tool)", "Enable Experimental Features (Reference Track, Time Stretch Tool)", "启用实验性功能（参考轨、伸缩工具）", "実験的機能を有効にする（リファレンストラック、タイムストレッチツール）", "Включить экспериментальные функции (референсная дорожка, инструмент растяжения времени)", "Activar funciones experimentales (pista de referencia, herramienta de estiramiento temporal)" },
-        { "Hint: Reference Track and Time Stretch Tool are still under development and may contain bugs.", "Hint: Reference Track and Time Stretch Tool are still under development and may contain bugs.", "提示：参考轨与伸缩工具目前仍不完善，属于实验性功能，可能存在 Bug。", "ヒント：リファレンストラックとタイムストレッチツールはまだ開発中の実験的機能であり、不具合がある場合があります。", "Примечание: референсная дорожка и инструмент растяжения времени всё ещё находятся в разработке и могут содержать ошибки.", "Aviso: La pista de referencia y la herramienta de estiramiento temporal siguen en desarrollo y pueden contener errores." },
-        { "AUTO Ref Mode", "AUTO Ref Mode", "AUTO Ref 模式", "AUTO Refモード", "Режим AUTO Ref", "Modo AUTO Ref" },
-        { "Standard AUTO", "Standard AUTO", "普通 AUTO", "通常のAUTO", "Обычный AUTO", "AUTO estándar" },
+        { "Enable Experimental Features (Time Stretch Tool)", "Enable Experimental Features (Time Stretch Tool)", "启用实验性功能（伸缩工具）", "実験的機能を有効にする（タイムストレッチツール）", "Включить экспериментальные функции (инструмент растяжения времени)", "Activar funciones experimentales (herramienta de estiramiento temporal)" },
+        { "Hint: Time Stretch Tool is still under development and may contain bugs.", "Hint: Time Stretch Tool is still under development and may contain bugs.", "提示：伸缩工具目前仍不完善，属于实验性功能，可能存在 Bug。", "ヒント：タイムストレッチツールはまだ開発中の実験的機能であり、不具合がある場合があります。", "Примечание: инструмент растяжения времени всё ещё находится в разработке и может содержать ошибки.", "Aviso: La herramienta de estiramiento temporal sigue en desarrollo y puede contener errores." },
         { "Semitones", "Semitones", "半音", "半音", "Полутоны", "Semitonos" },
         { "Cents", "Cents", "音分", "セント", "Центы", "Cents" },
         { "Reset", "Reset", "重置", "リセット", "Сбросить", "Restablecer" },
@@ -896,14 +888,11 @@ inline juce::String get(Language lang, const char* key)
         { "Total audio length is zero or invalid", "Total audio length is zero or invalid", "音频总长度为零或无效", "オーディオの合計長がゼロまたは無効です", "Общая длительность аудио равна нулю или недопустима", "La duración total del audio es cero o no válida" },
         { Keys::kOriginalF0NotReady, "Original Pitch is not ready.", "原始音高尚未就绪。", "元のピッチの準備ができていません。", "Исходная высота тона не готова.", "El tono original no está listo." },
         { "Processing audio", "Processing audio", "正在处理音频", "オーディオを処理しています", "Обработка аудио", "Procesando audio" },
-        { "Analyzing reference Clip", "Analyzing reference Clip", "正在分析参考 Clip", "リファレンスClipを解析しています", "Анализ референсного Clip", "Analizando el Clip de referencia" },
         { "Rendering (", "Rendering (", "渲染中 (", "レンダリング中 (", "Рендеринг (", "Renderizando (" },
         { "Failed to start OriginalF0 analysis.", "Failed to start Original Pitch analysis.", "未能启动原始音高分析。", "元のピッチの解析を開始できませんでした。", "Не удалось запустить анализ исходной высоты тона.", "No se pudo iniciar el análisis del tono original." },
         { Keys::kRenderFailure, "Render Failure", "渲染失败", "レンダリング失敗", "Ошибка рендеринга", "Error de renderizado" },
         { Keys::kRenderFailed, "Render failed", "渲染失败", "レンダリングに失敗しました", "Ошибка рендеринга", "Falló el renderizado" },
         { Keys::kRenderFailureDetail, "Render failed for content {0} in domain {1}; dry audio may be used. Reason: {2}", "内容 {0}（域 {1}）渲染失败，可能使用干声。原因：{2}", "ドメイン {1} のコンテンツ {0} のレンダリングに失敗しました。ドライ音声が使用される場合があります。理由：{2}", "Не удалось отрендерить объект {0} в домене {1}; может использоваться необработанный звук. Причина: {2}", "Falló el renderizado del contenido {0} en el dominio {1}; puede usarse audio sin procesar. Motivo: {2}" },
-        { "Reference Clip AUTO aligns pitch and timing to the reference.", "Reference Clip AUTO aligns pitch and timing to the reference.", "按参考 Clip 自动修音并对齐节奏", "リファレンスClipに合わせてピッチとタイミングを自動調整", "AUTO по референсному Clip корректирует высоту тона и выравнивает ритм.", "AUTO con Clip de referencia ajusta el tono y alinea el ritmo." },
-        { "A reference is bound, but GAME backend/models are unavailable; standard AUTO will run.", "A reference is bound, but GAME backend/models are unavailable; standard AUTO will run.", "已绑定参考源，但当前缺少 GAME backend / models，本次执行普通 AUTO。", "リファレンスは設定されていますが、GAME backend/modelsがないため通常のAUTOを実行します。", "Референс привязан, но GAME backend/models недоступны; будет выполнен обычный AUTO.", "Hay una referencia vinculada, pero no están disponibles GAME backend/models; se ejecutará AUTO estándar." },
         { "AUTO corrects pitch by snapping to nearby scale notes.", "AUTO corrects pitch by snapping to nearby scale notes.", "自动修音（吸附到临近音阶）", "AUTOで近くの音階にスナップしてピッチを補正", "AUTO корректирует высоту тона, привязывая её к ближайшим ступеням гаммы.", "AUTO corrige el tono ajustándolo a las notas cercanas de la escala." },
         { Keys::kPitchShift, "Pitch Shift", "整体移调", "全体のピッチを移調", "Транспонирование", "Transposición" },
         { Keys::kPreferences, "Preferences", "偏好设置", "環境設定", "Настройки", "Preferencias" },
@@ -948,7 +937,6 @@ inline juce::String get(Language lang, const char* key)
         { "Adjust Gain", "Adjust Gain", "调整增益", "ゲインを調整", "Изменить усиление", "Ajustar ganancia" },
         { "Trim Clip", "Trim Clip", "裁剪片段", "クリップをトリミング", "Обрезать клип", "Recortar clip" },
         { "Adjust Fade", "Adjust Fade", "调整淡变", "フェードを調整", "Изменить затухание", "Ajustar fundido" },
-        { "Change Reference Binding", "Change Reference Binding", "调整参考绑定", "リファレンスの割り当てを変更", "Изменить привязку референса", "Cambiar vínculo de referencia" },
         { "Project Operation", "Project Operation", "工程操作", "プロジェクト操作", "Операция с проектом", "Operación del proyecto" },
         { "Another project operation is already in progress.", "Another project operation is already in progress.", "另一个工程操作正在进行中。", "別のプロジェクト操作が進行中です。", "Другая операция с проектом уже выполняется.", "Ya hay otra operación del proyecto en curso." },
         { "Save Project Failed", "Save Project Failed", "保存工程失败", "プロジェクトを保存できませんでした", "Не удалось сохранить проект", "Error al guardar el proyecto" },
@@ -989,12 +977,6 @@ inline juce::String get(Language lang, const char* key)
         { "Save changes to the current project before opening another?", "Save changes to the current project before opening another?", "打开其他工程前，是否保存当前工程的更改？", "別のプロジェクトを開く前に、現在の変更を保存しますか？", "Сохранить изменения текущего проекта перед открытием другого?", "¿Guardar los cambios del proyecto actual antes de abrir otro?" },
         { "Save", "Save", "保存", "保存", "Сохранить", "Guardar" },
         { "Do Not Save", "Do Not Save", "不保存", "保存しない", "Не сохранять", "No guardar" },
-        { "Don't use reference Clip", "Don't use reference Clip", "不使用参考Clip", "リファレンスClipを使用しない", "Не использовать референсный Clip", "No usar el Clip de referencia" },
-        { "Reference Clip", "Reference Clip", "参考 Clip", "リファレンスClip", "Референсный Clip", "Clip de referencia" },
-        { "Unable to clear the current reference Clip binding.", "Unable to clear the current reference Clip binding.", "无法清除当前参考 Clip 绑定。", "現在のリファレンスClipの割り当てを解除できません。", "Не удалось снять текущую привязку референсного Clip.", "No se pudo quitar el vínculo actual del Clip de referencia." },
-        { "That Clip no longer meets the reference binding requirements.", "That Clip no longer meets the reference binding requirements.", "该 Clip 已不满足参考绑定条件。", "そのClipはリファレンスとして割り当てる条件を満たさなくなりました。", "Этот Clip больше не соответствует требованиям для привязки в качестве референса.", "Ese Clip ya no cumple los requisitos para vincularlo como referencia." },
-        { "Select reference Clip", "Select reference Clip", "选择参考Clip", "リファレンスClipを選択", "Выбрать референсный Clip", "Seleccionar Clip de referencia" },
-        { "(No available reference Clips)", "(No available reference Clips)", "（无可用的参考Clip）", "（利用可能なリファレンスClipはありません）", "(Нет доступных референсных Clip)", "(No hay Clips de referencia disponibles)" },
     };
     
     for (const auto& t : translations)

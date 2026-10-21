@@ -192,48 +192,6 @@ public:
     };
 #endif
 
-#if JucePlugin_Build_Standalone
-    struct ReferenceAlignmentResult {
-        enum class Status : uint8_t {
-            Succeeded = 0,
-            TargetPlacementNotFound,
-            NoReferenceBinding,
-            ReferencePlacementNotFound,
-            SelfReference,
-            NoOverlap,
-            TargetAnalysisNotReady,
-            ReferenceAnalysisNotReady,
-            InsufficientFeatures,
-            NoMutation,
-            CommitFailed
-        };
-
-    Status status{Status::CommitFailed};
-    juce::String message;
-    ContentKey targetContentKey;
-    int affectedStartFrame{0};
-    int affectedEndFrame{0};
-
-    bool succeeded() const noexcept { return status == Status::Succeeded; }
-    };
-
-    struct AutoRefAvailability {
-        enum class Status : uint8_t {
-            InvalidSelection = 0,
-            NoReference,
-            Ready
-        };
-
-        Status status{Status::InvalidSelection};
-        juce::String message;
-        uint64_t targetPlacementId{0};
-        uint64_t referencePlacementId{0};
-
-        bool hasReferenceBinding() const noexcept { return referencePlacementId != 0; }
-        bool canRunAutoRef() const noexcept { return status == Status::Ready; }
-    };
-#endif
-
     enum class ReferenceAnalysisPreheatStatus : uint8_t {
         AlreadyReady = 0,
         Queued,
@@ -439,16 +397,6 @@ public:
     void recordControlCall(DiagnosticControlCall controlCall);
 #endif
 
-    struct AnalysisAudioProvider {
-        const float* samples = nullptr;
-        int numSamples = 0;
-        double sampleRate = 0.0;
-        bool valid = false;
-
-        // Owns the source audio for the lifetime of samples.
-        std::shared_ptr<const juce::AudioBuffer<float>> audioBuffer;
-    };
-
 private:
 #if JucePlugin_Build_Standalone
     std::shared_ptr<SourceStore> sourceStore_;
@@ -545,7 +493,6 @@ private:
 
     std::shared_ptr<ResamplingManager> resamplingManager_;
 
-    ExperimentalReferenceAlignMode experimentalReferenceAlignMode_ = ExperimentalReferenceAlignMode::StandardAuto;
     std::unordered_set<ContentKey> pendingTimeToolSeedKeys_; // message-thread only
     std::unordered_map<ContentKey, uint64_t> f0RequestTokens_; // message-thread only
     std::deque<OriginalF0FailureEvent> pendingF0FailureEvents_; // message-thread only
@@ -596,7 +543,6 @@ private:
 
     ContentRenderService* resolveMutableLocalContentRenderService(ContentKey key) const noexcept;
     const ContentRenderService* resolveReadableContentRenderService(ContentKey key) const noexcept;
-    AnalysisAudioProvider resolveAnalysisAudioProvider(ContentKey key);
 
     void analysisFinished(ContentKey key,
                           const ReferenceFeatureSet& result);
@@ -665,7 +611,6 @@ public:
     bool getPlacementById(int trackId, uint64_t placementId, StandaloneArrangement::Placement& out) const;
 #endif
     PitchShiftSettings getPitchShiftSettings(ContentKey key) const;
-    ReferenceFeatureSet getReferenceFeatures(ContentKey key) const;
 
     // ========================================================================
     // Plugin piano roll session memory (message thread only; never serialized)
@@ -678,15 +623,6 @@ public:
 
     // ⚡️ vocal-time-stretch §3.6 — TimeGrid accessors per content
     bool ensureTimeToolAnchorSeed(ContentKey key);
-#if JucePlugin_Build_Standalone
-    AutoRefAvailability queryAutoRefAvailability(uint64_t targetPlacementId) const;
-#endif
-
-    /** 设置当前实验性参考对齐模式。由 UI 首选项变更驱动。 */
-    void setExperimentalReferenceAlignMode(ExperimentalReferenceAlignMode mode)
-    {
-        experimentalReferenceAlignMode_ = mode;
-    }
 
 private:
     void enqueueStage2WhenCanonicalSettled(
@@ -694,7 +630,6 @@ private:
         std::shared_ptr<const EditableContentSnapshot> snapshot,
         std::shared_ptr<const juce::AudioBuffer<float>> audioBuffer,
         double audioSampleRate);
-    ReferenceFeatureProducer resolveReferenceFeatureProducer() const;
     // 纯数据 StandardAuto 特征生产（static：不访问 processor 状态，analysisRevision
     // 由提交方在消息线程固定，worker 只读提交时捕获的不可变 snapshot）。
     static ReferenceFeatureSet buildStandardAutoReferenceFeatureSet(
@@ -921,11 +856,9 @@ public:
     bool generateNotesOnlyByContentKey(ContentKey key, const NoteGeneratorParams& params);
 public:
 
-    ReferenceAnalysisPreheatStatus preheatReferenceAlignmentFeatures(ContentKey key);
+    ReferenceAnalysisPreheatStatus preheatReferenceFeatures(ContentKey key);
 
 #if JucePlugin_Build_Standalone
-    ReferenceAlignmentResult executeReferenceAlignmentForPlacement(uint64_t targetPlacementId);
-
     std::optional<SplitOutcome> splitPlacementAtSeconds(int trackId, int placementIndex, double splitSeconds);
     std::optional<MergeOutcome> mergePlacements(int trackId, uint64_t leadingPlacementId, uint64_t trailingPlacementId, int targetPlacementIndex);
     std::optional<DeleteOutcome> deletePlacement(int trackId, int placementIndex);

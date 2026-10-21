@@ -250,28 +250,4 @@ void FadeChangeAction::redo()
     arr->setPlacementFade(trackId_, placementId_, newFadeIn_, newFadeOut_);
 }
 
-// ============================================================================
-// ReferenceBindingAction
-// ============================================================================
-
-ReferenceBindingAction::ReferenceBindingAction(OpenTuneAudioProcessor& processor,
-                                               int trackId, uint64_t targetPlacementId,
-                                               uint64_t oldReferencePlacementId, uint64_t newReferencePlacementId)
-    : processor_(processor), trackId_(trackId), targetPlacementId_(targetPlacementId)
-    , oldReferencePlacementId_(oldReferencePlacementId), newReferencePlacementId_(newReferencePlacementId)
-{
-}
-
-void ReferenceBindingAction::undo()
-{
-    auto* arr = processor_.getStandaloneArrangement();
-    arr->setPlacementReferencePlacement(trackId_, targetPlacementId_, oldReferencePlacementId_);
-}
-
-void ReferenceBindingAction::redo()
-{
-    auto* arr = processor_.getStandaloneArrangement();
-    arr->setPlacementReferencePlacement(trackId_, targetPlacementId_, newReferencePlacementId_);
-}
-
 } // namespace OpenTune

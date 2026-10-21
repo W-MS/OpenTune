@@ -35,9 +35,6 @@ public:
 
     using AnalysisFunc = std::function<ReferenceFeatureSet(
         const AnalysisJobKey& jobKey)>;
-    using AsyncAnalysisFunc = std::function<void(
-        const AnalysisJobKey& jobKey,
-        std::function<void(ReferenceFeatureSet)> completion)>;
     using CompletionFunc = std::function<void(
         const AnalysisJobKey& jobKey, const ReferenceFeatureSet& result)>;
     using NotificationDispatcher = std::function<void(std::function<void()> task)>;
@@ -49,7 +46,6 @@ public:
     struct ReferenceJob {
         AnalysisJobKey key;
         AnalysisFunc analysis;
-        AsyncAnalysisFunc asyncAnalysis;
         CompletionFunc completion;
 
         bool operator==(const ReferenceJob& rhs) const noexcept
@@ -68,15 +64,10 @@ public:
                         ReferenceFeatureProducer producer,
                         AnalysisFunc analysis, CompletionFunc completion);
 
-    void submitAsyncAnalysis(ContentKey key, int64_t inputFingerprint,
-                             ReferenceFeatureProducer producer,
-                             AsyncAnalysisFunc analysis,
-                             CompletionFunc completion);
-
     void setNotificationDispatcher(NotificationDispatcher dispatcher);
 
     /// 关闭 owner：停止接受提交，清空 pending 与 active，唤醒并 join worker。
-    /// 异步 GAME 任务不在本 worker 上执行；其进程级 owner 继续运行，关闭开始
+    /// 异步任务不在本 worker 上执行；其进程级 owner 继续运行，关闭开始
     /// 后经 owner-free gate 丢弃 completion。
     void shutdown();
 
