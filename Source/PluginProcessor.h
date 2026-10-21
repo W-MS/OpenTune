@@ -172,6 +172,8 @@ namespace Capture {
  * 继承自 juce::AudioProcessor，实现 JUCE 音频插件接口。
  * 管理多轨道、Clip、音高曲线、渲染缓存等核心数据。
  */
+struct ExternalEditDocument;
+
 class OpenTuneAudioProcessor : public juce::AudioProcessor
 #if JucePlugin_Build_Standalone
                              , public juce::AsyncUpdater
@@ -728,6 +730,9 @@ public:
     bool setContentReferenceFeatures(ContentKey key, const ReferenceFeatureSet& features);
 
     bool replaceContentNotesForFullMutation(ContentKey key, std::vector<Note> notes);
+    // Applies notes and the pitch curve from an external editor. The content
+    // audio buffer is left in place and the existing renderer is asked to run.
+    bool applyReturnedExternalEdit(ContentKey key, const ExternalEditDocument& document);
     ContentCommitSnapshot commitContentNotesAndSegments(ContentKey key,
                                         std::vector<Note> notes,
                                         std::vector<PitchCorrectionSegment> segments,

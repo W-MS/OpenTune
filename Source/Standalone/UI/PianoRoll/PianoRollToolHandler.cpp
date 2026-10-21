@@ -289,6 +289,20 @@ void PianoRollToolHandler::mouseMove(const juce::MouseEvent& e)
     }
 }
 
+void PianoRollToolHandler::armTimelineSeek(const juce::MouseEvent& e, bool commit)
+{
+    if (!ctx_.notifyPlayheadChange)
+        return;
+
+    const double time = ctx_.getViewMapper().xToTime(e.x);
+    const double resolved = time >= 0.0 ? time : timelineSeekTime_;
+    if (resolved < 0.0)
+        return;
+
+    timelineSeekTime_ = resolved;
+    ctx_.notifyPlayheadChange(resolved, commit);
+}
+
 void PianoRollToolHandler::mouseDown(const juce::MouseEvent& e)
 {
     ctx_.grabKeyboardFocus();
@@ -311,10 +325,9 @@ void PianoRollToolHandler::mouseDown(const juce::MouseEvent& e)
     constexpr int timelineExtendedHitArea = 20;
     const int timelineBottomExtended = rulerHeight + timelineExtendedHitArea;
     if (e.y < timelineBottomExtended && e.x >= ctx_.getPianoKeyWidth()) {
-        double clickedTime = ctx_.getViewMapper().xToTime(e.x);
-        if (clickedTime >= 0) {
-            ctx_.notifyPlayheadChange(clickedTime);
-        }
+        timelineSeekActive_ = true;
+        timelineSeekTime_ = -1.0;
+        armTimelineSeek(e, false);
         return;
     }
 
@@ -372,6 +385,11 @@ void PianoRollToolHandler::mouseDown(const juce::MouseEvent& e)
 
 void PianoRollToolHandler::mouseDrag(const juce::MouseEvent& e)
 {
+    if (timelineSeekActive_) {
+        armTimelineSeek(e, false);
+        return;
+    }
+
     // 空区拖拽→框选：超过阈值直接启动框选（消除 EmptySpaceMouseIntent 平行路径）
     if (ctx_.getState().emptySpaceIntent.active) {
         const auto& intent = ctx_.getState().emptySpaceIntent;
@@ -481,6 +499,13 @@ void PianoRollToolHandler::mouseDoubleClick(const juce::MouseEvent& e)
 
 void PianoRollToolHandler::mouseUp(const juce::MouseEvent& e)
 {
+    if (timelineSeekActive_) {
+        timelineSeekActive_ = false;
+        if (!e.mods.isPopupMenu())
+            armTimelineSeek(e, true);
+        return;
+    }
+
     if (e.mods.isPopupMenu())
         return;
 
@@ -519,8 +544,8 @@ void PianoRollToolHandler::mouseUp(const juce::MouseEvent& e)
         sel.f0SelectionCurrentFrame = -1;
         if (ctx_.invalidateSelectionFeedback) ctx_.invalidateSelectionFeedback();
 
-        if (intent.mouseDownTime >= 0.0) {
-            ctx_.notifyPlayheadChange(intent.mouseDownTime);
+        if (intent.mouseDownTime >= 0.0 && ctx_.notifyPlayheadChange) {
+            ctx_.notifyPlayheadChange(intent.mouseDownTime, true);
         }
 
         ctx_.getState().emptySpaceIntent.clear();
@@ -998,6 +1023,12 @@ void PianoRollToolHandler::beginEmptySpaceIntent(const juce::MouseEvent& e)
 
 void PianoRollToolHandler::cancelActiveMouseGesture()
 {
+    if (timelineSeekActive_) {
+        timelineSeekActive_ = false;
+        if (timelineSeekTime_ >= 0.0 && ctx_.notifyPlayheadChange)
+            ctx_.notifyPlayheadChange(timelineSeekTime_, true);
+    }
+
     auto& state = ctx_.getState();
     state.resetTransient();
     ctx_.clearNoteDraft();
@@ -2962,7 +2993,7 @@ void PianoRollToolHandler::handleTimeToolMouseDown(const juce::MouseEvent& e)
         // content-local output time.
         const double timelineTime = ctx_.getViewMapper().xToTime(e.x);
         if (timelineTime >= 0.0 && ctx_.notifyPlayheadChange) {
-            ctx_.notifyPlayheadChange(timelineTime);
+            ctx_.notifyPlayheadChange(timelineTime, true);
         }
         if (!e.mods.isShiftDown()) {
             if ((tt.selectedHandleId != 0 || !tt.additionalSelectedIds.empty())

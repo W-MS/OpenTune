@@ -10,6 +10,7 @@
 #include "Editor/PitchShiftDialogContent.h"
 #include "Plugin/Capture/CaptureSession.h"
 #include "Utils/AppLogger.h"
+#include "Utils/ExternalEditSession.h"
 #include "Utils/LocalizationManager.h"
 #include "Utils/EditorUiSync.h"
 #include "Utils/KeyShortcutConfig.h"
@@ -498,16 +499,27 @@ void OpenTuneAudioProcessorEditor::timerCallback()
     if (auto* session = processorRef_.getCaptureSession()) {
         // Sync record button visual state
         using OpenTune::Capture::SessionState;
-        switch (session->getGlobalState()) {
-            case SessionState::Idle:
-                transportBar_.setRecordButtonState(RecordButtonState::Idle);
-                break;
-            case SessionState::HasCapturing:
-                transportBar_.setRecordButtonState(RecordButtonState::Capturing);
-                break;
-            case SessionState::HasProcessing:
-                transportBar_.setRecordButtonState(RecordButtonState::Processing);
-                break;
+        const auto captureState = session->getGlobalState();
+        pianoRoll_.setTrackCaptureTint(captureState == SessionState::HasCapturing);
+        if (captureState == SessionState::HasCapturing)
+            transportBar_.setRecordButtonState(RecordButtonState::Capturing);
+        else if (captureState == SessionState::HasProcessing)
+            transportBar_.setRecordButtonState(RecordButtonState::Processing);
+        else if (session->isScanArmed())
+            transportBar_.setRecordButtonState(RecordButtonState::Armed);
+        else
+            transportBar_.setRecordButtonState(RecordButtonState::Idle);
+    }
+
+    if (externalEditSessionDir_.isDirectory()) {
+        if (auto returned = ExternalEditSession::readIfReturned(externalEditSessionDir_)) {
+            const bool applied = processorRef_.applyReturnedExternalEdit(externalEditContentKey_, *returned);
+            if (applied) {
+                externalEditSessionDir_.deleteRecursively();
+                externalEditSessionDir_ = juce::File();
+                externalEditContentKey_ = {};
+                syncContentProjectionToPianoRoll();
+            }
         }
     }
 
@@ -1300,8 +1312,7 @@ void OpenTuneAudioProcessorEditor::stopRequested()
 void OpenTuneAudioProcessorEditor::surfaceRegularVst3HostControlledTransport(const char* actionName)
 {
     const juce::String action(actionName);
-    const juce::String message = "Regular VST3 " + action + " requested: host-controlled transport";
-    AppLogger::log("VST3Editor: " + message);
+    AppLogger::log("PluginEditor: " + action + " requested: host-controlled transport");
     transportBar_.setRenderStatusText(LOC(kHostControlledTransport));
 }
 
@@ -1375,24 +1386,50 @@ void OpenTuneAudioProcessorEditor::scaleChanged(int rootNote, int scaleType)
 
 
 
+void OpenTuneAudioProcessorEditor::externalEditRequested()
+{
+    if (externalEditSessionDir_.isDirectory()) {
+        ExternalEditSession::launchStandalone(externalEditSessionDir_);
+        return;
+    }
+
+    const auto activeKey = resolveCurrentContentKey();
+    const auto snapshot = processorRef_.getContentSnapshot(activeKey);
+    if (!activeKey.isValid() || snapshot == nullptr || snapshot->audioBuffer == nullptr
+        || snapshot->audioBuffer->getNumSamples() <= 0) {
+        OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
+                                                    LOC(kExternalEdit),
+                                                    LOC(kExternalEditNeedsAudio));
+        return;
+    }
+
+    const auto directory = ExternalEditSession::createSessionDirectory();
+    if (!ExternalEditSession::writeSession(directory, activeKey, *snapshot)
+        || !ExternalEditSession::launchStandalone(directory)) {
+        directory.deleteRecursively();
+        OpenTune::ConfirmDialogContent::showMessage(&contentRoot_,
+                                                    LOC(kExternalEdit),
+                                                    LOC(kExternalEditUnavailable));
+        return;
+    }
+
+    externalEditSessionDir_ = directory;
+    externalEditContentKey_ = activeKey;
+    AppLogger::log("External edit launched " + directory.getFullPathName());
+}
+
 void OpenTuneAudioProcessorEditor::recordRequested()
 {
     if (auto* session = processorRef_.getCaptureSession()) {
         AppLogger::log("VST3 recordRequested mode=regular-vst3 processor="
             + juce::String::toHexString(reinterpret_cast<uintptr_t>(&processorRef_)));
-        using OpenTune::Capture::SessionState;
-        switch (session->getGlobalState()) {
-            case SessionState::Idle:
-                session->armNewCapture();
-                AppLogger::log("VST3 Capture: armNewCapture (regular-vst3 path)");
-                break;
-            case SessionState::HasCapturing:
-                session->stopCapture();
-                AppLogger::log("VST3 Capture: stopCapture (regular-vst3 path)");
-                break;
-            case SessionState::HasProcessing:
-                AppLogger::log("VST3 Capture: ignored (Processing - wait for render)");
-                break;
+        if (session->isScanArmed()) {
+            session->setScanArmed(false);
+            AppLogger::log("VST3 Capture: scan disarmed");
+        } else {
+            session->setScanArmed(true);
+            session->updateTransportScan();
+            AppLogger::log("VST3 Capture: scan armed");
         }
         return;
     }
@@ -1470,13 +1507,22 @@ void OpenTuneAudioProcessorEditor::recordRequested()
 bool OpenTuneAudioProcessorEditor::playheadPositionChangeRequested(double timeSeconds)
 {
 #if JucePlugin_Enable_ARA
-    if (auto* docController = processorRef_.getDocumentController()) {
-        return docController->requestSetPlaybackPosition(timeSeconds);
-    }
+    if (auto* docController = processorRef_.getDocumentController())
+        return docController->requestCommitPlaybackPosition(timeSeconds);
 #endif
-    // Non-ARA VST3: playhead is host-controlled only. Do NOT call setPosition().
-    // the host would ignore it and the next processBlock would overwrite the value.
-    // PianoRoll click/drag on timeline should not change plugin-internal position.
+    // Hosts without a playback controller keep the in-plugin edit cursor.
+    // Do not call setPosition() and do not surface a status warning: the
+    // DAW playhead stays where the user left it.
+    juce::ignoreUnused(timeSeconds);
+    return false;
+}
+
+bool OpenTuneAudioProcessorEditor::playheadPositionPreviewRequested(double timeSeconds)
+{
+#if JucePlugin_Enable_ARA
+    if (auto* docController = processorRef_.getDocumentController())
+        return docController->requestSetPlaybackPosition(timeSeconds);
+#endif
     juce::ignoreUnused(timeSeconds);
     return false;
 }
