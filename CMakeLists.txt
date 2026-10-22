@@ -1219,6 +1219,8 @@ if(WIN32)
     )
 
     add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf
+            "$<TARGET_FILE_DIR:OpenTuneStandalone_Standalone>/models/GAME"
         COMMAND ${CMAKE_COMMAND} -E make_directory
             "$<TARGET_FILE_DIR:OpenTuneStandalone_Standalone>/models"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -1245,6 +1247,8 @@ elseif(APPLE)
     )
 
     add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf
+            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/Contents/Resources/models/GAME"
         COMMAND ${CMAKE_COMMAND} -E make_directory
             "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/Contents/Resources/models"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -1321,6 +1325,8 @@ if(APPLE AND TARGET OpenTuneAU_AU)
     )
 
     add_custom_command(TARGET OpenTuneAU_AU POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf
+            "$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Resources/models/GAME"
         COMMAND ${CMAKE_COMMAND} -E make_directory
             "$<TARGET_BUNDLE_DIR:OpenTuneAU_AU>/Contents/Resources/models"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -1383,6 +1389,8 @@ if(TARGET OpenTune_VST3)
 
         # AI Models (alongside the .vst3)
         add_custom_command(TARGET OpenTune_VST3 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E rm -rf
+                "$<TARGET_FILE_DIR:OpenTune_VST3>/models/GAME"
             COMMAND ${CMAKE_COMMAND} -E make_directory
                 "$<TARGET_FILE_DIR:OpenTune_VST3>/models"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -1411,6 +1419,8 @@ if(TARGET OpenTune_VST3)
 
         # AI Models → Contents/Resources/models/
         add_custom_command(TARGET OpenTune_VST3 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E rm -rf
+                "$<TARGET_BUNDLE_DIR:OpenTune_VST3>/Contents/Resources/models/GAME"
             COMMAND ${CMAKE_COMMAND} -E make_directory
                 "$<TARGET_BUNDLE_DIR:OpenTune_VST3>/Contents/Resources/models"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
