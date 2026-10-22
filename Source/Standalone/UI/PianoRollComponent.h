@@ -98,6 +98,11 @@ public:
     public:
         virtual ~Listener() = default;
         virtual bool playheadPositionChangeRequested(double timeSeconds) = 0;
+        // Drag preview. The default commits immediately so standalone keeps a live seek.
+        virtual bool playheadPositionPreviewRequested(double timeSeconds)
+        {
+            return playheadPositionChangeRequested(timeSeconds);
+        }
         virtual void playPauseToggleRequested() = 0;
         virtual void stopPlaybackRequested() = 0;
         virtual void pitchCurveEdited(int startFrame, int endFrame) { (void)startFrame; (void)endFrame; }
@@ -195,6 +200,8 @@ public:
     void setNoteNameMode(NoteNameMode noteNameMode);
     void setShowUnvoicedFrames(bool shouldShow);
     void setBackgroundBrightness(float brightness);
+    /** Non-ARA capture is writing unscanned host audio. The timeline wash is the activity cue. */
+    void setTrackCaptureTint(bool active);
     void setCorrectedF0Colour(juce::Colour colour);
     void setOriginalF0Colour(juce::Colour colour);
     void setInferenceActive(bool active);
@@ -219,11 +226,10 @@ public:
 
     double consumePendingSeekTime() noexcept
     {
-        // Do NOT reset pendingSeekTime_ here. The paint logic in
-        // PianoRollComponent.cpp clears it when the host actually observes
-        // the seek request (canonicalTime matches or playback starts). Resetting
-        // here would cause a paint cycle to briefly show the old host position
-        // before the seek is processed, resulting in visible playhead jitter.
+        // Do NOT reset pendingSeekTime_ here. The vblank policy clears it when
+        // a later host observation lands near the request, or when the hold
+        // deadline expires. Resetting here would paint the old host position
+        // for a frame and jitter the playhead.
         return pendingSeekTime_;
     }
 
@@ -332,6 +338,7 @@ private:
     // ── 保留表面状态快照 ──────────────────────────────────────
     juce::Image staticSurface_;
     juce::Image labelsSurface_;
+    juce::Image waveformSurface_;
     juce::Image contentSurface_;
     ViewportState surfaceView_;
     bool staticDirty_ = true;
@@ -355,13 +362,18 @@ private:
     int getTimelineContentStartX() const noexcept;
     void rasterizeContent(std::optional<juce::Rectangle<int>> dirtyRect = std::nullopt,
                           std::optional<juce::Rectangle<int>> physicalDirtyRect = std::nullopt);
+    void rasterizeWaveform(std::optional<juce::Rectangle<int>> dirtyRect = std::nullopt,
+                           std::optional<juce::Rectangle<int>> physicalDirtyRect = std::nullopt);
 
     // ── 按坐标域拆分的唯一绘制函数（raster target 与 preview target 共用） ──
     void drawFixedChrome(juce::Graphics& g, juce::Rectangle<int> damage);
     void drawRuler(juce::Graphics& g, const ViewportState& view, juce::Rectangle<int> damage);
     void drawPitchBackground(juce::Graphics& g, const ViewportState& view, juce::Rectangle<int> damage);
     void drawPianoKeyboard(juce::Graphics& g, const ViewportState& view, juce::Rectangle<int> damage);
-    void drawContent(juce::Graphics& g, const ViewportState& view, juce::Rectangle<int> damage);
+    enum class ContentLayer { Notes, Waveform, All };
+
+    void drawContent(juce::Graphics& g, const ViewportState& view, juce::Rectangle<int> damage,
+                     ContentLayer layer = ContentLayer::All);
 
     // ── 性能探针 ──────────────────────────────────────────────
     struct RasterProbe { int count = 0; double totalMs = 0.0; };
@@ -380,6 +392,9 @@ private:
 
     // ── 保留式相机更新 ────────────────────────────────────────
     void applyRasterCamera(const TimelineViewportCamera& newCamera);
+    void applyVerticalPan();
+    void handleHorizontalScrollPixels(double pixelDelta);
+    void handleVerticalScrollPixels(double pixelDelta);
 
     // ── 缩放事务 ──────────────────────────────────────────────
     void beginZoomPreview(const juce::MouseEvent& e, float deltaY);
@@ -427,6 +442,7 @@ private:
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseDoubleClick(const juce::MouseEvent& e) override;
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
+    void mouseMagnify(const juce::MouseEvent& e, float scaleFactor) override;
 public:
     bool keyPressed(const juce::KeyPress& key) override;
 
@@ -698,7 +714,11 @@ private:
 
     double playheadTimeForPaint_ = 0.0;
     double pendingSeekTime_ = -1.0;  // -1.0 sentinel: no pending seek
+    double pendingSeekIssuedAtSeconds_ = 0.0;
+    double pendingSeekHostTimeAtGesture_ = 0.0;
     uint64_t pendingSeekEpoch_ = 0;
+    bool pendingSeekHostBound_ = false;
+    bool trackCaptureTint_ = false;
 
     juce::ListenerList<Listener> listeners_;
     

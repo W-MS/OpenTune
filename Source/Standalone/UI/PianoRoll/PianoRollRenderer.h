@@ -59,6 +59,7 @@ public:
         ContentTimelineProjection projection;
         std::shared_ptr<const TimeGridSnapshot> timeGrid;
         std::shared_ptr<const juce::AudioBuffer<float>> audioBuffer;
+        double audioSampleRate = 0.0;
         std::shared_ptr<const PitchCurveSnapshot> pitchSnapshot;
         F0Timeline f0Timeline;
         std::shared_ptr<const EditableContentSnapshot> ownerSnapshot;

@@ -101,13 +101,13 @@ bool testShortcutDefaults()
 #if JUCE_MAC
     const auto transportModifiers = juce::ModifierKeys::commandModifier
         | juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier;
-    const KeyBinding playPauseBinding(juce::KeyPress::spaceKey, transportModifiers);
+    const KeyBinding playPauseBinding(juce::KeyPress::spaceKey, {});
     if (!getShortcutBinding(settings, ShortcutId::PlayPause).hasBinding(
             playPauseBinding)
         || !getShortcutBinding(settings, ShortcutId::Stop).hasBinding(KeyBinding('.', transportModifiers))
         || !getShortcutBinding(settings, ShortcutId::PlayFromStart).hasBinding(
             KeyBinding(juce::KeyPress::returnKey, transportModifiers))
-        || toCanonicalString(playPauseBinding) != "Cmd+Alt+Shift+Space")
+        || toCanonicalString(playPauseBinding) != "Space")
         return false;
 
     if (deleteBindings.hasBinding(KeyBinding('1', {}))
@@ -237,7 +237,7 @@ bool testLegacyShortcutMigration()
         juce::PropertiesFile migratedSettings(propertiesOptions);
         OpenTune::KeyShortcutConfig::ShortcutBinding persistedHorizontalZoom;
         OpenTune::KeyShortcutConfig::ShortcutBinding persistedVerticalZoomIn;
-        persistedMigration = migratedSettings.getIntValue("shared.shortcuts.schemaVersion", 0) == 2
+        persistedMigration = migratedSettings.getIntValue("shared.shortcuts.schemaVersion", 0) == 3
             && OpenTune::KeyShortcutConfig::parseShortcutBinding(
                 migratedSettings.getValue("shared.shortcuts.zoomHorizontalIn", {}),
                 persistedHorizontalZoom)
@@ -322,7 +322,7 @@ bool testMacShortcutDefaultMigration()
         OpenTune::KeyShortcutConfig::ShortcutBinding verticalZoomIn;
         OpenTune::KeyShortcutConfig::ShortcutBinding verticalZoomOut;
         OpenTune::KeyShortcutConfig::ShortcutBinding customSelect;
-        migrated = migratedSettings.getIntValue("shared.shortcuts.schemaVersion", 0) == 2
+        migrated = migratedSettings.getIntValue("shared.shortcuts.schemaVersion", 0) == 3
             && OpenTune::KeyShortcutConfig::parseShortcutBinding(
                 migratedSettings.getValue("shared.shortcuts.delete", {}), deleteBindings)
             && OpenTune::KeyShortcutConfig::parseShortcutBinding(
@@ -362,7 +362,7 @@ bool testMacShortcutDefaultMigration()
             })
             && hasExactly(handDraw, { { 'H', {} } })
             && hasExactly(autoTune, { { 'A', {} } })
-            && hasExactly(playPause, { { juce::KeyPress::spaceKey, transportModifiers } })
+            && hasExactly(playPause, { { juce::KeyPress::spaceKey, {} } })
             && hasExactly(stop, { { '.', transportModifiers } })
             && hasExactly(playFromStart, { { juce::KeyPress::returnKey, transportModifiers } })
             && hasExactly(horizontalZoomIn, {
@@ -438,6 +438,33 @@ bool testMacShortcutDefaultMigration()
             && !handDraw.hasBinding({ '5', {} });
     }
     migrated = migrated && preservedCustomBinding;
+
+    bool restoredSpacePlay = false;
+    {
+        juce::PropertiesFile previousDefault(propertiesOptions);
+        previousDefault.setValue("shared.shortcuts.schemaVersion", 2);
+        previousDefault.setValue("shared.shortcuts.playPause", "Cmd+Shift+Alt+Space");
+        previousDefault.setValue("shared.shortcuts.stop", "Ctrl+S");
+        restoredSpacePlay = previousDefault.save();
+    }
+    if (restoredSpacePlay) {
+        {
+            OpenTune::AppPreferences preferences(storageOptions);
+        }
+        juce::PropertiesFile restoredSettings(propertiesOptions);
+        OpenTune::KeyShortcutConfig::ShortcutBinding playPause;
+        OpenTune::KeyShortcutConfig::ShortcutBinding stop;
+        restoredSpacePlay = restoredSettings.getIntValue("shared.shortcuts.schemaVersion", 0) == 3
+            && OpenTune::KeyShortcutConfig::parseShortcutBinding(
+                restoredSettings.getValue("shared.shortcuts.playPause", {}), playPause)
+            && playPause.bindings.size() == 1
+            && playPause.hasBinding({ juce::KeyPress::spaceKey, {} })
+            && OpenTune::KeyShortcutConfig::parseShortcutBinding(
+                restoredSettings.getValue("shared.shortcuts.stop", {}), stop)
+            && stop.bindings.size() == 1
+            && stop.hasBinding({ 'S', juce::ModifierKeys::ctrlModifier });
+    }
+    migrated = migrated && restoredSpacePlay;
 #endif
     temporaryDirectory.deleteRecursively();
     return migrated;

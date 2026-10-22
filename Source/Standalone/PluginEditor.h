@@ -35,6 +35,7 @@
 #include "Editor/AutoRenderOverlayComponent.h"
 #include "../Editor/RenderBadgeComponent.h"
 #include "Utils/PitchShiftSettings.h"
+#include "Utils/ExternalEditSession.h"
 #include "Utils/AppPreferences.h"
 #include "Utils/CursorTheme.h"
 #include "Utils/TimelineDisplayMode.h"
@@ -128,6 +129,7 @@ public:
     void timeSignatureChanged(int numerator, int denominator) override;
     void scaleChanged(int rootNote, int scaleType) override;
     void viewToggled(bool workspaceView) override;
+    void saveAndReturnRequested() override;
 
     // TrackPanelComponent::Listener
     void trackSelected(int trackId) override;
@@ -279,6 +281,10 @@ private:
     int nextImportBatchId_{1};
 
     bool isWorkspaceView_ = true;
+    bool externalEditActive_ = false;
+    juce::File externalEditSessionDir_;
+    std::optional<ExternalEditDocument> externalEditDocument_;
+    void beginExternalEditSession();
 
     // 现代布局：左右面板可折叠（用于“沉浸主画布”模式）
     bool isTrackPanelVisible_ = true;

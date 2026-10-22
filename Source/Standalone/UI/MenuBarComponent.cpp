@@ -78,6 +78,14 @@ void MenuBarComponent::setScaleAssistEnabled(bool enabled)
     menuItemsChanged();
 }
 
+void MenuBarComponent::setProfile(Profile profile)
+{
+    if (profile_ == profile)
+        return;
+    profile_ = profile;
+    menuItemsChanged();
+}
+
 juce::StringArray MenuBarComponent::getMenuBarNames()
 {
     return { LOC(kFile), LOC(kEdit), LOC(kView) };

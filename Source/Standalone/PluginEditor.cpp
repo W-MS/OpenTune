@@ -848,6 +848,8 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
         processorRef_.resetInferenceBackend(true, std::move(applyF0Model));
     else
         applyF0Model();
+
+    beginExternalEditSession();
 }
 
 OpenTuneAudioProcessorEditor::~OpenTuneAudioProcessorEditor()
@@ -1140,6 +1142,8 @@ bool OpenTuneAudioProcessorEditor::shouldAcceptUndoRedoShortcut()
 
 bool OpenTuneAudioProcessorEditor::isInterestedInFileDrag(const juce::StringArray& files)
 {
+    if (externalEditActive_)
+        return false;
     if (onboardingOverlay_ != nullptr && onboardingOverlay_->isActive())
         return false;
 
@@ -1155,6 +1159,8 @@ bool OpenTuneAudioProcessorEditor::isInterestedInFileDrag(const juce::StringArra
 
 void OpenTuneAudioProcessorEditor::filesDropped(const juce::StringArray& files, int x, int y)
 {
+    if (externalEditActive_)
+        return;
     if (onboardingOverlay_ != nullptr && onboardingOverlay_->isActive())
         return;
 
@@ -1572,7 +1578,7 @@ void OpenTuneAudioProcessorEditor::timerCallback()
         && isShowing() && getPeer() != nullptr && getWidth() > 0 && getHeight() > 0
         && juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0
         && !projectOperationBusy_ && !isImportInProgress_ && !exportInProgress_.load()
-        && !originalF0OverlayLatched_)
+        && !originalF0OverlayLatched_ && !externalEditActive_)
     {
         onboardingRequested();
     }
@@ -1590,10 +1596,14 @@ void OpenTuneAudioProcessorEditor::timerCallback()
     pianoRoll_.onHeartbeatTick();
 
     if (pianoRoll_.isShowing()) {
+        double overviewSampleRate = 0.0;
+        if (const auto snap = processorRef_.getContentSnapshot(pianoRoll_.editedContentKey()))
+            overviewSampleRate = snap->audioSampleRate;
         overviewStrip_.onHeartbeatTick(pianoRoll_.editedContentKey(),
                                        pianoRoll_.activeContentProjection(),
                                        pianoRoll_.timelineCamera(),
-                                       pianoRoll_.timelinePolicyViewportWidth());
+                                       pianoRoll_.timelinePolicyViewportWidth(),
+                                       overviewSampleRate);
     }
 
     const bool allowSecondaryRefresh = !inferenceActive_ || ((++inferenceActiveTickCounter_ % 4) == 0);
@@ -2088,8 +2098,58 @@ enum class ImportMode
     SeparateTracks  // 分别导入到多个轨道（齐头）
 };
 
+void OpenTuneAudioProcessorEditor::beginExternalEditSession()
+{
+    externalEditSessionDir_ = ExternalEditSession::sessionDirectoryFromCommandLine();
+    if (!externalEditSessionDir_.isDirectory())
+        return;
+
+    auto document = ExternalEditSession::readDocument(externalEditSessionDir_);
+    if (!document.has_value() || !ExternalEditSession::audioFile(externalEditSessionDir_).existsAsFile())
+        return;
+
+    externalEditActive_ = true;
+    externalEditDocument_ = std::move(document);
+    menuBar_.setProfile(MenuBarComponent::Profile::Plugin);
+    transportBar_.setLayoutProfile(TransportBarComponent::LayoutProfile::ExternalEdit);
+    isTrackPanelVisible_ = false;
+    topBar_.setTrackPanelToggleVisible(false);
+    isWorkspaceView_ = false;
+    transportBar_.setWorkspaceView(false);
+    arrangementView_.setVisible(false);
+    pianoRoll_.setVisible(true);
+    overviewStrip_.setVisible(true);
+    importAudioFileToTrack(0, ExternalEditSession::audioFile(externalEditSessionDir_), 0.0);
+    resized();
+}
+
+void OpenTuneAudioProcessorEditor::saveAndReturnRequested()
+{
+    if (!externalEditActive_ || !externalEditSessionDir_.isDirectory())
+        return;
+
+    ContentKey key;
+    if (auto* arrangement = processorRef_.getStandaloneArrangement()) {
+        StandaloneArrangement::Placement placement;
+        if (arrangement->getPlacementByIndex(0, 0, placement))
+            key = placement.contentKey;
+    }
+    const auto snapshot = processorRef_.getContentSnapshot(key);
+    if (snapshot == nullptr || !ExternalEditSession::writeReturn(externalEditSessionDir_, *snapshot)) {
+        ConfirmDialogContent::showMessage(&contentRoot_,
+                                          LOC(kSaveAndReturn),
+                                          LOC(kExternalEditNeedsAudio));
+        return;
+    }
+
+    if (auto* app = juce::JUCEApplicationBase::getInstance())
+        app->quit();
+}
+
 void OpenTuneAudioProcessorEditor::importAudioRequested()
 {
+    if (externalEditActive_)
+        return;
 // Direct file chooser dialog with multi-select support
 // Import destination track determined by currently selected track
     DBG("OpenTuneAudioProcessorEditor::importAudioRequested called");
@@ -2357,8 +2417,26 @@ void OpenTuneAudioProcessorEditor::startPendingImport(PendingImport pendingImpor
                     safeThis->releaseImportBatchSlot(pendingImport.batchId);
 
                     safeThis->arrangementView_.requestContentRedraw();
-                    safeThis->arrangementView_.grabKeyboardFocus();
                     safeThis->applyPlacementSelectionContext(placement.trackId, committedPlacement.placementId);
+
+                    if (safeThis->externalEditActive_ && safeThis->externalEditDocument_.has_value()) {
+                        const auto& handedOff = *safeThis->externalEditDocument_;
+                        safeThis->processorRef_.applyReturnedExternalEdit(
+                            committedPlacement.contentKey, handedOff);
+                        const bool hasPlayableCurve = handedOff.pitchCurve != nullptr
+                            && handedOff.pitchCurve->hasUsableOriginalF0();
+                        if (!hasPlayableCurve) {
+                            OpenTuneAudioProcessor::ContentRefreshRequest refreshRequest;
+                            refreshRequest.contentKey = committedPlacement.contentKey;
+                            safeThis->processorRef_.requestContentRefresh(refreshRequest);
+                        }
+                        safeThis->viewToggled(false);
+                        safeThis->pianoRoll_.grabKeyboardFocus();
+                        safeThis->processNextImportInQueue();
+                        return;
+                    }
+
+                    safeThis->arrangementView_.grabKeyboardFocus();
 
                     OpenTuneAudioProcessor::ContentRefreshRequest refreshRequest;
                     refreshRequest.contentKey = committedPlacement.contentKey;
@@ -2659,6 +2737,8 @@ void OpenTuneAudioProcessorEditor::saveProjectRequested()
 
 void OpenTuneAudioProcessorEditor::openProjectRequested()
 {
+    if (externalEditActive_)
+        return;
     if (rejectProjectOperationIfBusy())
         return;
 
@@ -3148,6 +3228,8 @@ void OpenTuneAudioProcessorEditor::timelineDisplayModeChanged(TimelineDisplayMod
 
 void OpenTuneAudioProcessorEditor::viewToggled(bool workspaceView)
 {
+    if (externalEditActive_)
+        workspaceView = false;
     // Capture the timeline camera from the outgoing view before toggling visibility.
     const TimelineViewportCamera camera = isWorkspaceView_
         ? arrangementView_.timelineCamera()

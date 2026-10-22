@@ -42,7 +42,8 @@ constexpr const char* kSharedOnboardingShownKey = "shared.onboardingShown";
 constexpr const char* kPluginEditorSizeKey = "defaultSize";
 constexpr const char* kShortcutSchemaVersionKey = "shared.shortcuts.schemaVersion";
 constexpr int kShortcutMouseSchemaVersion = 1;
-constexpr int kShortcutSchemaVersion = 2;
+constexpr int kShortcutMacModifierSchemaVersion = 2;
+constexpr int kShortcutSchemaVersion = 3;
 
 juce::File resolveSettingsDirectory(const AppPreferences::StorageOptions& storageOptions)
 {
@@ -264,7 +265,8 @@ KeyShortcutConfig::KeyShortcutSettings decodeShortcutSettings(const juce::Proper
     const int storedSchemaVersion = properties.getIntValue(kShortcutSchemaVersionKey, 0);
     const bool migrateMouseDefaults = storedSchemaVersion < kShortcutMouseSchemaVersion;
 #if JUCE_MAC
-    const bool migrateMacDefaultShortcuts = storedSchemaVersion < kShortcutSchemaVersion;
+    const bool migrateMacDefaultShortcuts = storedSchemaVersion < kShortcutMacModifierSchemaVersion;
+    const bool restoreMacSpacePlay = storedSchemaVersion < kShortcutSchemaVersion;
 #endif
 
     for (const auto& info : KeyShortcutConfig::kShortcutInfos) {
@@ -323,6 +325,17 @@ KeyShortcutConfig::KeyShortcutSettings decodeShortcutSettings(const juce::Proper
                 else if (info.id == KeyShortcutConfig::ShortcutId::ZoomVerticalOut)
                     replaceBinding({ juce::KeyPress::downKey, zoomModifiers },
                                    { juce::KeyPress::downKey, transportModifiers });
+            }
+            if (restoreMacSpacePlay && info.id == KeyShortcutConfig::ShortcutId::PlayPause) {
+                const auto previousDefault = juce::ModifierKeys::commandModifier
+                    | juce::ModifierKeys::altModifier
+                    | juce::ModifierKeys::shiftModifier;
+                const KeyShortcutConfig::KeyBinding previousPlay(
+                    juce::KeyPress::spaceKey, previousDefault);
+                if (decoded.hasBinding(previousPlay)) {
+                    decoded.removeBinding(previousPlay);
+                    decoded.addBinding({ juce::KeyPress::spaceKey, {} });
+                }
             }
 #endif
             settings.bindings[static_cast<size_t>(info.id)] = std::move(decoded);

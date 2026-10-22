@@ -105,6 +105,7 @@ public:
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseDoubleClick(const juce::MouseEvent& e) override;
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
+    void mouseMagnify(const juce::MouseEvent& e, float scaleFactor) override;
     bool keyPressed(const juce::KeyPress& key) override;
     bool handleViewportShortcut(const juce::KeyPress& key);
     bool dispatchPointerShortcut(const KeyShortcutConfig::KeyBinding& binding)

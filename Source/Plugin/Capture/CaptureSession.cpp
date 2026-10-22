@@ -3,6 +3,7 @@
 
 #include "CaptureCompactor.h"
 #include "CapturePersistence.h"
+#include "CaptureScanPlan.h"
 #include "../../Content/EditableContentSnapshot.h"
 #include "../../Utils/AppLogger.h"
 #include "../../Utils/ChannelLayoutLogger.h"
@@ -104,10 +105,11 @@ bool CaptureSession::armNewCapture()
             }
         }
 
-        // Reject if any Capturing, Pending, or Processing segment exists.
+        // A take that is still capturing or waiting to drain blocks a new arm.
+        // Processing may overlap the next gap so rendering does not stall the scan.
         for (const auto& seg : mutableSegments_) {
             const auto s = seg->state.load(std::memory_order_acquire);
-            if (s == SegmentState::Capturing || s == SegmentState::Pending || s == SegmentState::Processing) {
+            if (s == SegmentState::Capturing || s == SegmentState::Pending) {
                 AppLogger::warn("CaptureSession::armNewCapture rejected: existing segment state="
                                 + juce::String(static_cast<int>(s)));
                 return false;
@@ -165,6 +167,54 @@ void CaptureSession::stopCapture()
     publishSegmentsView();
 }
 
+void CaptureSession::setScanArmed(bool armed)
+{
+    scanArmed_.store(armed, std::memory_order_release);
+    if (!armed)
+        stopCapture();
+}
+
+void CaptureSession::updateTransportScan()
+{
+    const int64_t sample = lastHostSample_.load(std::memory_order_acquire);
+    const bool playing = lastHostPlaying_.load(std::memory_order_acquire);
+
+    bool capturing = false;
+    bool pending = false;
+    bool covered = false;
+    if (const auto view = std::atomic_load(&publishedSegments_)) {
+        for (auto* seg : view->snapshot) {
+            if (seg == nullptr)
+                continue;
+            const auto state = seg->state.load(std::memory_order_acquire);
+            if (state == SegmentState::Capturing)
+                capturing = true;
+            else if (state == SegmentState::Pending)
+                pending = true;
+            else if (state == SegmentState::Edited && sample >= 0 && seg->containsAbsoluteSample(sample))
+                covered = true;
+        }
+    }
+
+    ScanTransportInput input;
+    input.scanArmed = scanArmed_.load(std::memory_order_acquire);
+    input.hostPlaying = playing && sample >= 0;
+    input.positionCovered = covered;
+    input.capturing = capturing;
+    input.pending = pending;
+
+    switch (decideScanTransport(input)) {
+        case ScanTransportAction::Stop:
+            stopCapture();
+            break;
+        case ScanTransportAction::Arm:
+            armNewCapture();
+            break;
+        case ScanTransportAction::Hold:
+            break;
+    }
+}
+
 // ─── Audio thread ─────────────────────────────────────────────────────────
 
 void CaptureSession::processBlock(juce::AudioBuffer<float>& buffer,
@@ -172,6 +222,11 @@ void CaptureSession::processBlock(juce::AudioBuffer<float>& buffer,
                                   double hostSampleRate,
                                   bool isPlaying) noexcept
 {
+    if (hostAbsoluteSample >= 0) {
+        lastHostSample_.store(hostAbsoluteSample, std::memory_order_release);
+        lastHostPlaying_.store(isPlaying, std::memory_order_release);
+    }
+
     auto view = std::atomic_load(&publishedSegments_);
     if (view == nullptr || view->snapshot.empty())
         return;  // No segments → dry pass-through
@@ -248,6 +303,44 @@ void CaptureSession::processBlock(juce::AudioBuffer<float>& buffer,
         if (seg->state.load(std::memory_order_acquire) != SegmentState::Capturing)
             continue;
 
+        // Skip samples already stored in an Edited take or in this take's spans,
+        // so a loop does not write the same host time twice.
+        constexpr int kMaxCovered = 64;
+        HostSampleRange covered[kMaxCovered];
+        int coveredCount = 0;
+        const int64_t blockEnd = hostAbsoluteSample + static_cast<int64_t>(numSamples);
+        auto pushCovered = [&](int64_t start, int64_t count) noexcept {
+            if (coveredCount >= kMaxCovered || count <= 0)
+                return;
+            const int64_t end = start + count;
+            if (end <= hostAbsoluteSample || start >= blockEnd)
+                return;
+            covered[coveredCount].start = start;
+            covered[coveredCount].count = count;
+            ++coveredCount;
+        };
+        for (auto* other : view->snapshot) {
+            if (other == nullptr || other == seg)
+                continue;
+            if (other->state.load(std::memory_order_acquire) != SegmentState::Edited)
+                continue;
+            pushCovered(other->hostStartSample.load(std::memory_order_acquire),
+                        other->hostSampleCount.load(std::memory_order_acquire));
+        }
+        const int spanCount = juce::jmin(seg->numSpans.load(std::memory_order_acquire),
+                                          static_cast<int>(seg->spans.size()));
+        for (int spanIndex = 0; spanIndex < spanCount; ++spanIndex) {
+            const auto& existing = seg->spans[static_cast<size_t>(spanIndex)];
+            pushCovered(existing.hostStartSample, static_cast<int64_t>(existing.sampleCount));
+        }
+
+        BlockSampleRun runs[kMaxCovered + 1];
+        const int runCount = collectUncoveredRuns(hostAbsoluteSample, numSamples,
+                                                   covered, coveredCount,
+                                                   runs, kMaxCovered + 1);
+        if (runCount <= 0)
+            break;
+
         // CAS writer-active: only one writer (audio thread) at a time.
         {
             bool expected = false;
@@ -263,24 +356,30 @@ void CaptureSession::processBlock(juce::AudioBuffer<float>& buffer,
 
         // --- Capture write path. All exits must release writerActive. ---
         bool wroteBlock = false;
-        do {
-            // --- Span tracking ---
+        float blockPeak = 0.0f;
+        const int chCount = juce::jmin(seg->captureChannels, copyChannels, 32);
+        for (int runIndex = 0; runIndex < runCount; ++runIndex) {
+            const BlockSampleRun& run = runs[runIndex];
+            if (run.sampleCount <= 0)
+                continue;
+
+            const int64_t runHost = hostAbsoluteSample + static_cast<int64_t>(run.blockOffset);
             const int curSpans = seg->numSpans.load(std::memory_order_relaxed);
             int activeSpanIndex = -1;
             int spanOffset = seg->fifo.getTotalWrittenSamples();
             if (curSpans == 0) {
                 activeSpanIndex = 0;
+            } else if (curSpans > static_cast<int>(seg->spans.size())) {
+                break;
             } else {
-                auto& lastSpan = seg->spans[curSpans - 1];
+                auto& lastSpan = seg->spans[static_cast<size_t>(curSpans - 1)];
                 const int64_t expectedNext = lastSpan.hostStartSample
                                            + static_cast<int64_t>(lastSpan.sampleCount);
-                if (hostAbsoluteSample != expectedNext) {
-                    // Discontinuity (loop/seek): start new span within capacity.
+                if (runHost != expectedNext) {
                     if (curSpans < static_cast<int>(seg->spans.size())) {
                         activeSpanIndex = curSpans;
                         spanOffset = seg->fifo.getTotalWrittenSamples();
                     } else {
-                        // Span capacity exhausted: do not write — metadata cannot track it.
                         break;
                     }
                 } else {
@@ -288,46 +387,44 @@ void CaptureSession::processBlock(juce::AudioBuffer<float>& buffer,
                 }
             }
 
-            // --- Write PCM to FIFO, only count accepted samples ---
             const float* srcPtrs[32];
-            const int chCount = juce::jmin(seg->captureChannels, copyChannels, 32);
             for (int ch = 0; ch < chCount; ++ch)
-                srcPtrs[ch] = dryScratch_.getReadPointer(ch);
+                srcPtrs[ch] = dryScratch_.getReadPointer(ch) + run.blockOffset;
 
-            const int accepted = seg->fifo.write(srcPtrs, chCount, numSamples);
+            const int accepted = seg->fifo.write(srcPtrs, chCount, run.sampleCount);
+            if (accepted <= 0)
+                break;
 
-            if (accepted > 0) {
-                auto& span = seg->spans[activeSpanIndex];
-                if (activeSpanIndex == curSpans) {
-                    span.hostStartSample = hostAbsoluteSample;
-                    span.pcmOffsetSamples = spanOffset;
-                    span.sampleCount = accepted;
-                    seg->numSpans.store(curSpans + 1, std::memory_order_release);
-                    if (curSpans == 0) {
-                        seg->hostStartSample.store(hostAbsoluteSample, std::memory_order_release);
-                        seg->anchored.store(true, std::memory_order_release);
-                    }
-                } else {
-                    span.sampleCount += accepted;
+            auto& span = seg->spans[static_cast<size_t>(activeSpanIndex)];
+            if (activeSpanIndex == curSpans) {
+                span.hostStartSample = runHost;
+                span.pcmOffsetSamples = spanOffset;
+                span.sampleCount = accepted;
+                seg->numSpans.store(curSpans + 1, std::memory_order_release);
+                if (curSpans == 0) {
+                    seg->hostStartSample.store(runHost, std::memory_order_release);
+                    seg->anchored.store(true, std::memory_order_release);
                 }
-                wroteBlock = true;
+            } else {
+                span.sampleCount += accepted;
             }
-        } while (false);
+            wroteBlock = true;
 
-        // Release writer-active.
+            for (int ch = 0; ch < chCount; ++ch) {
+                const float* src = srcPtrs[ch];
+                for (int s = 0; s < accepted; ++s) {
+                    const float a = std::abs(src[s]);
+                    if (a > blockPeak)
+                        blockPeak = a;
+                }
+            }
+            if (accepted < run.sampleCount)
+                break;
+        }
+
         seg->writerActive.store(false, std::memory_order_release);
 
         if (wroteBlock) {
-            // Diagnostic: track peak level.
-            float blockPeak = 0.0f;
-            const int chCount = juce::jmin(seg->captureChannels, copyChannels, 32);
-            for (int ch = 0; ch < chCount; ++ch) {
-                const float* src = dryScratch_.getReadPointer(ch);
-                for (int s = 0; s < numSamples; ++s) {
-                    const float a = std::abs(src[s]);
-                    if (a > blockPeak) blockPeak = a;
-                }
-            }
             const float prevPeak = seg->observedPeak.load(std::memory_order_relaxed);
             if (blockPeak > prevPeak)
                 seg->observedPeak.store(blockPeak, std::memory_order_relaxed);

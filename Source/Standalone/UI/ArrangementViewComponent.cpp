@@ -8,11 +8,13 @@
 #include "TimelineLayerComposer.h"
 #include "../Utils/ZoomSensitivityConfig.h"
 #include "../../Utils/KeyShortcutConfig.h"
+#include "../../Utils/MagnifyZoom.h"
 #include "../../Utils/PlacementActions.h"
 #include "../../Utils/PlacementClipboard.h"
 #include "../../Utils/LocalizationManager.h"
 #include "../../Utils/SnapUtils.h"
 #include "../../Utils/TrackConstants.h"
+#include "../../Utils/WaveformTime.h"
 #include "../StandaloneArrangementHelpers.h"
 
 #include <algorithm>
@@ -43,6 +45,7 @@ struct ArrangementClipPaintInput {
     double durationSeconds = 0.0;
     double pixelsPerSecond = 1.0;
     std::shared_ptr<const TimeGridSnapshot> timeGrid;
+    double audioSampleRate = 0.0;
 };
 
 juce::String formatGainLabel(float gain)
@@ -96,7 +99,7 @@ static void paintHistoricalClipWaveform(juce::Graphics& g,
     const float midY = static_cast<float>(waveformBounds.getCentreY());
     const float halfH = waveformBounds.getHeight() * 0.45f;
     const int samplesPerPeak = WaveformMipmap::kSamplesPerPeak[levelIndex];
-    const double timePerPeak = static_cast<double>(samplesPerPeak) / WaveformMipmap::kBaseSampleRate;
+    const double timePerPeak = waveformSecondsPerPeak(samplesPerPeak, clip.audioSampleRate);
     const double timelineEndSeconds = clip.timelineStartSeconds + clip.durationSeconds;
     const auto& timeGrid = clip.timeGrid;
 
@@ -411,7 +414,8 @@ std::vector<ArrangementClipPaintInput> collectVisibleArrangementClips(const Stan
                 placement.timelineStartSeconds,
                 placement.durationSeconds,
                 pixelsPerSecond,
-                snapshot->timeGrid
+                snapshot->timeGrid,
+                snapshot->audioSampleRate
             });
         }
     }
@@ -1773,7 +1777,8 @@ void ArrangementViewComponent::drawMoveDragOverlay(juce::Graphics& g)
             target.startSeconds,
             state.durationSeconds,
             camera_.pixelsPerSecond,
-            snapshot->timeGrid
+            snapshot->timeGrid,
+            snapshot->audioSampleRate
         };
         paintHistoricalClipShellAndWaveform(g, clip, waveformMipmapCache_);
         paintHistoricalClipTextFadeGain(g, clip);
@@ -2677,6 +2682,17 @@ void ArrangementViewComponent::mouseWheelMove(const juce::MouseEvent& e, const j
             camera_.pixelsPerSecond);
         commitViewportRequest(req);
     }
+}
+
+void ArrangementViewComponent::mouseMagnify(const juce::MouseEvent& e, float scaleFactor)
+{
+    const auto zoom = magnifyScaleToZoom(scaleFactor);
+    if (!zoom.apply || camera_.pixelsPerSecond <= 0.0)
+        return;
+
+    const double anchorX = static_cast<double>(e.x - kArrangementContentStartX);
+    const double anchorTime = camera_.visibleStartSeconds + anchorX / camera_.pixelsPerSecond;
+    applyHorizontalZoom(zoom.factor, anchorTime, anchorX);
 }
 
 void ArrangementViewComponent::handleVerticalZoomWheel(float deltaY, bool keepViewportCentre)
