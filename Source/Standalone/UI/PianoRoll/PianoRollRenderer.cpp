@@ -1,4 +1,5 @@
 #include "PianoRollRenderer.h"
+#include "../../../Utils/WaveformTime.h"
 #include "PianoRollTimeMap.h"
 #include "../UiAssets.h"
 #include "../UIColors.h"
@@ -539,11 +540,12 @@ void PianoRollRenderer::drawWaveform(juce::Graphics& g,
     const int drawEndX = std::min(endX, segEndX);
     if (drawEndX <= drawStartX) return;
 
+    // 波形是时间参考，垂直居中在当前视口，不跟随音高滚动或纵向缩放。
     const float centerY = ctx.height / 2.0f;
     const float amplitudeScale = ctx.height / 2.0f;
 
     const int samplesPerPeak = WaveformMipmap::kSamplesPerPeak[wfLevelIndex];
-    const double timePerPeak = static_cast<double>(samplesPerPeak) / WaveformMipmap::kBaseSampleRate;
+    const double timePerPeak = waveformSecondsPerPeak(samplesPerPeak, item.audioSampleRate);
     const int64_t numPeaks = static_cast<int64_t>(wfLevel.peaks.size());
     const auto themeId = UIColors::currentThemeId();
     const bool isAurora = themeId == ThemeId::Aurora;

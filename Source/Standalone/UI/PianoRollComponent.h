@@ -339,6 +339,7 @@ private:
     // ── 保留表面状态快照 ──────────────────────────────────────
     juce::Image staticSurface_;
     juce::Image labelsSurface_;
+    juce::Image waveformSurface_;
     juce::Image contentSurface_;
     ViewportState surfaceView_;
     bool staticDirty_ = true;
@@ -362,13 +363,18 @@ private:
     int getTimelineContentStartX() const noexcept;
     void rasterizeContent(std::optional<juce::Rectangle<int>> dirtyRect = std::nullopt,
                           std::optional<juce::Rectangle<int>> physicalDirtyRect = std::nullopt);
+    void rasterizeWaveform(std::optional<juce::Rectangle<int>> dirtyRect = std::nullopt,
+                           std::optional<juce::Rectangle<int>> physicalDirtyRect = std::nullopt);
 
     // ── 按坐标域拆分的唯一绘制函数（raster target 与 preview target 共用） ──
     void drawFixedChrome(juce::Graphics& g, juce::Rectangle<int> damage);
     void drawRuler(juce::Graphics& g, const ViewportState& view, juce::Rectangle<int> damage);
     void drawPitchBackground(juce::Graphics& g, const ViewportState& view, juce::Rectangle<int> damage);
     void drawPianoKeyboard(juce::Graphics& g, const ViewportState& view, juce::Rectangle<int> damage);
-    void drawContent(juce::Graphics& g, const ViewportState& view, juce::Rectangle<int> damage);
+    enum class ContentLayer { Notes, Waveform, All };
+
+    void drawContent(juce::Graphics& g, const ViewportState& view, juce::Rectangle<int> damage,
+                     ContentLayer layer = ContentLayer::All);
 
     // ── 性能探针 ──────────────────────────────────────────────
     struct RasterProbe { int count = 0; double totalMs = 0.0; };

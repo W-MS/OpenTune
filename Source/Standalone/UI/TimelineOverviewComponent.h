@@ -33,7 +33,8 @@ public:
     void onHeartbeatTick(ContentKey contentKey,
                          const ContentTimelineProjection& projection,
                          TimelineViewportCamera camera,
-                         int viewportWidthPx);
+                         int viewportWidthPx,
+                         double audioSampleRate = 0.0);
 
     /// Regular-capture multi-segment overview entry.
     /// placements: full set of TimelineContentPlacement (order preserved).
@@ -42,7 +43,8 @@ public:
                                 double timelineStart,
                                 double timelineEnd,
                                 TimelineViewportCamera camera,
-                                int viewportWidthPx);
+                                int viewportWidthPx,
+                                std::vector<double> audioSampleRates = {});
 
     void addListener(Listener* listener);
     void removeListener(Listener* listener);
@@ -80,12 +82,14 @@ private:
     TimelineViewportCamera camera_{};
     TimelineViewportCamera lastCamera_{};
     int viewportWidthPx_ = 0;
+    double audioSampleRate_ = 0.0;
     uint64_t lastSignature_ = 0;
     float lastBuildProgress_ = 0.0f;
 
     // Regular-capture multi-segment mode
     bool regularCaptureMode_ = false;
     std::vector<TimelineContentPlacement> regularPlacements_;
+    std::vector<double> regularSampleRates_;
     double regularTimelineStart_ = 0.0;
     double regularTimelineEnd_ = 0.0;
     uint64_t lastRegularSignature_ = 0;

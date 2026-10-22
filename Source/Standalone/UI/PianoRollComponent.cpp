@@ -2293,6 +2293,11 @@ void PianoRollComponent::paint(juce::Graphics& g)
             g.drawImage(staticSurface_, 0, 0, getWidth(), getHeight(),
                         0, 0, staticSurface_.getWidth(), staticSurface_.getHeight(), false);
         }
+        // 波形是时间参考，画在音高网格之上、音符之下，不参与垂直滚动。
+        if (waveformSurface_.isValid()) {
+            g.drawImage(waveformSurface_, 0, 0, vpW, vpH,
+                        0, 0, waveformSurface_.getWidth(), waveformSurface_.getHeight(), false);
+        }
         if (contentSurface_.isValid()) {
             g.drawImage(contentSurface_, 0, 0, vpW, vpH,
                         0, 0, contentSurface_.getWidth(), contentSurface_.getHeight(), false);
@@ -2354,6 +2359,10 @@ void PianoRollComponent::rasterizeDirtySurfaces()
         contentSurface_ = juce::Image(juce::Image::ARGB, physVpW, physVpH, true);
         contentDirty_ = true;
     }
+    if (!waveformSurface_.isValid() || waveformSurface_.getWidth() != physVpW || waveformSurface_.getHeight() != physVpH) {
+        waveformSurface_ = juce::Image(juce::Image::ARGB, physVpW, physVpH, true);
+        contentDirty_ = true;
+    }
 
     // 全量双表面重建时一次性同步 surfaceView_ 为 live 状态
     if (staticDirty_ && contentDirty_) {
@@ -2368,7 +2377,10 @@ void PianoRollComponent::rasterizeDirtySurfaces()
         if (!shouldShowPianoKeys())
             rasterizeLabels();
     }
-    if (contentDirty_) rasterizeContent();
+    if (contentDirty_) {
+        rasterizeContent();
+        rasterizeWaveform();
+    }
 }
 
 void PianoRollComponent::recordRenderProbe(RenderProbePoint point, double elapsedMs)
@@ -2619,7 +2631,8 @@ void PianoRollComponent::rasterizeLabels()
     drawPianoKeyboard(g, surfaceView_, juce::Rectangle<int>(0, 0, pianoKeyWidth_, getHeight()));
 }
 
-void PianoRollComponent::drawContent(juce::Graphics& g, const ViewportState& view, juce::Rectangle<int> damage)
+void PianoRollComponent::drawContent(juce::Graphics& g, const ViewportState& view, juce::Rectangle<int> damage,
+                                      ContentLayer layer)
 {
     const int w = getTimelineViewportBounds().getWidth();
     const int cw = getTimelineContentViewportWidth();
@@ -2665,8 +2678,9 @@ void PianoRollComponent::drawContent(juce::Graphics& g, const ViewportState& vie
 
     const bool notesPrimary = isOpenDyne();
 
-    // 背景波形：OpenDyne 模式下 blob 即波形表达，不叠加背景 PCM
-    if (showWaveform_ && !notesPrimary) {
+    // 背景波形：OpenDyne 模式下 blob 即波形表达，不叠加背景 PCM。
+    // 垂直位置由视口高度决定，不读取 verticalScrollOffset。
+    if (layer != ContentLayer::Notes && showWaveform_ && !notesPrimary) {
         for (const auto& item : renderCtx.contents) {
             const auto* mipmap = waveformMipmapCache_.get(item.contentKey);
             if (mipmap == nullptr || !mipmap->hasSource())
@@ -2678,6 +2692,9 @@ void PianoRollComponent::drawContent(juce::Graphics& g, const ViewportState& vie
             renderer_->drawWaveform(g, renderCtx, item, level, bestLevel);
         }
     }
+
+    if (layer == ContentLayer::Waveform)
+        return;
 
     // unvoiced bands 与 F0 curve 由 RenderContext 显示开关
     // （showUnvoicedFrames_/showOriginalF0_/showCorrectedF0_）决定，与 scheme 无关
@@ -2723,7 +2740,7 @@ void PianoRollComponent::rasterizeContent(
         g.reduceClipRegion(physicalBounds);
     g.addTransform(juce::AffineTransform::scale(renderScale_));
 
-    drawContent(g, surfaceView_, rasterBounds);
+    drawContent(g, surfaceView_, rasterBounds, ContentLayer::Notes);
 
     if (fullRaster) {
         contentDirty_ = false;
@@ -2732,10 +2749,36 @@ void PianoRollComponent::rasterizeContent(
     recordRenderProbe(RenderProbePoint::ContentRaster, juce::Time::getMillisecondCounterHiRes() - t0);
 }
 
+void PianoRollComponent::rasterizeWaveform(
+    std::optional<juce::Rectangle<int>> dirtyRect,
+    std::optional<juce::Rectangle<int>> physicalDirtyRect)
+{
+    const int w = getTimelineViewportBounds().getWidth();
+    const int h = getTimelineViewportBounds().getHeight();
+    if (!waveformSurface_.isValid() || w <= 0 || h <= 0) return;
+
+    const bool fullRaster = !dirtyRect.has_value();
+    const auto rasterBounds = dirtyRect.value_or(juce::Rectangle<int>(0, 0, w, h));
+    const auto physicalBounds = physicalDirtyRect.value_or(
+        (rasterBounds.toFloat() * renderScale_).getSmallestIntegerContainer());
+    if (fullRaster)
+        waveformSurface_.clear(waveformSurface_.getBounds());
+    else
+        waveformSurface_.clear(physicalBounds);
+
+    juce::Graphics g(waveformSurface_);
+    if (physicalDirtyRect.has_value())
+        g.reduceClipRegion(physicalBounds);
+    g.addTransform(juce::AffineTransform::scale(renderScale_));
+
+    // 水平相机与音符相同；垂直方向固定在视口中线，不吃 verticalScrollOffset。
+    drawContent(g, surfaceView_, rasterBounds, ContentLayer::Waveform);
+}
+
 void PianoRollComponent::applyRasterCamera(const TimelineViewportCamera& newCamera)
 {
     // 表面无效或脏 → 全量重建
-    if (!staticSurface_.isValid() || staticDirty_) {
+    if (!staticSurface_.isValid() || !waveformSurface_.isValid() || staticDirty_) {
         staticDirty_ = true;
         contentDirty_ = true;
         rasterizeDirtySurfaces();
@@ -2811,6 +2854,7 @@ void PianoRollComponent::applyRasterCamera(const TimelineViewportCamera& newCame
 
     if (moveW > 0) {
         staticSurface_.moveImageSection(dstX, physRulerHeight, srcX, physRulerHeight, moveW, physContentH);
+        waveformSurface_.moveImageSection(dstX, physRulerHeight, srcX, physRulerHeight, moveW, physContentH);
         contentSurface_.moveImageSection(dstX, physRulerHeight, srcX, physRulerHeight, moveW, physContentH);
     }
 
@@ -2836,6 +2880,7 @@ void PianoRollComponent::applyRasterCamera(const TimelineViewportCamera& newCame
             static_cast<float>(viewportH - rulerHeight_));
         const auto stripLogical = strip.getSmallestIntegerContainer();
         rasterizeStatic(stripLogical, physicalStrip);
+        rasterizeWaveform(stripLogical, physicalStrip);
         rasterizeContent(stripLogical, physicalStrip);
     }
 
@@ -2850,7 +2895,7 @@ void PianoRollComponent::applyVerticalPan()
         overlay_->repaint();
         return;
     }
-    if (!staticSurface_.isValid() || !contentSurface_.isValid()
+    if (!staticSurface_.isValid() || !contentSurface_.isValid() || !waveformSurface_.isValid()
         || staticDirty_ || contentDirty_ || renderScale_ <= 0.0f) {
         staticDirty_ = true;
         contentDirty_ = true;
@@ -2893,6 +2938,7 @@ void PianoRollComponent::applyVerticalPan()
     const int srcY = physRulerHeight + (physDelta > 0 ? physDelta : 0);
     const int dstY = physRulerHeight + (physDelta > 0 ? 0 : -physDelta);
     const int moveH = physContentH - travel;
+    // 波形层留在原地：垂直滚动只移动音高网格和音符。
     if (moveH > 0 && physWidth > 0) {
         staticSurface_.moveImageSection(0, dstY, 0, srcY, physWidth, moveH);
         contentSurface_.moveImageSection(0, dstY, 0, srcY, physWidth, moveH);
@@ -5427,6 +5473,7 @@ std::optional<PianoRollRenderer::ContentRenderItem> PianoRollComponent::buildCon
     item.contentKey = placement.contentKey;
     item.projection = placement.projection;
     item.timeGrid = snap->timeGrid;
+    item.audioSampleRate = snap->audioSampleRate;
     item.active = placement.contentKey == editedContentKey_;
     item.displayColour = placement.displayColour;
 

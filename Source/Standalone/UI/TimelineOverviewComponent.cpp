@@ -1,5 +1,6 @@
 #include "TimelineOverviewComponent.h"
 
+#include "../../Utils/WaveformTime.h"
 #include "UIColors.h"
 #include "PianoRoll/PianoRollRenderer.h"
 
@@ -27,7 +28,8 @@ void paintOverviewClipWaveform(juce::Graphics& g,
                                juce::Rectangle<float> contentBounds,
                                double pixelsPerSecond,
                                double overviewTimelineStart,
-                               const WaveformMipmapCache& waveformMipmapCache)
+                               const WaveformMipmapCache& waveformMipmapCache,
+                               double audioSampleRate)
 {
     if (!projection.isValid() || pixelsPerSecond <= 0.0)
         return;
@@ -43,8 +45,7 @@ void paintOverviewClipWaveform(juce::Graphics& g,
 
     const int64_t numPeaks = static_cast<int64_t>(level.peaks.size());
     const int samplesPerPeak = WaveformMipmap::kSamplesPerPeak[levelIndex];
-    const double timePerPeak = static_cast<double>(samplesPerPeak)
-        / WaveformMipmap::kBaseSampleRate;
+    const double timePerPeak = waveformSecondsPerPeak(samplesPerPeak, audioSampleRate);
     const double clipStartSeconds = projection.timelineStartSeconds;
     const double clipEndSeconds = projection.timelineEndSeconds();
 
@@ -175,6 +176,7 @@ uint64_t TimelineOverviewComponent::calculateContentSignature() const
     hashCombine(signature,
                 static_cast<uint64_t>(std::hash<double>{}(projection_.contentDurationSeconds)));
     hashCombine(signature, static_cast<uint64_t>(viewportWidthPx_));
+    hashCombine(signature, static_cast<uint64_t>(std::hash<double>{}(audioSampleRate_)));
     return signature;
 }
 
@@ -184,8 +186,9 @@ uint64_t TimelineOverviewComponent::calculateRegularSignature() const
     hashCombine(signature, static_cast<uint64_t>(regularPlacements_.size()));
     hashCombine(signature, static_cast<uint64_t>(std::hash<double>{}(regularTimelineStart_)));
     hashCombine(signature, static_cast<uint64_t>(std::hash<double>{}(regularTimelineEnd_)));
-    for (const auto& p : regularPlacements_)
+    for (std::size_t index = 0; index < regularPlacements_.size(); ++index)
     {
+        const auto& p = regularPlacements_[index];
         hashCombine(signature, static_cast<uint64_t>(p.contentKey.domainKind));
         hashCombine(signature, p.contentKey.objectId);
         hashCombine(signature, p.contentKey.sourceWindowDiscriminator);
@@ -197,6 +200,9 @@ uint64_t TimelineOverviewComponent::calculateRegularSignature() const
                     static_cast<uint64_t>(std::hash<double>{}(p.projection.contentStartSeconds)));
         hashCombine(signature,
                     static_cast<uint64_t>(std::hash<double>{}(p.projection.contentDurationSeconds)));
+        if (index < regularSampleRates_.size())
+            hashCombine(signature,
+                        static_cast<uint64_t>(std::hash<double>{}(regularSampleRates_[index])));
         // Each mipmap's build progress participates independently so any single
         // placement's progress change triggers repaint.
         if (const auto* mipmap = waveformMipmapCache_.get(p.contentKey))
@@ -268,11 +274,13 @@ TimelineOverviewComponent::Geometry TimelineOverviewComponent::calculateRegularG
 void TimelineOverviewComponent::onHeartbeatTick(ContentKey contentKey,
                                                 const ContentTimelineProjection& projection,
                                                 TimelineViewportCamera camera,
-                                                int viewportWidthPx)
+                                                int viewportWidthPx,
+                                                double audioSampleRate)
 {
     // Exit regular mode and clear regular state to avoid stale data lingering
     regularCaptureMode_ = false;
     regularPlacements_.clear();
+    regularSampleRates_.clear();
     regularTimelineStart_ = 0.0;
     regularTimelineEnd_ = 0.0;
     lastRegularSignature_ = 0;
@@ -281,6 +289,7 @@ void TimelineOverviewComponent::onHeartbeatTick(ContentKey contentKey,
     projection_ = projection;
     camera_ = camera;
     viewportWidthPx_ = viewportWidthPx;
+    audioSampleRate_ = audioSampleRate;
 
     const uint64_t signature = calculateContentSignature();
 
@@ -306,10 +315,12 @@ void TimelineOverviewComponent::onHeartbeatTickRegular(std::vector<TimelineConte
                                                         double timelineStart,
                                                         double timelineEnd,
                                                         TimelineViewportCamera camera,
-                                                        int viewportWidthPx)
+                                                        int viewportWidthPx,
+                                                        std::vector<double> audioSampleRates)
 {
     regularCaptureMode_ = true;
     regularPlacements_ = std::move(placements);
+    regularSampleRates_ = std::move(audioSampleRates);
     regularTimelineStart_ = timelineStart;
     regularTimelineEnd_ = timelineEnd;
     lastSignature_ = 0;
@@ -450,15 +461,20 @@ void TimelineOverviewComponent::paint(juce::Graphics& g)
             const auto geometry = calculateRegularGeometry();
             if (geometry.previewPixelsPerSecond > 0.0)
             {
-                for (const auto& placement : regularPlacements_)
+                for (std::size_t index = 0; index < regularPlacements_.size(); ++index)
                 {
+                    const auto& placement = regularPlacements_[index];
+                    const double sampleRate = index < regularSampleRates_.size()
+                        ? regularSampleRates_[index]
+                        : 0.0;
                     paintOverviewClipWaveform(g,
                                               placement.contentKey,
                                               placement.projection,
                                               contentBounds,
                                               geometry.previewPixelsPerSecond,
                                               regularTimelineStart_,
-                                              waveformMipmapCache_);
+                                              waveformMipmapCache_,
+                                              sampleRate);
                 }
 
                 const auto viewBounds = juce::Rectangle<float>(
@@ -492,7 +508,8 @@ void TimelineOverviewComponent::paint(juce::Graphics& g)
                                           contentBounds,
                                           geometry.previewPixelsPerSecond,
                                           projection_.timelineStartSeconds,
-                                          waveformMipmapCache_);
+                                          waveformMipmapCache_,
+                                          audioSampleRate_);
 
                 const auto viewBounds = juce::Rectangle<float>(
                     contentBounds.getX()
