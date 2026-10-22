@@ -1597,10 +1597,14 @@ void OpenTuneAudioProcessorEditor::timerCallback()
     pianoRoll_.onHeartbeatTick();
 
     if (pianoRoll_.isShowing()) {
+        double overviewSampleRate = 0.0;
+        if (const auto snap = processorRef_.getContentSnapshot(pianoRoll_.editedContentKey()))
+            overviewSampleRate = snap->audioSampleRate;
         overviewStrip_.onHeartbeatTick(pianoRoll_.editedContentKey(),
                                        pianoRoll_.activeContentProjection(),
                                        pianoRoll_.timelineCamera(),
-                                       pianoRoll_.timelinePolicyViewportWidth());
+                                       pianoRoll_.timelinePolicyViewportWidth(),
+                                       overviewSampleRate);
     }
 
     const bool allowSecondaryRefresh = !inferenceActive_ || ((++inferenceActiveTickCounter_ % 4) == 0);

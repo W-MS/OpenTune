@@ -552,18 +552,29 @@ void OpenTuneAudioProcessorEditor::timerCallback()
     if (pianoRoll_.isShowing()) {
         if (sync.isRegularVst3Capture)
         {
+            std::vector<double> overviewSampleRates;
+            overviewSampleRates.reserve(sync.placements.size());
+            for (const auto& placement : sync.placements) {
+                const auto snap = processorRef_.getContentSnapshot(placement.contentKey);
+                overviewSampleRates.push_back(snap != nullptr ? snap->audioSampleRate : 0.0);
+            }
             overviewStrip_.onHeartbeatTickRegular(sync.placements,
                                                   sync.timelineViewStartSeconds,
                                                   sync.timelineViewEndSeconds,
                                                   pianoRoll_.timelineCamera(),
-                                                  pianoRoll_.timelinePolicyViewportWidth());
+                                                  pianoRoll_.timelinePolicyViewportWidth(),
+                                                  std::move(overviewSampleRates));
         }
         else
         {
+            double overviewSampleRate = 0.0;
+            if (const auto snap = processorRef_.getContentSnapshot(pianoRoll_.editedContentKey()))
+                overviewSampleRate = snap->audioSampleRate;
             overviewStrip_.onHeartbeatTick(pianoRoll_.editedContentKey(),
                                            pianoRoll_.activeContentProjection(),
                                            pianoRoll_.timelineCamera(),
-                                           pianoRoll_.timelinePolicyViewportWidth());
+                                           pianoRoll_.timelinePolicyViewportWidth(),
+                                           overviewSampleRate);
         }
     }
 

@@ -1,5 +1,6 @@
 #include "../Source/Utils/ExternalEditLaunch.h"
 #include "../Source/Utils/MagnifyZoom.h"
+#include "../Source/Utils/WaveformTime.h"
 #include "../Source/Utils/WheelPan.h"
 #include "../Source/Plugin/Capture/CaptureScanPlan.h"
 
@@ -77,6 +78,18 @@ static void testMagnifyZoom()
     check(spike.apply && spike.factor == 4.0, "one pinch event cannot enlarge more than four times");
 }
 
+static void testWaveformTime()
+{
+    constexpr int samplesPerPeak = 32;
+    const int64_t atStart = waveformPeakIndexAtSourceTime(0.0, samplesPerPeak, 48000.0);
+    const int64_t at48k = waveformPeakIndexAtSourceTime(1.0, samplesPerPeak, 48000.0);
+    const int64_t at44k = waveformPeakIndexAtSourceTime(1.0, samplesPerPeak, 44100.0);
+    check(atStart == 0, "waveform and notes share the same origin");
+    check(at48k == 1500, "one second at 48 kHz addresses the real sample bucket");
+    check(at44k == 1378, "a fixed 44100 Hz clock addresses an earlier bucket");
+    check(at48k > at44k, "using 44100 for 48 kHz audio leaves the waveform behind the notes");
+}
+
 static void testExternalEditLaunch()
 {
     const char* args[] = { "OpenTune", "--external-edit", "/tmp/session" };
@@ -95,6 +108,7 @@ int main()
 {
     testWheelPan();
     testMagnifyZoom();
+    testWaveformTime();
     testScanPlan();
     testExternalEditLaunch();
     if (failures == 0) {

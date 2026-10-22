@@ -14,6 +14,7 @@
 #include "../../Utils/LocalizationManager.h"
 #include "../../Utils/SnapUtils.h"
 #include "../../Utils/TrackConstants.h"
+#include "../../Utils/WaveformTime.h"
 #include "../StandaloneArrangementHelpers.h"
 
 #include <algorithm>
@@ -45,6 +46,7 @@ struct ArrangementClipPaintInput {
     double durationSeconds = 0.0;
     double pixelsPerSecond = 1.0;
     std::shared_ptr<const TimeGridSnapshot> timeGrid;
+    double audioSampleRate = 0.0;
 };
 
 juce::Rectangle<int> referenceButtonBoundsForClip(juce::Rectangle<int> placementBounds) noexcept
@@ -155,7 +157,7 @@ static void paintHistoricalClipWaveform(juce::Graphics& g,
     const float midY = static_cast<float>(waveformBounds.getCentreY());
     const float halfH = waveformBounds.getHeight() * 0.45f;
     const int samplesPerPeak = WaveformMipmap::kSamplesPerPeak[levelIndex];
-    const double timePerPeak = static_cast<double>(samplesPerPeak) / WaveformMipmap::kBaseSampleRate;
+    const double timePerPeak = waveformSecondsPerPeak(samplesPerPeak, clip.audioSampleRate);
     const double timelineEndSeconds = clip.timelineStartSeconds + clip.durationSeconds;
     const auto& timeGrid = clip.timeGrid;
 
@@ -490,7 +492,8 @@ std::vector<ArrangementClipPaintInput> collectVisibleArrangementClips(const Stan
                 placement.timelineStartSeconds,
                 placement.durationSeconds,
                 pixelsPerSecond,
-                snapshot->timeGrid
+                snapshot->timeGrid,
+                snapshot->audioSampleRate
             });
         }
     }
@@ -1876,7 +1879,8 @@ void ArrangementViewComponent::drawMoveDragOverlay(juce::Graphics& g)
             target.startSeconds,
             state.durationSeconds,
             camera_.pixelsPerSecond,
-            snapshot->timeGrid
+            snapshot->timeGrid,
+            snapshot->audioSampleRate
         };
         paintHistoricalClipShellAndWaveform(g, clip, waveformMipmapCache_);
         paintHistoricalClipTextFadeGain(g, clip);

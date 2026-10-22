@@ -5473,6 +5473,7 @@ std::optional<PianoRollRenderer::ContentRenderItem> PianoRollComponent::buildCon
     item.contentKey = placement.contentKey;
     item.projection = placement.projection;
     item.timeGrid = snap->timeGrid;
+    item.audioSampleRate = snap->audioSampleRate;
     item.active = placement.contentKey == editedContentKey_;
     item.displayColour = placement.displayColour;
 
