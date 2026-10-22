@@ -539,6 +539,7 @@ void PianoRollRenderer::drawWaveform(juce::Graphics& g,
     const int drawEndX = std::min(endX, segEndX);
     if (drawEndX <= drawStartX) return;
 
+    // 波形是时间参考，垂直居中在当前视口，不跟随音高滚动或纵向缩放。
     const float centerY = ctx.height / 2.0f;
     const float amplitudeScale = ctx.height / 2.0f;
 
