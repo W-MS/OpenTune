@@ -6,6 +6,7 @@
 #include "../Utils/AccelerationDetector.h"
 #include "../Utils/AppLogger.h"
 #include "../Utils/Error.h"
+#include <functional>
 #include <juce_core/juce_core.h>
 #include <algorithm>
 #include <iomanip>
@@ -51,7 +52,8 @@ ModelFactory::F0ExtractorResult ModelFactory::createF0Extractor(
     F0ModelType type,
     const std::string& modelDir,
     Ort::Env& env,
-    std::shared_ptr<ResamplingManager> resampler)
+    std::shared_ptr<ResamplingManager> resampler,
+    bool forceCpu)
 {
     std::string modelPath = getModelPath(type, modelDir);
 
@@ -62,7 +64,7 @@ ModelFactory::F0ExtractorResult ModelFactory::createF0Extractor(
 
     try {
         bool gpuMode = false;
-        auto session = loadF0Session(modelPath, env, type, gpuMode);
+        auto session = loadF0Session(modelPath, env, type, gpuMode, forceCpu);
         if (!session) {
             return F0ExtractorResult::failure(ErrorCode::SessionCreationFailed,
                 "Failed to create ONNX session for: " + modelPath);
@@ -79,9 +81,40 @@ ModelFactory::F0ExtractorResult ModelFactory::createF0Extractor(
         AppLogger::info("[ModelFactory] Loaded F0 model (" + backendStr + "): " + juce::String(modelPath));
 
         switch (type) {
-            case F0ModelType::FCPE:
+            case F0ModelType::FCPE: {
+                // One-shot CPU retry support for runtime DirectML Run failure
+                // (Windows only). Factory builds a pure-CPU session without
+                // recursing into GPU fallback (forceCpu = true), and preserves
+                // the existing CPU fallback on initial creation failure.
+                std::function<std::unique_ptr<Ort::Session>()> cpuSessionFactory;
+#if defined(_WIN32)
+                if (gpuMode) {
+                    cpuSessionFactory = [modelPath, &env, type]() {
+                        bool cpuGpuMode = false;
+                        try {
+                            auto cpuOptions = createF0SessionOptions(type, cpuGpuMode, /*forceCpu=*/true);
+#ifdef _WIN32
+                            juce::File f(modelPath);
+                            std::wstring wPath = f.getFullPathName().toWideCharPointer();
+                            return std::make_unique<Ort::Session>(env, wPath.c_str(), cpuOptions);
+#else
+                            return std::make_unique<Ort::Session>(env, modelPath.c_str(), cpuOptions);
+#endif
+                        } catch (const std::exception& e) {
+                            AppLogger::error("[ModelFactory] CPU session factory failed: "
+                                + juce::String(e.what()));
+                            return std::unique_ptr<Ort::Session>(nullptr);
+                        } catch (...) {
+                            AppLogger::error("[ModelFactory] CPU session factory failed with unknown exception");
+                            return std::unique_ptr<Ort::Session>(nullptr);
+                        }
+                    };
+                }
+#endif
                 return F0ExtractorResult::success(
-                    std::make_unique<FCPEExtractor>(std::move(session), resampler));
+                    std::make_unique<FCPEExtractor>(std::move(session), resampler,
+                                                    std::move(cpuSessionFactory), gpuMode));
+            }
         }
 
         return F0ExtractorResult::failure(ErrorCode::InvalidModelType,
@@ -258,10 +291,11 @@ std::unique_ptr<Ort::Session> ModelFactory::loadF0Session(
     const std::string& modelPath,
     Ort::Env& env,
     F0ModelType type,
-    bool& outGpuMode)
+    bool& outGpuMode,
+    bool forceCpu)
 {
     try {
-        auto sessionOptions = createF0SessionOptions(type, outGpuMode);
+        auto sessionOptions = createF0SessionOptions(type, outGpuMode, forceCpu);
 
         if (shouldEnableOrtProfilingInDebug()) {
 #ifdef _WIN32
@@ -281,9 +315,21 @@ std::unique_ptr<Ort::Session> ModelFactory::loadF0Session(
 #endif
 
     } catch (const std::exception& e) {
-        AppLogger::warn("[ModelFactory] F0 session creation failed: " + juce::String(e.what()) + "; retrying CPU");
-        outGpuMode = false;
+        // 仅在「本来要建 GPU session 且非 forceCpu」时允许一次性 CPU 回退。
+        // forceCpu 或纯 CPU 首次建会话失败时直接报错，避免：
+        //  - 纯 CPU 路径触发第二次完全相同的建会话调用；
+        //  - 回退路径改写 AccelerationDetector 全局 backend 状态。
+        const bool gpuFirstAttempt = outGpuMode && !forceCpu;
+        if (!gpuFirstAttempt) {
+            AppLogger::error("[ModelFactory] F0 session creation failed (no CPU fallback): "
+                + juce::String(e.what()) + "; model: " + juce::String(modelPath));
+            outGpuMode = false;
+            return nullptr;
+        }
+        AppLogger::warn("[ModelFactory] F0 GPU session creation failed: "
+            + juce::String(e.what()) + "; retrying CPU once");
         AccelerationDetector::getInstance().overrideBackend(AccelerationDetector::AccelBackend::CPU);
+        outGpuMode = false;
         try {
             auto cpuOptions = createF0SessionOptions(type, outGpuMode, true);
 #ifdef _WIN32
@@ -298,9 +344,16 @@ std::unique_ptr<Ort::Session> ModelFactory::loadF0Session(
             return nullptr;
         }
     } catch (...) {
-        AppLogger::warn("[ModelFactory] F0 session creation failed with an unknown exception; retrying CPU");
-        outGpuMode = false;
+        const bool gpuFirstAttempt = outGpuMode && !forceCpu;
+        if (!gpuFirstAttempt) {
+            AppLogger::error("[ModelFactory] F0 session creation failed (no CPU fallback): "
+                + juce::String(modelPath));
+            outGpuMode = false;
+            return nullptr;
+        }
+        AppLogger::warn("[ModelFactory] F0 GPU session creation failed with an unknown exception; retrying CPU once");
         AccelerationDetector::getInstance().overrideBackend(AccelerationDetector::AccelBackend::CPU);
+        outGpuMode = false;
         try {
             auto cpuOptions = createF0SessionOptions(type, outGpuMode, true);
 #ifdef _WIN32

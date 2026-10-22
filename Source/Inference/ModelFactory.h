@@ -26,7 +26,8 @@ public:
         F0ModelType type,
         const std::string& modelDir,
         Ort::Env& env,
-        std::shared_ptr<ResamplingManager> resampler
+        std::shared_ptr<ResamplingManager> resampler,
+        bool forceCpu = false
     );
 
     static std::string getModelPath(F0ModelType type, const std::string& modelDir);
@@ -48,7 +49,8 @@ private:
         const std::string& modelPath,
         Ort::Env& env,
         F0ModelType type,
-        bool& outGpuMode
+        bool& outGpuMode,
+        bool forceCpu = false
     );
 };
 

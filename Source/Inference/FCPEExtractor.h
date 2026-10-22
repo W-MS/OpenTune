@@ -3,6 +3,8 @@
 #include "IF0Extractor.h"
 #include <onnxruntime_cxx_api.h>
 #include <memory>
+#include <functional>
+#include <stdexcept>
 #include <vector>
 #include <cmath>
 #include <juce_dsp/juce_dsp.h>
@@ -15,7 +17,9 @@ class FCPEExtractor : public IF0Extractor {
 public:
     FCPEExtractor(
         std::unique_ptr<Ort::Session> session,
-        std::shared_ptr<ResamplingManager> resampler
+        std::shared_ptr<ResamplingManager> resampler,
+        std::function<std::unique_ptr<Ort::Session>()> cpuSessionFactory = nullptr,
+        bool dmlActive = false
     );
     ~FCPEExtractor() override;
 
@@ -42,6 +46,26 @@ public:
     float getF0Max() const override { return f0Max_; }
     void setInterpUV(bool interp) { interpUV_ = interp; }
     bool getInterpUV() const { return interpUV_; }
+
+    // True if a DirectML Session::Run() failed this lifetime and the CPU
+    // fallback path was engaged (regardless of whether the retry succeeded).
+    bool didDmlRunFail() const { return dmlRunFailed_; }
+
+    // CPU 重试授权：由 F0InferenceService 在每次 lease 执行时注入。
+    // 回调必须在 runMutex_ 下确认该 lease 仍是 activeLease_ 且 ownerState
+    // 未关闭——这次锁内检查是 CPU 重试与 terminate 的线性化顺序。
+    // 返回 false 表示已被 terminate 取消，禁止建立 CPU session。
+    using RetryAuthorize = std::function<bool()>;
+    void setCpuRetryAuthorize(RetryAuthorize authorize) {
+        cpuRetryAuthorize_ = std::move(authorize);
+    }
+
+    // 授权回调拒绝重试（owner 已 terminate）时抛出，service 据此映射为
+    // OperationCancelled。
+    class RetryCancelled : public std::runtime_error {
+    public:
+        RetryCancelled() : std::runtime_error("F0 CPU retry denied: run terminated") {}
+    };
 
     struct PreflightResult {
         bool success = false;
@@ -84,6 +108,13 @@ private:
     float f0Max_ = F0_MAX_DEFAULT;
 
     bool interpUV_ = false; // 对齐官方 interp_uv（默认关闭）
+
+    // DML run failure -> one-shot CPU retry support (Windows only).
+    std::function<std::unique_ptr<Ort::Session>()> cpuSessionFactory_;
+    bool dmlActive_ = false;    // current session uses DirectML EP
+    bool dmlRunFailed_ = false; // a DML Run() failed at least once
+    // 锁内重试授权回调（runMutex_ 下检查 lease 有效性），见上方注释。
+    RetryAuthorize cpuRetryAuthorize_;
 
     void initMelFilterbank();
     void initHannWindow();

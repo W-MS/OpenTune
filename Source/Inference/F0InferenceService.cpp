@@ -1,5 +1,6 @@
 #include "F0InferenceService.h"
 #include "ModelFactory.h"
+#include "FCPEExtractor.h"
 #include "../DSP/ResamplingManager.h"
 #include "../Utils/AppLogger.h"
 #include <onnxruntime_cxx_api.h>
@@ -132,8 +133,14 @@ public:
         // 早于 RunStateGuard 析构，确保 session 释放先于唤醒下一个 waiter。
         // 创建/销毁均在调用方工作线程完成，不在音频线程/UI 线程。
         {
+            // 运行期 DML 失败后的 sticky CPU fallback：一旦某次 FCPE 提取
+            // 发生 DML Run 失败，本 service 生命周期内的后续提取全部走 CPU，
+            // 避免每个任务重复 DML 失败。不影响全局 AccelerationDetector，
+            // 也不影响 vocoder。
+            bool forceCpuForExtractor = cpuFallbackSticky_.load(std::memory_order_acquire);
             auto extractorResult = ModelFactory::createF0Extractor(
-                config.modelType, config.modelDir, *env_, resamplingManager_);
+                config.modelType, config.modelDir, *env_, resamplingManager_,
+                forceCpuForExtractor);
 
             if (!extractorResult) {
                 AppLogger::error("[F0InferenceService] Failed to create F0 extractor: "
@@ -166,9 +173,48 @@ public:
                 extractor->setF0Max(config.f0Max);
 
                 try {
+                    // CPU 重试授权回调：FCPE 在 DML Run 失败后请求建立 CPU
+                    // session 前，必须在 runMutex_ 下确认本 lease 仍是
+                    // activeLease_ 且 ownerState 未关闭——与 terminateActiveRun
+                    // 的 SetTerminate 共享同一把锁，构成重试与 terminate 的
+                    // 线性化顺序。terminate 赢得锁时回调返回 false，DML
+                    // 失败以取消语义抛出（RetryCancelled），不再建立 CPU session。
+                    if (auto* fcpe = dynamic_cast<FCPEExtractor*>(extractor.get())) {
+                        auto selfLease = lease;
+                        fcpe->setCpuRetryAuthorize([this, selfLease]() -> bool {
+                            std::lock_guard<std::mutex> lk(runMutex_);
+                            return activeLease_ == selfLease
+                                && !selfLease->ownerState->closed.load(std::memory_order_acquire);
+                        });
+                    }
+
                     auto f0 = extractor->extractF0(audio, length, sampleRate,
                                                     runOptions_, progressCallback, partialCallback);
                     result = Result<std::vector<float>>::success(f0);
+                } catch (const FCPEExtractor::RetryCancelled&) {
+                    // CPU retry 被授权 gate 拒绝（terminate 赢得 runMutex_）：
+                    // 按取消返回，而非 ModelInferenceFailed。
+                    AppLogger::warn("[F0InferenceService] F0 run cancelled before CPU retry");
+                    result = Result<std::vector<float>>::failure(
+                        ErrorCode::OperationCancelled,
+                        "F0 run terminated before CPU retry");
+                } catch (const Ort::Exception& e) {
+                    // 仅 ONNX 标准的 SetTerminate() 消息映射为取消；
+                    // 其它异常保持 ModelInferenceFailed 并传播原始诊断。
+                    constexpr char kTerminateMessage[] =
+                        "Exiting due to terminate flag being set to true.";
+                    if (std::string(e.what()).find(kTerminateMessage) != std::string::npos) {
+                        AppLogger::warn("[F0InferenceService] F0 run terminated via RunOptions");
+                        result = Result<std::vector<float>>::failure(
+                            ErrorCode::OperationCancelled,
+                            "F0 run terminated: " + std::string(e.what()));
+                    } else {
+                        AppLogger::error("[F0InferenceService] ORT exception during F0 extraction: "
+                            + juce::String(e.what()));
+                        result = Result<std::vector<float>>::failure(
+                            ErrorCode::ModelInferenceFailed,
+                            "F0 inference ORT exception: " + std::string(e.what()));
+                    }
                 } catch (const std::exception& e) {
                     AppLogger::error("[F0InferenceService] Exception during F0 extraction: "
                         + juce::String(e.what()));
@@ -179,6 +225,13 @@ public:
                     AppLogger::error("[F0InferenceService] Exception during F0 extraction: unknown exception");
                     result = Result<std::vector<float>>::failure(
                         ErrorCode::ModelInferenceFailed, "F0 inference threw an unknown exception");
+                }
+
+                // 本轮提取结束时检查：若 extractor 经历了 DML Run 失败（无论
+                // CPU 重试是否成功），sticky 置位，后续提取直接走 CPU。
+                if (auto* fcpe = dynamic_cast<FCPEExtractor*>(extractor.get())) {
+                    if (fcpe->didDmlRunFail())
+                        cpuFallbackSticky_.store(true, std::memory_order_release);
                 }
             }
         }
@@ -291,6 +344,8 @@ private:
 
     std::shared_ptr<Ort::Env> env_;
     std::shared_ptr<ResamplingManager> resamplingManager_;
+    // Sticky per-service CPU fallback after a runtime DML Run failure.
+    std::atomic<bool> cpuFallbackSticky_{false};
     F0ModelType currentModelType_{F0ModelType::FCPE};
     std::string modelDir_;
     mutable std::mutex extractorMutex_;   // guards config fields (no session)

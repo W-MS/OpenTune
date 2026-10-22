@@ -9,9 +9,13 @@ namespace OpenTune {
 
 FCPEExtractor::FCPEExtractor(
     std::unique_ptr<Ort::Session> session,
-    std::shared_ptr<ResamplingManager> resampler)
+    std::shared_ptr<ResamplingManager> resampler,
+    std::function<std::unique_ptr<Ort::Session>()> cpuSessionFactory,
+    bool dmlActive)
     : session_(std::move(session))
     , resampler_(resampler)
+    , cpuSessionFactory_(std::move(cpuSessionFactory))
+    , dmlActive_(dmlActive)
     , forwardFFT_(static_cast<int>(std::log2(N_FFT)))
 {
     memoryInfo_ = std::make_unique<Ort::MemoryInfo>(
@@ -395,8 +399,55 @@ std::vector<float> FCPEExtractor::extractF0(
 
     if (progressCallback) progressCallback(0.6f);
 
-    auto outputTensors = session_->Run(
-        runOptions, inputNames, inputTensors.data(), 1, outputNames, 1);
+    std::vector<Ort::Value> outputTensors;
+    try {
+        outputTensors = session_->Run(
+            runOptions, inputNames, inputTensors.data(), 1, outputNames, 1);
+    } catch (const Ort::Exception& e) {
+        // Windows DirectML one-shot CPU retry:
+        // - only ORT_EP_FAIL (EP internal failure), not other error codes
+        // - never retry an intentional SetTerminate() cancellation
+        constexpr char kTerminateMessage[] =
+            "Exiting due to terminate flag being set to true.";
+#if defined(_WIN32)
+        const bool isTerminate = std::string(e.what()).find(kTerminateMessage)
+                                 != std::string::npos;
+        const bool isDmlEpFail = dmlActive_ && !dmlRunFailed_
+                                 && e.GetOrtErrorCode() == ORT_EP_FAIL
+                                 && !isTerminate;
+        if (isDmlEpFail && cpuSessionFactory_) {
+            dmlRunFailed_ = true;
+            // 重试前经授权回调（runMutex_ 下）确认 lease 仍有效；这是
+            // CPU 重试与 terminateActiveRun 的线性化顺序。回调拒绝
+            // （owner 已 terminate）时以取消语义抛出，绝不建立 CPU session。
+            if (cpuRetryAuthorize_ && !cpuRetryAuthorize_()) {
+                AppLogger::warn("[FCPEExtractor] CPU retry denied: run terminated before authorization");
+                throw RetryCancelled();
+            }
+            AppLogger::warn(std::string("[FCPEExtractor] DirectML Run failure (ORT_EP_FAIL): ")
+                            + e.what() + "; retrying once on CPU");
+            // Drop the DML session before building the CPU one; reuse the
+            // already-computed mel input tensor and the same RunOptions.
+            session_.reset();
+            auto cpuSession = cpuSessionFactory_();
+            if (cpuSession) {
+                dmlActive_ = false;
+                session_ = std::move(cpuSession);
+                AppLogger::info("[FCPEExtractor] CPU session created; retrying Run on CPU");
+                outputTensors = session_->Run(
+                    runOptions, inputNames, inputTensors.data(), 1, outputNames, 1);
+            } else {
+                AppLogger::error("[FCPEExtractor] CPU session creation failed after DML Run failure");
+                throw;
+            }
+        } else {
+            throw;
+        }
+#else
+        (void)kTerminateMessage;
+        throw;
+#endif
+    }
 
     if (progressCallback) progressCallback(0.8f);
 
