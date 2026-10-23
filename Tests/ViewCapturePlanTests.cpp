@@ -32,12 +32,80 @@ static void testScanPlan()
 {
     using namespace OpenTune::Capture;
     HostSampleRange covered[] = { { 100, 50 }, { 0, 0 }, { 180, 40 } };
-    BlockSampleRun runs[4];
-    const int count = collectUncoveredRuns(80, 160, covered, 3, runs, 4);
-    check(count == 3, "a block keeps the gaps around already scanned audio");
+    BlockSampleRun runs[4] = {};
+    int produced = 0;
+    const int count = forEachUncoveredRun(
+        80, 160,
+        [&](int64_t pos) {
+            CoverageProbeResult r;
+            r.nextStart = 240;
+            for (const auto& range : covered) {
+                const int64_t end = range.start + range.count;
+                if (pos >= range.start && pos < end) r.insideEnd = r.insideEnd > end ? r.insideEnd : end;
+                else if (range.start > pos && range.start < r.nextStart) r.nextStart = range.start;
+            }
+            return r;
+        },
+        [&](int offset, int samples) {
+            runs[produced++] = { offset, samples };
+            return true;
+        });
+    check(count == 3 && produced == 3, "a block keeps every gap around scanned ranges");
     check(runs[0].blockOffset == 0 && runs[0].sampleCount == 20, "audio before a scanned range is captured");
     check(runs[1].blockOffset == 70 && runs[1].sampleCount == 30, "the gap between scanned ranges is captured");
     check(runs[2].blockOffset == 140 && runs[2].sampleCount == 20, "audio after the last scanned range is captured");
+    {
+        // One block crossing a single long covered range: only the outside parts.
+        int runsSeen = 0;
+        int firstOffset = -1, firstCount = -1, secondOffset = -1, secondCount = -1;
+        forEachUncoveredRun(
+            1000, 200,
+            [](int64_t pos) {
+                const int64_t covStart = 1050, covEnd = 1150;
+                if (pos >= covStart && pos < covEnd)
+                    return CoverageProbeResult{ covEnd, 1000 + 200 };
+                return CoverageProbeResult{ pos, covStart };
+            },
+            [&](int offset, int samples) {
+                if (runsSeen == 0) { firstOffset = offset; firstCount = samples; }
+                else if (runsSeen == 1) { secondOffset = offset; secondCount = samples; }
+                ++runsSeen;
+                return true;
+            });
+        check(runsSeen == 2, "a block crossing a covered range writes only the outside parts");
+        check(firstOffset == 0 && firstCount == 50, "audio before the covered range is captured");
+        check(secondOffset == 150 && secondCount == 50, "audio after the covered range is captured");
+    }
+    {
+        // More than 64 covered ranges in one block: every gap, no duplicates.
+        HostSampleRange many[80];
+        for (int i = 0; i < 80; ++i)
+            many[i] = { i * 10, 5 };  // covered [i*10, i*10+5), gap [i*10+5, (i+1)*10)
+        int runsSeen = 0;
+        int64_t lastEnd = -1;
+        bool ordered = true;
+        forEachUncoveredRun(
+            0, 800,
+            [&](int64_t pos) {
+                CoverageProbeResult r;
+                r.nextStart = 800;
+                for (int i = 0; i < 80; ++i) {
+                    const int64_t s = many[i].start;
+                    const int64_t e = s + many[i].count;
+                    if (pos >= s && pos < e) r.insideEnd = r.insideEnd > e ? r.insideEnd : e;
+                    else if (s > pos && s < r.nextStart) r.nextStart = s;
+                }
+                return r;
+            },
+            [&](int offset, int samples) {
+                if (offset <= lastEnd) ordered = false;
+                lastEnd = offset + samples;
+                ++runsSeen;
+                return true;
+            });
+        check(runsSeen == 80, "more than 64 covered ranges still produce every gap");
+        check(ordered, "streamed runs are ordered and non-overlapping");
+    }
 
     ScanTransportInput armed;
     armed.scanArmed = true;

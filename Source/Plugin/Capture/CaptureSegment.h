@@ -2,6 +2,7 @@
 
 
 #include "CaptureRingBuffer.h"
+#include "CaptureScanPlan.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_core/juce_core.h>
@@ -44,6 +45,10 @@ struct CapturedSpan
     int64_t hostStartSample = 0;   // absolute host sample at span start
     int pcmOffsetSamples = 0;      // offset into drained FIFO buffer
     int sampleCount = 0;           // number of samples accepted by fifo.write
+    int treeLeft = -1;
+    int treeRight = -1;
+    int treeParent = -1;
+    int treeHeight = 1;
 };
 
 /**
@@ -80,6 +85,12 @@ struct CaptureSegment
     /** Maximum samples (= 600 s × captureSampleRate, set at arm time). */
     int maxSamples = 0;
 
+    /** Latched by the audio thread when a discontinuity needs a new span but the span
+     *  metadata budget is spent. The audio thread stops writing the current take and
+     *  changes nothing else; tick() reclaims the whole unfinished take on the message
+     *  thread. Partial data must never be published as a successful segment. */
+    std::atomic<bool> spanBudgetExhausted { false };
+
     /** Anchor: first isPlaying audio block sets anchored=true and stores hostAbsoluteSample into hostStartSample. */
     std::atomic<bool> anchored { false };
 
@@ -105,8 +116,11 @@ struct CaptureSegment
      *  increasing), message thread reads at drain time. Bounded by spans.size(). */
     std::atomic<int> numSpans { 0 };
 
-    /** Pre-allocated span metadata array. Capacity covers the full PCM budget, so
-     *  the audio thread never needs to allocate or silently lose a discontinuity. */
+    /** Root of the audio-thread-owned span interval index. */
+    int spanTreeRoot = -1;
+
+    /** Pre-allocated span metadata array. Capacity is bounded by a fixed per-take
+     *  budget; the audio thread never grows it. */
     std::vector<CapturedSpan> spans;
 
     /** Message-thread only: 上次 tick 观察到的 F0 可用状态。tick() 仅在跃迁
@@ -155,6 +169,7 @@ struct CaptureSegment
 struct SegmentsView
 {
     std::vector<CaptureSegment*> snapshot;
+    std::vector<HostSampleRange> coveredRanges;
 };
 
 }  // namespace OpenTune::Capture

@@ -16,54 +16,82 @@ struct BlockSampleRun
     int sampleCount = 0;
 };
 
-// Sub-ranges of one host block that are not already inside a scanned segment.
-// Audio-thread safe: no allocation. A zero-length range is ignored.
-inline int collectUncoveredRuns(int64_t blockStart,
-                                int blockSamples,
-                                const HostSampleRange* covered,
-                                int coveredCount,
-                                BlockSampleRun* out,
-                                int maxOut) noexcept
+/** Coverage answer at one absolute host sample (see forEachUncoveredRun). */
+struct CoverageProbeResult
 {
-    if (out == nullptr || maxOut <= 0 || blockSamples <= 0)
+    int64_t insideEnd = 0;  // exclusive end of the covering range, or absPos if uncovered
+    int64_t nextStart = 0;  // start of the nearest covered range after absPos, or blockEnd when none
+};
+
+inline void probeSortedCoverageRanges(const HostSampleRange* ranges,
+                                     int count,
+                                     int64_t position,
+                                     CoverageProbeResult& result) noexcept
+{
+    int firstAfter = 0;
+    int end = count;
+    while (firstAfter < end)
+    {
+        const int middle = firstAfter + (end - firstAfter) / 2;
+        if (ranges[middle].start <= position)
+            firstAfter = middle + 1;
+        else
+            end = middle;
+    }
+
+    if (firstAfter > 0)
+    {
+        const auto& previous = ranges[firstAfter - 1];
+        const int64_t rangeEnd = previous.start + previous.count;
+        if (position < rangeEnd)
+            result.insideEnd = result.insideEnd > rangeEnd ? result.insideEnd : rangeEnd;
+    }
+    if (firstAfter < count && ranges[firstAfter].start < result.nextStart)
+        result.nextStart = ranges[firstAfter].start;
+}
+
+namespace detail {
+    inline int64_t minI64(int64_t a, int64_t b) noexcept { return a < b ? a : b; }
+}
+
+/** Streaming walk of ALL uncovered runs of one host block, in order, with no
+ *  fixed range cap. No allocation, no locks — audio-thread safe.
+ *
+ *  probe(absPos) must return, for one absolute host sample:
+ *    - insideEnd : exclusive end of the covered range containing absPos, or
+ *                  absPos when the position is uncovered
+ *    - nextStart : start of the nearest covered range after absPos, or absPos
+ *                  when none
+ *  Each uncovered run is reported exactly once via consume(offset, count); when
+ *  the callback returns false the walk stops and the run count so far is returned. */
+template <typename ProbeFn, typename ConsumeFn>
+inline int forEachUncoveredRun(int64_t blockStart,
+                               int blockSamples,
+                               ProbeFn&& probe,
+                               ConsumeFn&& consume) noexcept
+{
+    if (blockSamples <= 0)
         return 0;
 
+    const int64_t blockEnd = blockStart + static_cast<int64_t>(blockSamples);
     int produced = 0;
     int cursor = 0;
-    while (cursor < blockSamples && produced < maxOut)
+    while (cursor < blockSamples)
     {
         const int64_t absolute = blockStart + static_cast<int64_t>(cursor);
-        int64_t run = static_cast<int64_t>(blockSamples - cursor);
-        bool inside = false;
-        for (int i = 0; i < coveredCount; ++i)
+        const auto coverage = probe(absolute);
+        if (coverage.insideEnd > absolute)
         {
-            const int64_t start = covered[i].start;
-            const int64_t count = covered[i].count;
-            if (count <= 0)
-                continue;
-            const int64_t end = start + count;
-            if (absolute >= start && absolute < end)
-            {
-                inside = true;
-                const int64_t untilEnd = end - absolute;
-                if (untilEnd < run)
-                    run = untilEnd;
-            }
-            else if (start > absolute)
-            {
-                const int64_t untilStart = start - absolute;
-                if (untilStart < run)
-                    run = untilStart;
-            }
+            // Covered: jump to the end of the covering range.
+            cursor += static_cast<int>(detail::minI64(coverage.insideEnd, blockEnd) - absolute);
+            continue;
         }
+        int64_t run = detail::minI64(coverage.nextStart, blockEnd) - absolute;
         if (run <= 0)
-            break;
-        if (!inside)
-        {
-            out[produced].blockOffset = cursor;
-            out[produced].sampleCount = static_cast<int>(run);
-            ++produced;
-        }
+            run = static_cast<int64_t>(blockSamples - cursor);  // no covered range ahead
+        if (!consume(cursor, static_cast<int>(run)))
+            return produced;
+        ++produced;
         cursor += static_cast<int>(run);
     }
     return produced;

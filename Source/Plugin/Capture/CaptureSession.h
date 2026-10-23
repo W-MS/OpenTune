@@ -97,6 +97,7 @@ struct ProcessorBindings
  *   - Audio thread calls processBlock() noexcept; never allocates, never locks.
  *   - Message thread calls everything else.
  *   - Communication via std::atomic<shared_ptr<const SegmentsView>> publish-subscribe.
+ *   - View readers are counted so reclamation waits for old raw-pointer views to exit.
  */
 class CapturePersistence;  // friend for serialize/deserialize internal access
 
@@ -231,6 +232,14 @@ public:
      *  the audio thread. Lets unit tests verify numeric defense in isolation. */
     static void applyNumericGuardForTest(juce::AudioBuffer<float>& buffer) noexcept;
 
+    /** Test only: override the per-take span metadata capacity for the next armed
+     *  takes (0 = production budget). Lets tests exercise span-budget exhaustion
+     *  with a tiny capacity and observe the full reclaim lifecycle. */
+    void testSetSpanCapacityOverride(int capacity) noexcept
+    {
+        testSpanCapacityOverride_.store(capacity, std::memory_order_release);
+    }
+
 private:
     /** Build a new immutable view from current mutableSegments_ and atomic-store it. */
     void publishSegmentsView();
@@ -277,12 +286,14 @@ private:
         bool retireOnDestroy = true;
     };
 
-    // Reclaim sweep: segments removed from mutable but still possibly visible to audio thread.
+    // Reclaim sweep: removed segments remain owned until published-view readers exit.
     std::vector<ReclaimEntry> pendingReclaim_;
     std::atomic<int> tickCounter_ { 0 };
+    mutable std::atomic<int> activeSegmentReaders_ { 0 };
 
     // Audio-thread scratch (allocated in prepareToPlay; resized only on message thread).
     juce::AudioBuffer<float> dryScratch_;
+    std::vector<HostSampleRange> captureCoverageScratch_;
 
     // Single source of truth for the capture channel layout. Set by prepareToPlay
     // from the host's declared input bus, snapshotted into each CaptureSegment at
@@ -291,6 +302,8 @@ private:
 
     // Auto-scan is on as soon as the plugin is loaded. The record button toggles it.
     std::atomic<bool> scanArmed_ { true };
+    // Test-only span capacity override for armed takes (0 = production budget).
+    std::atomic<int> testSpanCapacityOverride_ { 0 };
     // Last host position published by the audio thread for updateTransportScan().
     std::atomic<int64_t> lastHostSample_ { -1 };
     std::atomic<bool> lastHostPlaying_ { false };

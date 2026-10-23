@@ -1852,6 +1852,20 @@ if(OPENTUNE_BUILD_TESTS)
     endif()
     add_test(NAME CapturePersistenceTests COMMAND OpenTuneCapturePersistenceTests)
 
+    # CaptureSession span-budget exhaustion + scan-coverage lifecycle tests.
+    add_executable(OpenTuneCaptureSessionSpanBudgetTests
+        Tests/CaptureSessionSpanBudgetTests.cpp
+    )
+    target_link_libraries(OpenTuneCaptureSessionSpanBudgetTests PRIVATE
+        OpenTune
+        juce::juce_audio_basics
+        juce::juce_core
+    )
+    if(MSVC)
+        target_compile_options(OpenTuneCaptureSessionSpanBudgetTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME CaptureSessionSpanBudgetTests COMMAND OpenTuneCaptureSessionSpanBudgetTests)
+
     add_executable(OpenTuneContentSnapshotProjectionTests
         Tests/ContentSnapshotProjectionTests.cpp
         Source/Content/StandaloneClipContent.cpp

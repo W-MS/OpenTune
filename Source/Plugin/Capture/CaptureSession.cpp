@@ -17,6 +17,188 @@ namespace OpenTune::Capture {
 namespace {
     constexpr double kMaxSegmentSeconds = 600.0;  // 10 minutes per spec
     constexpr int kReclaimGraceTicks = 4;          // tick() iterations before destroying pending segments
+    constexpr size_t kSpanMetadataBudgetBytes = 1024 * 1024;  // per-take span metadata budget
+
+    bool isCoveredSegmentState(SegmentState state) noexcept
+    {
+        return state == SegmentState::Processing || state == SegmentState::Edited;
+    }
+
+    class SegmentViewReaderGuard
+    {
+    public:
+        explicit SegmentViewReaderGuard(std::atomic<int>& readers) noexcept : readers_(readers)
+        {
+            readers_.fetch_add(1, std::memory_order_seq_cst);
+        }
+
+        ~SegmentViewReaderGuard()
+        {
+            readers_.fetch_sub(1, std::memory_order_seq_cst);
+        }
+
+    private:
+        std::atomic<int>& readers_;
+    };
+
+    int spanTreeHeight(const CaptureSegment& segment, int index) noexcept
+    {
+        return index < 0 ? 0 : segment.spans[static_cast<size_t>(index)].treeHeight;
+    }
+
+    void updateSpanTreeHeight(CaptureSegment& segment, int index) noexcept
+    {
+        auto& span = segment.spans[static_cast<size_t>(index)];
+        span.treeHeight = 1 + std::max(spanTreeHeight(segment, span.treeLeft),
+                                       spanTreeHeight(segment, span.treeRight));
+    }
+
+    void replaceSpanTreeChild(CaptureSegment& segment, int parent, int oldChild, int newChild) noexcept
+    {
+        if (parent < 0) {
+            segment.spanTreeRoot = newChild;
+        } else if (segment.spans[static_cast<size_t>(parent)].treeLeft == oldChild) {
+            segment.spans[static_cast<size_t>(parent)].treeLeft = newChild;
+        } else {
+            jassert(segment.spans[static_cast<size_t>(parent)].treeRight == oldChild);
+            segment.spans[static_cast<size_t>(parent)].treeRight = newChild;
+        }
+        if (newChild >= 0)
+            segment.spans[static_cast<size_t>(newChild)].treeParent = parent;
+    }
+
+    int rotateSpanTreeLeft(CaptureSegment& segment, int root) noexcept
+    {
+        auto& oldRoot = segment.spans[static_cast<size_t>(root)];
+        const int newRoot = oldRoot.treeRight;
+        auto& pivot = segment.spans[static_cast<size_t>(newRoot)];
+        const int parent = oldRoot.treeParent;
+        const int middle = pivot.treeLeft;
+        replaceSpanTreeChild(segment, parent, root, newRoot);
+        pivot.treeLeft = root;
+        oldRoot.treeParent = newRoot;
+        oldRoot.treeRight = middle;
+        if (middle >= 0)
+            segment.spans[static_cast<size_t>(middle)].treeParent = root;
+        updateSpanTreeHeight(segment, root);
+        updateSpanTreeHeight(segment, newRoot);
+        return newRoot;
+    }
+
+    int rotateSpanTreeRight(CaptureSegment& segment, int root) noexcept
+    {
+        auto& oldRoot = segment.spans[static_cast<size_t>(root)];
+        const int newRoot = oldRoot.treeLeft;
+        auto& pivot = segment.spans[static_cast<size_t>(newRoot)];
+        const int parent = oldRoot.treeParent;
+        const int middle = pivot.treeRight;
+        replaceSpanTreeChild(segment, parent, root, newRoot);
+        pivot.treeRight = root;
+        oldRoot.treeParent = newRoot;
+        oldRoot.treeLeft = middle;
+        if (middle >= 0)
+            segment.spans[static_cast<size_t>(middle)].treeParent = root;
+        updateSpanTreeHeight(segment, root);
+        updateSpanTreeHeight(segment, newRoot);
+        return newRoot;
+    }
+
+    void rebalanceSpanTree(CaptureSegment& segment, int index) noexcept
+    {
+        while (index >= 0) {
+            updateSpanTreeHeight(segment, index);
+            const auto& span = segment.spans[static_cast<size_t>(index)];
+            const int balance = spanTreeHeight(segment, span.treeLeft)
+                              - spanTreeHeight(segment, span.treeRight);
+            int root = index;
+            if (balance > 1) {
+                const int left = span.treeLeft;
+                if (spanTreeHeight(segment, segment.spans[static_cast<size_t>(left)].treeRight)
+                    > spanTreeHeight(segment, segment.spans[static_cast<size_t>(left)].treeLeft))
+                    rotateSpanTreeLeft(segment, left);
+                root = rotateSpanTreeRight(segment, index);
+            } else if (balance < -1) {
+                const int right = span.treeRight;
+                if (spanTreeHeight(segment, segment.spans[static_cast<size_t>(right)].treeLeft)
+                    > spanTreeHeight(segment, segment.spans[static_cast<size_t>(right)].treeRight))
+                    rotateSpanTreeRight(segment, right);
+                root = rotateSpanTreeLeft(segment, index);
+            }
+            index = segment.spans[static_cast<size_t>(root)].treeParent;
+        }
+    }
+
+    void insertSpanTreeNode(CaptureSegment& segment, int index) noexcept
+    {
+        auto& inserted = segment.spans[static_cast<size_t>(index)];
+        inserted.treeLeft = -1;
+        inserted.treeRight = -1;
+        inserted.treeParent = -1;
+        inserted.treeHeight = 1;
+
+        int parent = -1;
+        int current = segment.spanTreeRoot;
+        while (current >= 0) {
+            parent = current;
+            const auto& node = segment.spans[static_cast<size_t>(current)];
+            jassert(node.hostStartSample != inserted.hostStartSample);
+            current = inserted.hostStartSample < node.hostStartSample
+                ? node.treeLeft : node.treeRight;
+        }
+
+        inserted.treeParent = parent;
+        if (parent < 0) {
+            segment.spanTreeRoot = index;
+        } else if (inserted.hostStartSample
+                   < segment.spans[static_cast<size_t>(parent)].hostStartSample) {
+            segment.spans[static_cast<size_t>(parent)].treeLeft = index;
+        } else {
+            segment.spans[static_cast<size_t>(parent)].treeRight = index;
+        }
+        rebalanceSpanTree(segment, parent);
+    }
+
+    int firstSpanAtOrAfter(CaptureSegment& segment, int64_t sample) noexcept
+    {
+        int current = segment.spanTreeRoot;
+        int predecessor = -1;
+        int successor = -1;
+        while (current >= 0) {
+            const auto& span = segment.spans[static_cast<size_t>(current)];
+            if (span.hostStartSample < sample) {
+                predecessor = current;
+                current = span.treeRight;
+            } else {
+                successor = current;
+                current = span.treeLeft;
+            }
+        }
+        if (predecessor >= 0) {
+            const auto& span = segment.spans[static_cast<size_t>(predecessor)];
+            if (span.hostStartSample + static_cast<int64_t>(span.sampleCount) > sample)
+                return predecessor;
+        }
+        return successor;
+    }
+
+    int nextSpanInOrder(const CaptureSegment& segment, int index) noexcept
+    {
+        const auto& span = segment.spans[static_cast<size_t>(index)];
+        if (span.treeRight >= 0) {
+            int next = span.treeRight;
+            while (segment.spans[static_cast<size_t>(next)].treeLeft >= 0)
+                next = segment.spans[static_cast<size_t>(next)].treeLeft;
+            return next;
+        }
+
+        int child = index;
+        int parent = span.treeParent;
+        while (parent >= 0 && segment.spans[static_cast<size_t>(parent)].treeRight == child) {
+            child = parent;
+            parent = segment.spans[static_cast<size_t>(parent)].treeParent;
+        }
+        return parent;
+    }
 
     SegmentInfo makeSegmentInfo(const CaptureSegment& segment)
     {
@@ -67,6 +249,7 @@ void CaptureSession::prepareToPlay(double sampleRate, int maxBlockSize, int host
     const int oldChannels = captureChannels_.exchange(clamped, std::memory_order_acq_rel);
 
     dryScratch_.setSize(clamped, juce::jmax(currentMaxBlockSize_, 512), false, true, false);
+    captureCoverageScratch_.resize(static_cast<size_t>(juce::jmax(currentMaxBlockSize_, 512)));
 
     ChannelLayoutLog::logEntry("vst3-prepare", rawDecl, clamped);
     if (oldChannels != 0 && oldChannels != clamped) {
@@ -84,6 +267,7 @@ void CaptureSession::releaseResources()
 bool CaptureSession::armNewCapture()
 {
     bool needPublish = false;
+    bool rejected = false;
     {
         std::lock_guard<std::mutex> lock(mutableMutex_);
 
@@ -94,7 +278,7 @@ bool CaptureSession::armNewCapture()
             auto& seg = **it;
             if (seg.state.load(std::memory_order_acquire) == SegmentState::Pending
                 && seg.fifo.getTotalWrittenSamples() == 0
-                && !seg.writerActive.load(std::memory_order_acquire)) {
+                && !seg.writerActive.load(std::memory_order_seq_cst)) {
                 AppLogger::log("CaptureSession::armNewCapture: dropping stale empty Pending segment id="
                                + juce::String(static_cast<juce::int64>(seg.contentKey.objectId)));
                 queueForReclaimLocked(std::move(*it));
@@ -112,37 +296,44 @@ bool CaptureSession::armNewCapture()
             if (s == SegmentState::Capturing || s == SegmentState::Pending) {
                 AppLogger::warn("CaptureSession::armNewCapture rejected: existing segment state="
                                 + juce::String(static_cast<int>(s)));
-                return false;
+                rejected = true;
+                break;
             }
         }
 
-        auto seg = std::make_unique<CaptureSegment>();
-        const int ch = captureChannels_.load(std::memory_order_acquire);
-        const uint64_t id = nextId();
-        seg->contentKey = ContentKey{DomainKind::RegularVST3Capture, id, 0};
-        seg->creationOrder = id;
-        seg->captureSampleRate = currentSampleRate_;
-        seg->captureChannels = ch;
-        seg->maxSamples = static_cast<int>(TimeCoordinate::secondsToSamplesCeil(kMaxSegmentSeconds, currentSampleRate_));
-        seg->fifo.reserve(seg->captureChannels, seg->maxSamples);
-        // Pre-allocate against the full PCM budget. A host may submit blocks
-        // smaller than its advertised maximum, so maxBlockSize cannot bound the
-        // number of discontinuous spans without permitting metadata loss.
-        const int spanCapacity = juce::jmax(1, seg->maxSamples);
-        seg->spans.resize(spanCapacity);
-        seg->content = std::make_unique<OpenTune::CaptureSegmentContent>(id);
+        if (!rejected) {
+            auto seg = std::make_unique<CaptureSegment>();
+            const int ch = captureChannels_.load(std::memory_order_acquire);
+            const uint64_t id = nextId();
+            seg->contentKey = ContentKey{DomainKind::RegularVST3Capture, id, 0};
+            seg->creationOrder = id;
+            seg->captureSampleRate = currentSampleRate_;
+            seg->captureChannels = ch;
+            seg->maxSamples = static_cast<int>(TimeCoordinate::secondsToSamplesCeil(kMaxSegmentSeconds, currentSampleRate_));
+            seg->fifo.reserve(seg->captureChannels, seg->maxSamples);
+            // Fixed per-take span metadata budget (1 MiB of CapturedSpan entries). The
+            // audio thread never grows spans or allocates; when the budget is spent it
+            // latches spanBudgetExhausted and stops writing — the take is reclaimed whole.
+            const int spanCapacityOverride = testSpanCapacityOverride_.load(std::memory_order_acquire);
+            const int spanCapacity = spanCapacityOverride > 0
+                ? spanCapacityOverride
+                : juce::jmax(1, static_cast<int>(
+                      kSpanMetadataBudgetBytes / sizeof(CapturedSpan)));
+            seg->spans.resize(spanCapacity);
+            seg->content = std::make_unique<OpenTune::CaptureSegmentContent>(id);
 
-        AppLogger::log("CaptureSession::armNewCapture id=" + juce::String(static_cast<juce::int64>(id))
-                     + " ch=" + juce::String(ch) + " sr=" + juce::String(currentSampleRate_, 1));
+            AppLogger::log("CaptureSession::armNewCapture id=" + juce::String(static_cast<juce::int64>(id))
+                         + " ch=" + juce::String(ch) + " sr=" + juce::String(currentSampleRate_, 1));
 
-        ChannelLayoutLog::logSegmentArm(static_cast<juce::int64>(id), seg->captureChannels);
+            ChannelLayoutLog::logSegmentArm(static_cast<juce::int64>(id), seg->captureChannels);
 
-        mutableSegments_.push_back(std::move(seg));
-        needPublish = true;
+            mutableSegments_.push_back(std::move(seg));
+            needPublish = true;
+        }
     }
     if (needPublish)
         publishSegmentsView();
-    return true;
+    return !rejected;
 }
 
 void CaptureSession::stopCapture()
@@ -151,16 +342,22 @@ void CaptureSession::stopCapture()
     {
         std::lock_guard<std::mutex> lock(mutableMutex_);
         for (auto& seg : mutableSegments_) {
-            if (seg->state.load(std::memory_order_acquire) == SegmentState::Capturing) {
-                capturing = seg.get();
-                break;
-            }
+            if (seg->state.load(std::memory_order_acquire) != SegmentState::Capturing)
+                continue;
+            // A span-budget-exhausted take is reclaimed whole by tick(); it must
+            // never enter Pending and publish partial data as a success.
+            if (seg->spanBudgetExhausted.load(std::memory_order_acquire))
+                continue;
+            capturing = seg.get();
+            break;
         }
     }
     if (capturing == nullptr)
         return;
 
-    capturing->state.store(SegmentState::Pending, std::memory_order_release);
+    // The audio claim/recheck and message-thread finalize use the same SC order
+    // across state and writerActive, closing the claim-vs-drain race.
+    capturing->state.store(SegmentState::Pending, std::memory_order_seq_cst);
 
     AppLogger::log("CaptureSession::stopCapture id=" + juce::String(static_cast<juce::int64>(capturing->contentKey.objectId)));
 
@@ -176,6 +373,7 @@ void CaptureSession::setScanArmed(bool armed)
 
 void CaptureSession::updateTransportScan()
 {
+    SegmentViewReaderGuard readerGuard(activeSegmentReaders_);
     const int64_t sample = lastHostSample_.load(std::memory_order_acquire);
     const bool playing = lastHostPlaying_.load(std::memory_order_acquire);
 
@@ -191,7 +389,7 @@ void CaptureSession::updateTransportScan()
                 capturing = true;
             else if (state == SegmentState::Pending)
                 pending = true;
-            else if (state == SegmentState::Edited && sample >= 0 && seg->containsAbsoluteSample(sample))
+            else if (sample >= 0 && isCoveredSegmentState(state) && seg->containsAbsoluteSample(sample))
                 covered = true;
         }
     }
@@ -222,6 +420,8 @@ void CaptureSession::processBlock(juce::AudioBuffer<float>& buffer,
                                   double hostSampleRate,
                                   bool isPlaying) noexcept
 {
+    SegmentViewReaderGuard readerGuard(activeSegmentReaders_);
+
     if (hostAbsoluteSample >= 0) {
         lastHostSample_.store(hostAbsoluteSample, std::memory_order_release);
         lastHostPlaying_.store(isPlaying, std::memory_order_release);
@@ -303,85 +503,79 @@ void CaptureSession::processBlock(juce::AudioBuffer<float>& buffer,
         if (seg->state.load(std::memory_order_acquire) != SegmentState::Capturing)
             continue;
 
-        // Skip samples already stored in an Edited take or in this take's spans,
-        // so a loop does not write the same host time twice.
-        constexpr int kMaxCovered = 64;
-        HostSampleRange covered[kMaxCovered];
-        int coveredCount = 0;
-        const int64_t blockEnd = hostAbsoluteSample + static_cast<int64_t>(numSamples);
-        auto pushCovered = [&](int64_t start, int64_t count) noexcept {
-            if (coveredCount >= kMaxCovered || count <= 0)
-                return;
-            const int64_t end = start + count;
-            if (end <= hostAbsoluteSample || start >= blockEnd)
-                return;
-            covered[coveredCount].start = start;
-            covered[coveredCount].count = count;
-            ++coveredCount;
-        };
-        for (auto* other : view->snapshot) {
-            if (other == nullptr || other == seg)
-                continue;
-            if (other->state.load(std::memory_order_acquire) != SegmentState::Edited)
-                continue;
-            pushCovered(other->hostStartSample.load(std::memory_order_acquire),
-                        other->hostSampleCount.load(std::memory_order_acquire));
-        }
-        const int spanCount = juce::jmin(seg->numSpans.load(std::memory_order_acquire),
-                                          static_cast<int>(seg->spans.size()));
-        for (int spanIndex = 0; spanIndex < spanCount; ++spanIndex) {
-            const auto& existing = seg->spans[static_cast<size_t>(spanIndex)];
-            pushCovered(existing.hostStartSample, static_cast<int64_t>(existing.sampleCount));
-        }
-
-        BlockSampleRun runs[kMaxCovered + 1];
-        const int runCount = collectUncoveredRuns(hostAbsoluteSample, numSamples,
-                                                   covered, coveredCount,
-                                                   runs, kMaxCovered + 1);
-        if (runCount <= 0)
-            break;
+        if (seg->spanBudgetExhausted.load(std::memory_order_acquire))
+            break;  // latched: tick() reclaims the whole take; audio thread writes nothing
 
         // CAS writer-active: only one writer (audio thread) at a time.
         {
             bool expected = false;
-            if (!seg->writerActive.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+            if (!seg->writerActive.compare_exchange_strong(expected, true, std::memory_order_seq_cst))
                 break;
         }
 
         // Re-check state after CAS: if stopCapture already set Pending, do not write.
-        if (seg->state.load(std::memory_order_acquire) != SegmentState::Capturing) {
-            seg->writerActive.store(false, std::memory_order_release);
+        if (seg->state.load(std::memory_order_seq_cst) != SegmentState::Capturing) {
+            seg->writerActive.store(false, std::memory_order_seq_cst);
             break;
         }
 
         // --- Capture write path. All exits must release writerActive. ---
+        // Collect only this take's spans intersecting the block. Captured spans
+        // are disjoint integer-sample ranges, so at most numSamples can intersect.
+        int takeRangeCount = 0;
+        const int64_t blockEnd = hostAbsoluteSample + static_cast<int64_t>(numSamples);
+        int spanIndex = firstSpanAtOrAfter(*seg, hostAbsoluteSample);
+        while (spanIndex >= 0) {
+            const auto& span = seg->spans[static_cast<size_t>(spanIndex)];
+            if (span.hostStartSample >= blockEnd)
+                break;
+            const int64_t spanEnd = span.hostStartSample + static_cast<int64_t>(span.sampleCount);
+            if (spanEnd > hostAbsoluteSample) {
+                jassert(takeRangeCount < static_cast<int>(captureCoverageScratch_.size()));
+                captureCoverageScratch_[static_cast<size_t>(takeRangeCount++)] = {
+                    span.hostStartSample, static_cast<int64_t>(span.sampleCount) };
+            }
+            spanIndex = nextSpanInOrder(*seg, spanIndex);
+        }
+        const int mergedTakeRangeCount = takeRangeCount;
+
+        // Stream every uncovered run. Completed segment coverage is sorted and
+        // merged when the immutable view is published; this block's own spans
+        // are sorted in preallocated scratch. Each probe is logarithmic.
         bool wroteBlock = false;
+        bool exhausted = false;
         float blockPeak = 0.0f;
         const int chCount = juce::jmin(seg->captureChannels, copyChannels, 32);
-        for (int runIndex = 0; runIndex < runCount; ++runIndex) {
-            const BlockSampleRun& run = runs[runIndex];
-            if (run.sampleCount <= 0)
-                continue;
-
-            const int64_t runHost = hostAbsoluteSample + static_cast<int64_t>(run.blockOffset);
+        const int64_t blockStart = hostAbsoluteSample;
+        auto probe = [&view, this, mergedTakeRangeCount, blockEnd](int64_t pos) noexcept {
+            CoverageProbeResult result;
+            result.insideEnd = pos;
+            result.nextStart = blockEnd;
+            probeSortedCoverageRanges(view->coveredRanges.data(),
+                                      static_cast<int>(view->coveredRanges.size()), pos, result);
+            probeSortedCoverageRanges(captureCoverageScratch_.data(), mergedTakeRangeCount, pos, result);
+            return result;
+        };
+        forEachUncoveredRun(blockStart, numSamples, probe,
+                            [&](int blockOffset, int runSamples) noexcept {
+            const int64_t runHost = blockStart + static_cast<int64_t>(blockOffset);
             const int curSpans = seg->numSpans.load(std::memory_order_relaxed);
             int activeSpanIndex = -1;
             int spanOffset = seg->fifo.getTotalWrittenSamples();
             if (curSpans == 0) {
                 activeSpanIndex = 0;
-            } else if (curSpans > static_cast<int>(seg->spans.size())) {
-                break;
             } else {
                 auto& lastSpan = seg->spans[static_cast<size_t>(curSpans - 1)];
                 const int64_t expectedNext = lastSpan.hostStartSample
                                            + static_cast<int64_t>(lastSpan.sampleCount);
                 if (runHost != expectedNext) {
-                    if (curSpans < static_cast<int>(seg->spans.size())) {
-                        activeSpanIndex = curSpans;
-                        spanOffset = seg->fifo.getTotalWrittenSamples();
-                    } else {
-                        break;
+                    // Discontinuity → new span; budget check before taking one.
+                    if (curSpans >= static_cast<int>(seg->spans.size())) {
+                        exhausted = true;
+                        return false;
                     }
+                    activeSpanIndex = curSpans;
+                    spanOffset = seg->fifo.getTotalWrittenSamples();
                 } else {
                     activeSpanIndex = curSpans - 1;
                 }
@@ -389,17 +583,18 @@ void CaptureSession::processBlock(juce::AudioBuffer<float>& buffer,
 
             const float* srcPtrs[32];
             for (int ch = 0; ch < chCount; ++ch)
-                srcPtrs[ch] = dryScratch_.getReadPointer(ch) + run.blockOffset;
+                srcPtrs[ch] = dryScratch_.getReadPointer(ch) + blockOffset;
 
-            const int accepted = seg->fifo.write(srcPtrs, chCount, run.sampleCount);
+            const int accepted = seg->fifo.write(srcPtrs, chCount, runSamples);
             if (accepted <= 0)
-                break;
+                return false;
 
             auto& span = seg->spans[static_cast<size_t>(activeSpanIndex)];
             if (activeSpanIndex == curSpans) {
                 span.hostStartSample = runHost;
                 span.pcmOffsetSamples = spanOffset;
                 span.sampleCount = accepted;
+                insertSpanTreeNode(*seg, activeSpanIndex);
                 seg->numSpans.store(curSpans + 1, std::memory_order_release);
                 if (curSpans == 0) {
                     seg->hostStartSample.store(runHost, std::memory_order_release);
@@ -418,17 +613,22 @@ void CaptureSession::processBlock(juce::AudioBuffer<float>& buffer,
                         blockPeak = a;
                 }
             }
-            if (accepted < run.sampleCount)
-                break;
-        }
+            return accepted == runSamples;  // fifo full → stop this block
+        });
 
-        seg->writerActive.store(false, std::memory_order_release);
+        if (exhausted) {
+            // Audio side only latches; tick() observes and reclaims the take.
+            // Partial data in the fifo must never be published as a success.
+            seg->spanBudgetExhausted.store(true, std::memory_order_release);
+        }
 
         if (wroteBlock) {
             const float prevPeak = seg->observedPeak.load(std::memory_order_relaxed);
             if (blockPeak > prevPeak)
                 seg->observedPeak.store(blockPeak, std::memory_order_relaxed);
         }
+
+        seg->writerActive.store(false, std::memory_order_seq_cst);
 
         break;  // single-Capturing invariant
     }
@@ -453,6 +653,46 @@ void CaptureSession::tick()
         }
         for (auto* seg : pendingSegments) {
             anyChange = finalizePendingCapture(*seg) || anyChange;
+        }
+    }
+
+    // 2. Span metadata budget exhausted mid-take: the audio thread latched the flag
+    //    and stopped writing. Reclaim the whole unfinished take — partial data must
+    //    never be published as a successful segment. One explicit warning per take.
+    {
+        std::vector<CaptureSegment*> exhaustedSegments;
+        {
+            std::lock_guard<std::mutex> lock(mutableMutex_);
+            for (auto& seg : mutableSegments_) {
+                const auto state = seg->state.load(std::memory_order_acquire);
+                if ((state == SegmentState::Capturing || state == SegmentState::Pending)
+                    && seg->spanBudgetExhausted.load(std::memory_order_acquire)) {
+                    exhaustedSegments.push_back(seg.get());
+                }
+            }
+        }
+        for (auto* seg : exhaustedSegments) {
+            if (seg->writerActive.load(std::memory_order_seq_cst))
+                continue;  // audio thread still inside this block; retry next tick
+
+            const int written = seg->fifo.getTotalWrittenSamples();
+            AppLogger::warn("CaptureSession: span metadata budget exhausted, dropping unfinished take id="
+                            + juce::String(static_cast<juce::int64>(seg->contentKey.objectId))
+                            + " writtenSamples=" + juce::String(written)
+                            + " spans=" + juce::String(seg->numSpans.load(std::memory_order_acquire))
+                            + " (resume playback to start a new take)");
+            {
+                std::lock_guard<std::mutex> lock(mutableMutex_);
+                auto it = std::find_if(mutableSegments_.begin(), mutableSegments_.end(),
+                                       [seg](const std::unique_ptr<CaptureSegment>& s) {
+                                           return s.get() == seg;
+                                       });
+                if (it != mutableSegments_.end()) {
+                    queueForReclaimLocked(std::move(*it));
+                    mutableSegments_.erase(it);
+                }
+            }
+            anyChange = true;
         }
     }
 
@@ -506,7 +746,8 @@ void CaptureSession::tick()
 
     // 4. Reclaim sweep: destroy segments parked in pendingReclaim_ after grace period.
     const int currentTick = tickCounter_.fetch_add(1, std::memory_order_acq_rel) + 1;
-    if (currentTick % kReclaimGraceTicks == 0) {
+    if (currentTick % kReclaimGraceTicks == 0
+        && activeSegmentReaders_.load(std::memory_order_seq_cst) == 0) {
         std::vector<ReclaimEntry> toDestroy;
         {
             std::lock_guard<std::mutex> lock(mutableMutex_);
@@ -733,6 +974,7 @@ bool CaptureSession::applyPitchShiftState(ContentKey segmentContentKey, const Pi
 
 SessionState CaptureSession::getGlobalState() const noexcept
 {
+    SegmentViewReaderGuard readerGuard(activeSegmentReaders_);
     auto view = std::atomic_load(&publishedSegments_);
 
     bool hasCapturing = false, hasProcessing = false;
@@ -749,6 +991,7 @@ SessionState CaptureSession::getGlobalState() const noexcept
 
 double CaptureSession::getCurrentlyCapturedSeconds() const noexcept
 {
+    SegmentViewReaderGuard readerGuard(activeSegmentReaders_);
     auto view = std::atomic_load(&publishedSegments_);
     for (auto* seg : view->snapshot) {
         if (seg->state.load(std::memory_order_acquire) == SegmentState::Capturing) {
@@ -761,6 +1004,7 @@ double CaptureSession::getCurrentlyCapturedSeconds() const noexcept
 
 size_t CaptureSession::getTotalCapturedBytes() const noexcept
 {
+    SegmentViewReaderGuard readerGuard(activeSegmentReaders_);
     size_t total = 0;
     auto view = std::atomic_load(&publishedSegments_);
     for (auto* seg : view->snapshot) {
@@ -905,8 +1149,30 @@ void CaptureSession::publishSegmentsView()
     std::lock_guard<std::mutex> lock(mutableMutex_);
     auto view = std::make_shared<SegmentsView>();
     view->snapshot.reserve(mutableSegments_.size());
-    for (const auto& seg : mutableSegments_)
+    view->coveredRanges.reserve(mutableSegments_.size());
+    for (const auto& seg : mutableSegments_) {
         view->snapshot.push_back(seg.get());
+        const auto state = seg->state.load(std::memory_order_acquire);
+        const int64_t count = seg->hostSampleCount.load(std::memory_order_acquire);
+        if (isCoveredSegmentState(state) && count > 0)
+            view->coveredRanges.push_back({ seg->hostStartSample.load(std::memory_order_acquire), count });
+    }
+    std::sort(view->coveredRanges.begin(), view->coveredRanges.end(),
+              [](const HostSampleRange& a, const HostSampleRange& b) { return a.start < b.start; });
+    int mergedCount = 0;
+    for (const auto& range : view->coveredRanges) {
+        if (mergedCount > 0) {
+            auto& previous = view->coveredRanges[static_cast<size_t>(mergedCount - 1)];
+            const int64_t previousEnd = previous.start + previous.count;
+            const int64_t rangeEnd = range.start + range.count;
+            if (range.start <= previousEnd) {
+                previous.count = std::max(previousEnd, rangeEnd) - previous.start;
+                continue;
+            }
+        }
+        view->coveredRanges[static_cast<size_t>(mergedCount++)] = range;
+    }
+    view->coveredRanges.resize(static_cast<size_t>(mergedCount));
     std::atomic_store(&publishedSegments_, std::shared_ptr<const SegmentsView>(view));
 }
 
@@ -927,7 +1193,9 @@ bool CaptureSession::finalizePendingCapture(CaptureSegment& pending)
         return false;
 
     // Atomic writer-active handshake: only drain after audio thread has released.
-    if (pending.writerActive.load(std::memory_order_acquire))
+    if (pending.writerActive.load(std::memory_order_seq_cst))
+        return false;
+    if (pending.spanBudgetExhausted.load(std::memory_order_acquire))
         return false;
 
     const int written = pending.fifo.getTotalWrittenSamples();
@@ -1066,6 +1334,9 @@ bool CaptureSession::finalizePendingCapture(CaptureSegment& pending)
         dropPending();
         return true;
     }
+
+    // Span metadata is now baked into the published segments — free the storage.
+    std::vector<CapturedSpan>().swap(pending.spans);
 
     return true;
 }
