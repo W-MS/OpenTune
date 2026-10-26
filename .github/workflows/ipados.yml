@@ -26,7 +26,10 @@ concurrency:
 jobs:
   ipados:
     name: iPadOS arm64 (unsigned)
-    runs-on: macos-15
+    # Override with the IPADOS_RUNNER repository variable (e.g. macos-15) when
+    # the Intel pool is slower than the arm64 one; the arm64 pool has repeatedly
+    # failed to acquire a runner for this job.
+    runs-on: ${{ vars.IPADOS_RUNNER || 'macos-15-intel' }}
     timeout-minutes: 120
     defaults:
       run:
@@ -88,6 +91,7 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "${app}/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :UIFileSharingEnabled' "${app}/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :LSSupportsOpeningDocumentsInPlace' "${app}/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :UIApplicationSupportsIndirectInputEvents' "${app}/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "${app}/Info.plist"
 
       - name: Package unsigned IPA
