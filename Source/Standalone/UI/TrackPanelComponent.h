@@ -516,6 +516,7 @@ public:
     void resized() override;
     void mouseDown(const juce::MouseEvent& event) override;
     void mouseUp(const juce::MouseEvent& event) override;
+    void mouseDrag(const juce::MouseEvent& event) override;
     void mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override;
 
     void applyTheme();
@@ -563,6 +564,14 @@ public:
 
 private:
     bool dispatchPointerBinding(const KeyShortcutConfig::KeyBinding& binding);
+    void showTrackMenu(int trackIndex, const juce::PopupMenu::Options& options);
+    void onLongPress();
+
+    // 触摸长按轨道头 = 右键菜单。菜单放在手指旁边，避免抬起手指时误选菜单项。
+    juce::TimedCallback longPressTimer_ { [this] { onLongPress(); } };
+    juce::Point<int> longPressScreenPos_;
+    int longPressTrack_ = -1;
+    bool longPressFired_ = false;
 
     struct TrackControl
     {

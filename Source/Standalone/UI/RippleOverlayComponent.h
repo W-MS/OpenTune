@@ -4,6 +4,7 @@
 #include <deque>
 #include <vector>
 #include "../Utils/MouseTrailConfig.h"
+#include "../Utils/TouchInput.h"
 #include "UIColors.h"
 #include "ThemeTokens.h"
 
@@ -162,7 +163,13 @@ public:
         auto mousePos = juce::Desktop::getInstance().getMousePosition();
         auto localPos = getLocalPoint(nullptr, mousePos).toFloat();
 
-        bool shouldDrawTrail = true;
+        // 手指触摸不画轨迹；鼠标/触控板指针保留。
+        bool shouldDrawTrail = TouchInput::isPointerActive();
+        if (!shouldDrawTrail && !trailPoints.empty())
+        {
+            trailPoints.clear();
+            stateChanged = true;
+        }
         if (auto* componentUnderMouse = juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse())
         {
             if (shouldIgnoreComponent(componentUnderMouse))
