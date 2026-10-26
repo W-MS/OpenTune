@@ -1512,9 +1512,7 @@ void OpenTuneAudioProcessorEditor::restoreStandaloneWindowGeometryOnce()
 #if JUCE_IOS
     // iPadOS 的 StandaloneFilterWindow 始终全屏，保存的桌面窗口几何没有意义。
     standaloneWindowGeometryRestored_ = true;
-    return;
-#endif
-
+#else
     auto* window = dynamic_cast<juce::StandaloneFilterWindow*>(getTopLevelComponent());
     if (window == nullptr || window->getPeer() == nullptr)
         return;  // 尚未挂入默认 StandaloneFilterWindow
@@ -1550,6 +1548,7 @@ void OpenTuneAudioProcessorEditor::restoreStandaloneWindowGeometryOnce()
 
     // 由 StandaloneFilterWindow 现有 constrainer 同步外层窗口与 editor，不手算窗口边框。
     window->setBoundsConstrained(candidate);
+#endif
 }
 
 void OpenTuneAudioProcessorEditor::applyUiZoomIfNeeded()
