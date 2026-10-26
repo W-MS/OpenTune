@@ -98,9 +98,15 @@ private:
 
     void show(juce::Component& target, const juce::String& text)
     {
-        juce::Component* parent = target.findParentComponentOfClass<juce::AudioProcessorEditor>();
-        if (parent == nullptr)
-            parent = target.getTopLevelComponent();
+        // 放进编辑器的直接子容器：弹出菜单也以它为父组件，这样标签才能排在菜单之下。
+        juce::Component* parent = target.getTopLevelComponent();
+        if (auto* editor = target.findParentComponentOfClass<juce::AudioProcessorEditor>())
+        {
+            parent = editor;
+            for (auto* c = &target; c != nullptr && c != editor; c = c->getParentComponent())
+                if (c->getParentComponent() == editor)
+                    parent = c;
+        }
         if (parent == nullptr)
             return;
 
@@ -128,11 +134,29 @@ private:
         bubble_->setAlpha(1.0f);
         bubble_->setVisible(true);
         bubble_->toFront(false);
+        keepBelowPopups();
 
         held_ = true;
         elapsedMs_ = 0;
         fadeStartMs_ = -1;
         startTimer(kTickMs);
+    }
+
+    // 弹出菜单（以及其他模态浮层）进入模态状态；标签始终排在最底层的模态兄弟组件之下。
+    void keepBelowPopups()
+    {
+        auto* parent = bubble_ != nullptr ? bubble_->getParentComponent() : nullptr;
+        if (parent == nullptr)
+            return;
+
+        for (auto* sibling : parent->getChildren())
+        {
+            if (sibling != bubble_.get() && sibling->isCurrentlyModal(false))
+            {
+                bubble_->toBehind(sibling);
+                return;
+            }
+        }
     }
 
     void timerCallback() override
@@ -142,6 +166,8 @@ private:
             stopTimer();
             return;
         }
+
+        keepBelowPopups();
 
         elapsedMs_ += kTickMs;
         if (elapsedMs_ < kVisibleMs || held_)
