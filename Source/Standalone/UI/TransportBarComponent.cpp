@@ -2,6 +2,7 @@
 #include "OpenTuneLookAndFeel.h"
 #include "UIColors.h"
 #include "ToolbarIcons.h"
+#include "TouchTooltipPresenter.h"
 #include "../../Utils/LocalizationManager.h"
 #include <cmath>
 
@@ -1194,6 +1195,7 @@ TransportBarComponent::TransportBarComponent()
     playButton_.setTooltip(LOC(kTooltipPlay) + "\nSpace");
     playButton_.getProperties().set(kOverdoseUiRoleKey, kOverdoseUiRoleTransport);
     playButton_.setSolidIcon(true);
+    playButton_.getProperties().set(TouchTooltipPresenter::kSuppressProperty, true);
     addAndMakeVisible(playButton_);
 
     // Setup Pause Button
@@ -1202,6 +1204,7 @@ TransportBarComponent::TransportBarComponent()
     pauseButton_.setTooltip(LOC(kTooltipPause) + "\nSpace");
     pauseButton_.getProperties().set(kOverdoseUiRoleKey, kOverdoseUiRoleTransport);
     pauseButton_.setSolidIcon(true);
+    pauseButton_.getProperties().set(TouchTooltipPresenter::kSuppressProperty, true);
     addAndMakeVisible(pauseButton_);
 
     // Setup Stop Button
