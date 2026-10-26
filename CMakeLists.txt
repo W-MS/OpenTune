@@ -12,8 +12,22 @@ cmake_minimum_required(VERSION 3.22)
 # universal2 ORT 1.20.0 runtime (CoreML EP), both targeting macOS 12.0. ORT
 # 1.20.0 contains the CoreML MLModelConfiguration initialization fix required
 # by macOS 15+.
+#
+# iPadOS builds (-G Xcode -DCMAKE_SYSTEM_NAME=iOS) produce only the Standalone
+# app, arm64, against the static ONNX Runtime iOS xcframework. VST3/AU/ARA are
+# not part of the iPadOS product.
 # ==============================================================================
-if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(OPENTUNE_IOS TRUE)
+    set(OPENTUNE_MACOS FALSE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "16.0" CACHE STRING "Minimum iPadOS deployment target")
+    if(CMAKE_OSX_ARCHITECTURES STREQUAL "")
+        set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "iPadOS architectures" FORCE)
+    endif()
+    option(OPENTUNE_IOS_SIMULATOR "Link the ONNX Runtime iOS simulator slice" OFF)
+elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+    set(OPENTUNE_IOS FALSE)
+    set(OPENTUNE_MACOS TRUE)
     if(CMAKE_OSX_ARCHITECTURES STREQUAL "")
         set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "macOS architectures" FORCE)
     endif()
@@ -77,17 +91,20 @@ include("${OPENTUNE_JUCE_DIR}/extras/Build/CMake/JUCEModuleSupport.cmake")
 include("${OPENTUNE_JUCE_DIR}/extras/Build/CMake/JUCEUtils.cmake")
 add_subdirectory("${OPENTUNE_JUCE_DIR}/extras/Build" "${JUCE_BINARY_DIR}/extras/Build")
 add_subdirectory("${OPENTUNE_JUCE_DIR}/modules" "${JUCE_BINARY_DIR}/modules")
-opentune_use_juce_vst3_client_ara_legacy_bind_overlay("${OPENTUNE_JUCE_DIR}")
 
 # ARA2 VST3 is the shipping plugin; hosts without ARA binding still use its
 # Capture fallback. Apple builds also expose a temporary ARA2 AU diagnostic.
-if(NOT EXISTS "${ARA_SDK_PATH}")
-    message(FATAL_ERROR
-        "ARA SDK ${OPENTUNE_ARA_SDK_VERSION} is required at ${ARA_SDK_PATH}. "
-        "Clone it with: git clone --recursive --branch releases/${OPENTUNE_ARA_SDK_VERSION} https://github.com/Celemony/ARA_SDK")
+if(NOT OPENTUNE_IOS)
+    opentune_use_juce_vst3_client_ara_legacy_bind_overlay("${OPENTUNE_JUCE_DIR}")
+
+    if(NOT EXISTS "${ARA_SDK_PATH}")
+        message(FATAL_ERROR
+            "ARA SDK ${OPENTUNE_ARA_SDK_VERSION} is required at ${ARA_SDK_PATH}. "
+            "Clone it with: git clone --recursive --branch releases/${OPENTUNE_ARA_SDK_VERSION} https://github.com/Celemony/ARA_SDK")
+    endif()
+    juce_set_ara_sdk_path("${ARA_SDK_PATH}")
+    message(STATUS "ARA SDK found at: ${ARA_SDK_PATH} (ARA2 plugin support enabled)")
 endif()
-juce_set_ara_sdk_path("${ARA_SDK_PATH}")
-message(STATUS "ARA SDK found at: ${ARA_SDK_PATH} (ARA2 plugin support enabled)")
 
 # ==============================================================================
 # ONNX Runtime Configuration
@@ -237,6 +254,31 @@ if(WIN32)
         set(ONNXRUNTIME_ROOT "${OPENTUNE_DEFAULT_ONNXRUNTIME_ROOT}" CACHE PATH "ONNX Runtime CPU root directory" FORCE)
     endif()
 
+elseif(OPENTUNE_IOS)
+    # ---- iPadOS: upstream ONNX Runtime 1.20.0 static xcframework (CoreML EP) ----
+    # scripts/github_actions/fetch-ios-onnxruntime.sh unpacks the official
+    # onnxruntime-c pod archive as include/ + onnxruntime.xcframework/.
+    set(OPENTUNE_ONNXRUNTIME_VERSION "1.20.0")
+    set(OPENTUNE_DEFAULT_ONNXRUNTIME_ROOT
+        "${OPENTUNE_THIRDPARTY_DIR}/onnxruntime-ios-${OPENTUNE_ONNXRUNTIME_VERSION}")
+    if(NOT DEFINED ONNXRUNTIME_ROOT OR "${ONNXRUNTIME_ROOT}" STREQUAL "")
+        set(ONNXRUNTIME_ROOT "${OPENTUNE_DEFAULT_ONNXRUNTIME_ROOT}"
+            CACHE PATH "ONNX Runtime root directory" FORCE)
+    endif()
+
+    if(OPENTUNE_IOS_SIMULATOR)
+        set(OPENTUNE_ORT_IOS_SLICE "ios-arm64_x86_64-simulator")
+    else()
+        set(OPENTUNE_ORT_IOS_SLICE "ios-arm64")
+    endif()
+    set(ONNXRUNTIME_IOS_STATIC_LIB
+        "${ONNXRUNTIME_ROOT}/onnxruntime.xcframework/${OPENTUNE_ORT_IOS_SLICE}/onnxruntime.framework/onnxruntime")
+    if(NOT EXISTS "${ONNXRUNTIME_IOS_STATIC_LIB}")
+        message(FATAL_ERROR
+            "ONNX Runtime iOS static library not found at ${ONNXRUNTIME_IOS_STATIC_LIB}. "
+            "Run scripts/github_actions/fetch-ios-onnxruntime.sh first.")
+    endif()
+
 elseif(APPLE)
     # ---- macOS: project-built ONNX Runtime 1.20.0 universal2 ----
     # The runtime is built from the upstream v1.20.0 source with CoreML
@@ -260,7 +302,7 @@ elseif(APPLE)
     endif()
 
 else()
-    message(FATAL_ERROR "Unsupported platform. Only Windows and macOS are supported.")
+    message(FATAL_ERROR "Unsupported platform. Only Windows, macOS and iPadOS are supported.")
 endif()
 set(ONNXRUNTIME_INCLUDE_DIR "${ONNXRUNTIME_ROOT}/include")
 set(ONNXRUNTIME_LIB_DIR "${ONNXRUNTIME_ROOT}/lib")
@@ -270,7 +312,7 @@ if(NOT EXISTS "${ONNXRUNTIME_INCLUDE_DIR}/onnxruntime_cxx_api.h")
     message(FATAL_ERROR "ONNX Runtime C++ API header not found at ${ONNXRUNTIME_INCLUDE_DIR}")
 endif()
 
-if(APPLE)
+if(OPENTUNE_MACOS)
     set(ONNXRUNTIME_DYLIB
         "${ONNXRUNTIME_LIB_DIR}/libonnxruntime.${OPENTUNE_ONNXRUNTIME_VERSION}.dylib")
     if(NOT EXISTS "${ONNXRUNTIME_DYLIB}")
@@ -349,6 +391,10 @@ if(WIN32)
     message(STATUS "DirectX Agility root: ${OPENTUNE_D3D12_AGILITY_ROOT}")
     message(STATUS "DirectX Agility SDK version token: ${OPENTUNE_D3D12_SDK_VERSION}")
 
+elseif(OPENTUNE_IOS)
+    message(STATUS "ONNX Runtime version: ${OPENTUNE_ONNXRUNTIME_VERSION} (iPadOS ${OPENTUNE_ORT_IOS_SLICE})")
+    message(STATUS "ONNX Runtime static library: ${ONNXRUNTIME_IOS_STATIC_LIB}")
+
 elseif(APPLE)
     message(STATUS "ONNX Runtime version: ${OPENTUNE_ONNXRUNTIME_VERSION} (macOS ${CMAKE_OSX_ARCHITECTURES})")
     message(STATUS "ONNX Runtime root: ${ONNXRUNTIME_ROOT}")
@@ -382,6 +428,34 @@ set(OPENTUNE_PLUGIN_COMMON_ARGS
     COPY_PLUGIN_AFTER_BUILD FALSE
 )
 
+if(OPENTUNE_IOS)
+    # iPad only, landscape only: the editor needs at least 900x500 points.
+    # Files the user saves land in the app's Documents folder, which the
+    # Files app shows as "On My iPad > OpenTune".
+    juce_add_plugin(OpenTuneStandalone
+        ${OPENTUNE_PLUGIN_COMMON_ARGS}
+        FORMATS Standalone
+        IS_ARA_EFFECT FALSE
+        TARGETED_DEVICE_FAMILY "2"
+        IPAD_SCREEN_ORIENTATIONS UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        REQUIRES_FULL_SCREEN TRUE
+        STATUS_BAR_HIDDEN TRUE
+        FILE_SHARING_ENABLED TRUE
+        MICROPHONE_PERMISSION_ENABLED TRUE
+        MICROPHONE_PERMISSION_TEXT "OpenTune needs microphone access for real-time audio monitoring."
+        PLIST_TO_MERGE
+        "<plist version=\"1.0\">
+        <dict>
+            <key>LSSupportsOpeningDocumentsInPlace</key>
+            <true/>
+            <key>UIApplicationSupportsIndirectInputEvents</key>
+            <true/>
+            <key>NSHumanReadableCopyright</key>
+            <string>Copyright © 2024-2026 DAYA. All rights reserved.</string>
+        </dict>
+        </plist>"
+    )
+else()
 juce_add_plugin(OpenTune
     ${OPENTUNE_PLUGIN_COMMON_ARGS}
     FORMATS VST3
@@ -416,8 +490,9 @@ juce_add_plugin(OpenTuneStandalone
     </dict>
     </plist>"
 )
+endif()
 
-if(APPLE)
+if(OPENTUNE_MACOS)
     # Temporary diagnostic AU: independent SharedCode and VST3 ARA identity,
     # without a module pin or installer integration.
     juce_add_plugin(OpenTuneAU
@@ -439,12 +514,16 @@ endif()
 
 # Each single-format SharedCode target compiles the COMMON source list and shares
 # the same include dirs / link libs / definitions / build options.
-set(OPENTUNE_SHARED_CODE_TARGETS OpenTune OpenTuneStandalone)
-if(APPLE)
+if(OPENTUNE_IOS)
+    set(OPENTUNE_SHARED_CODE_TARGETS OpenTuneStandalone)
+else()
+    set(OPENTUNE_SHARED_CODE_TARGETS OpenTune OpenTuneStandalone)
+endif()
+if(OPENTUNE_MACOS)
     list(APPEND OPENTUNE_SHARED_CODE_TARGETS OpenTuneAU)
 endif()
 
-if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
+if(OPENTUNE_MACOS AND NOT CMAKE_OSX_ARCHITECTURES STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
     # The helper must be host-arch so it can run while the plugin is universal
     # or cross-compiled. JUCE 8.0.6 creates one executable named juce_vst3_helper.
     # Later JUCE revisions name it after the plugin instead.
@@ -681,6 +760,7 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Standalone/UI/TransportBarComponent.h
         Source/Standalone/UI/TopBarComponent.cpp
         Source/Standalone/UI/TopBarComponent.h
+        Source/Standalone/UI/TouchTooltipPresenter.h
         Source/Standalone/UI/TimelineOverviewComponent.cpp
         Source/Standalone/UI/TimelineOverviewComponent.h
 
@@ -845,6 +925,7 @@ set(OPENTUNE_STANDALONE_SOURCES
         Source/Standalone/UI/TimelineCompositeCache.cpp
         Source/Standalone/UI/TimelineCompositeCache.h
         Source/Standalone/UI/RippleOverlayComponent.h
+        Source/Utils/TouchInput.h
 )
 
 # Non-Standalone state/capture sources (never referenced by the Standalone target).
@@ -859,8 +940,16 @@ foreach(_opentune_target IN LISTS OPENTUNE_SHARED_CODE_TARGETS)
     target_sources(${_opentune_target} PRIVATE ${OPENTUNE_COMMON_SOURCES})
 endforeach()
 target_sources(OpenTuneStandalone PRIVATE ${OPENTUNE_STANDALONE_SOURCES})
-target_sources(OpenTune PRIVATE ${OPENTUNE_NON_STANDALONE_SOURCES})
-if(APPLE)
+if(OPENTUNE_IOS)
+    target_sources(OpenTuneStandalone PRIVATE
+        Source/Utils/TouchInput_ios.mm
+        Source/Utils/IosDocumentPicker.h
+        Source/Utils/IosDocumentPicker.mm)
+endif()
+if(NOT OPENTUNE_IOS)
+    target_sources(OpenTune PRIVATE ${OPENTUNE_NON_STANDALONE_SOURCES})
+endif()
+if(OPENTUNE_MACOS)
     target_sources(OpenTuneAU PRIVATE ${OPENTUNE_NON_STANDALONE_SOURCES})
 endif()
 
@@ -878,6 +967,8 @@ set(OPENTUNE_STANDALONE_APP_SOURCES
     Source/Standalone/StandaloneAudioDeviceSync.h
     Source/Editor/Preferences/StandalonePreferencePages.cpp
     Source/Editor/Preferences/StandalonePreferencePages.h
+    Source/Utils/PlatformFileDialogs.cpp
+    Source/Utils/PlatformFileDialogs.h
 )
 
 target_sources(OpenTuneStandalone_Standalone PRIVATE ${OPENTUNE_STANDALONE_APP_SOURCES})
@@ -890,9 +981,11 @@ set(OPENTUNE_VST3_APP_SOURCES
     Source/Plugin/PluginEditor.h
 )
 
-target_sources(OpenTune_VST3 PRIVATE ${OPENTUNE_VST3_APP_SOURCES})
+if(NOT OPENTUNE_IOS)
+    target_sources(OpenTune_VST3 PRIVATE ${OPENTUNE_VST3_APP_SOURCES})
+endif()
 
-if(APPLE)
+if(OPENTUNE_MACOS)
     target_sources(OpenTuneAU_AU PRIVATE
         Source/Editor/EditorFactoryPlugin.cpp
         Source/Plugin/PluginEditor.cpp
@@ -920,8 +1013,10 @@ set(OPENTUNE_ARA_SOURCES
     Source/ARA/OpenTunePlaybackRenderer.cpp
     Source/ARA/OpenTunePlaybackRenderer.h
 )
-target_sources(OpenTune PRIVATE ${OPENTUNE_ARA_SOURCES})
-if(APPLE)
+if(NOT OPENTUNE_IOS)
+    target_sources(OpenTune PRIVATE ${OPENTUNE_ARA_SOURCES})
+endif()
+if(OPENTUNE_MACOS)
     target_sources(OpenTuneAU PRIVATE ${OPENTUNE_ARA_SOURCES})
 endif()
 
@@ -939,8 +1034,10 @@ set(OPENTUNE_CAPTURE_SOURCES
     Source/Plugin/Capture/CapturePersistence.cpp
     Source/Plugin/Capture/CapturePersistence.h
 )
-target_sources(OpenTune PRIVATE ${OPENTUNE_CAPTURE_SOURCES})
-if(APPLE)
+if(NOT OPENTUNE_IOS)
+    target_sources(OpenTune PRIVATE ${OPENTUNE_CAPTURE_SOURCES})
+endif()
+if(OPENTUNE_MACOS)
     target_sources(OpenTuneAU PRIVATE ${OPENTUNE_CAPTURE_SOURCES})
 endif()
 
@@ -1063,6 +1160,12 @@ foreach(_opentune_target IN LISTS OPENTUNE_SHARED_CODE_TARGETS)
     if(WIN32)
         target_link_libraries(${_opentune_target} PRIVATE "${OPENTUNE_ORT_IMPORT_LIB}")
         add_dependencies(${_opentune_target} OpenTuneOnnxRuntimeImportLib)
+    elseif(OPENTUNE_IOS)
+        target_link_libraries(${_opentune_target} PRIVATE
+            "${ONNXRUNTIME_IOS_STATIC_LIB}"
+            "-framework Accelerate"
+            "-framework CoreML"
+            "-framework Foundation")
     elseif(APPLE)
         target_link_libraries(${_opentune_target} PRIVATE "${ONNXRUNTIME_DYLIB}")
         target_link_libraries(${_opentune_target} PRIVATE "-framework Accelerate")
@@ -1108,11 +1211,13 @@ target_compile_definitions(OpenTuneStandalone PRIVATE
     JUCE_USE_FLAC=1
     JUCE_USE_OGGVORBIS=1
 )
-target_compile_definitions(OpenTune PRIVATE
-    JUCE_USE_FLAC=0
-    JUCE_USE_OGGVORBIS=0
-)
-if(APPLE)
+if(NOT OPENTUNE_IOS)
+    target_compile_definitions(OpenTune PRIVATE
+        JUCE_USE_FLAC=0
+        JUCE_USE_OGGVORBIS=0
+    )
+endif()
+if(OPENTUNE_MACOS)
     target_compile_definitions(OpenTuneAU PRIVATE
         JUCE_USE_FLAC=0
         JUCE_USE_OGGVORBIS=0
@@ -1160,26 +1265,28 @@ elseif(APPLE)
     # Product-specific Info.plist metadata is injected by each juce_add_plugin
     # declaration above; no second pass is needed here.
 
-    # Build distributable bundles with only bundle-relative runtime search paths.
-    # BUILD_WITH_INSTALL_RPATH prevents CMake from embedding ONNXRUNTIME_LIB_DIR.
-    set_target_properties(OpenTuneStandalone_Standalone PROPERTIES
-        BUILD_WITH_INSTALL_RPATH TRUE
-        INSTALL_RPATH "@executable_path/../Frameworks"
-    )
-    set_target_properties(OpenTune_VST3 PROPERTIES
-        BUILD_WITH_INSTALL_RPATH TRUE
-        INSTALL_RPATH "@loader_path/../Frameworks"
-    )
-    set_target_properties(OpenTuneAU_AU PROPERTIES
-        BUILD_WITH_INSTALL_RPATH TRUE
-        INSTALL_RPATH "@loader_path/../Frameworks"
-    )
+    if(OPENTUNE_MACOS)
+        # Build distributable bundles with only bundle-relative runtime search paths.
+        # BUILD_WITH_INSTALL_RPATH prevents CMake from embedding ONNXRUNTIME_LIB_DIR.
+        set_target_properties(OpenTuneStandalone_Standalone PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "@executable_path/../Frameworks"
+        )
+        set_target_properties(OpenTune_VST3 PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "@loader_path/../Frameworks"
+        )
+        set_target_properties(OpenTuneAU_AU PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "@loader_path/../Frameworks"
+        )
 
-    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/userguide/UserGuide.html" PROPERTIES
-        HEADER_FILE_ONLY TRUE
-        MACOSX_PACKAGE_LOCATION "Resources/docs"
-    )
-    target_sources(OpenTuneStandalone_Standalone PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/userguide/UserGuide.html")
+        set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/userguide/UserGuide.html" PROPERTIES
+            HEADER_FILE_ONLY TRUE
+            MACOSX_PACKAGE_LOCATION "Resources/docs"
+        )
+        target_sources(OpenTuneStandalone_Standalone PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/userguide/UserGuide.html")
+    endif()
 endif()
 
 # ==============================================================================
@@ -1235,6 +1342,20 @@ if(WIN32)
         COMMENT "Copying AI models to Standalone..."
     )
 
+elseif(OPENTUNE_IOS)
+    # iOS bundles are flat: ModelPathResolver finds <executable dir>/models.
+    add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/models"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${HIFIGAN_MODEL_COMMUNITY}"
+            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/models/hifigan.onnx"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${FCPE_MODEL}"
+            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/models/fcpe.onnx"
+        COMMENT "Copying AI models into the iPadOS app bundle..."
+    )
+
 elseif(APPLE)
     add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
@@ -1264,7 +1385,7 @@ elseif(APPLE)
     )
 endif()
 
-if(APPLE)
+if(OPENTUNE_MACOS)
     # macOS: docs go in Contents/Resources/docs/ (bundle standard)
     add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
@@ -1287,7 +1408,7 @@ if(APPLE)
         COMMENT "Copying UserGuide translations to app bundle Resources..."
     )
 else()
-    # Windows: docs go alongside the executable
+    # Windows and the flat iPadOS bundle: docs go alongside the executable
     add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
             "$<TARGET_FILE_DIR:OpenTuneStandalone_Standalone>/docs"
@@ -1462,12 +1583,14 @@ endif()
 # ==============================================================================
 # Installation
 # ==============================================================================
-install(TARGETS OpenTune
-    RUNTIME DESTINATION bin
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-    RESOURCE DESTINATION bin
-)
+if(NOT OPENTUNE_IOS)
+    install(TARGETS OpenTune
+        RUNTIME DESTINATION bin
+        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION lib
+        RESOURCE DESTINATION bin
+    )
+endif()
 
 # ==============================================================================
 # Summary
@@ -1483,7 +1606,11 @@ message(STATUS "Manufacturer Code: DAYA")
 message(STATUS "Plugin Code:      De77")
 message(STATUS "ONNX Runtime:     ${ONNXRUNTIME_ROOT}")
 message(STATUS "JUCE Path:        ${OPENTUNE_JUCE_DIR}")
-message(STATUS "Plugin Formats:   Standalone + VST3")
+if(OPENTUNE_IOS)
+    message(STATUS "Plugin Formats:   Standalone (iPadOS)")
+else()
+    message(STATUS "Plugin Formats:   Standalone + VST3")
+endif()
 message(STATUS "========================================")
 message(STATUS "")
 
@@ -1491,6 +1618,9 @@ message(STATUS "")
 # Tests (optional; the state-codec test links JUCE Core only)
 # ==============================================================================
 option(OPENTUNE_BUILD_TESTS "Build OpenTune tests" OFF)
+if(OPENTUNE_IOS AND OPENTUNE_BUILD_TESTS)
+    message(FATAL_ERROR "OPENTUNE_BUILD_TESTS links the VST3/ARA target and is not available for iPadOS builds.")
+endif()
 option(OPENTUNE_ENABLE_APPROVED_BACKPRESSURE_TEST
        "Register the backpressure test only with an approved blocking-synthesize injector" OFF)
 if(OPENTUNE_BUILD_TESTS)

@@ -101,7 +101,7 @@ inline bool getWheelBindingType(const juce::MouseWheelDetails& wheel,
     float deltaX = wheel.deltaX * direction;
     float deltaY = wheel.deltaY * direction;
 
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
     if (modifiers.isShiftDown() && deltaY == 0.0f && deltaX != 0.0f) {
         deltaY = deltaX;
         deltaX = 0.0f;
@@ -233,7 +233,7 @@ private:
     {
         if (binding.type != BindingType::Keyboard) {
             juce::String text;
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
             if (binding.modifiers.isCtrlDown()) text << "Ctrl+";
             if (binding.modifiers.isCommandDown()) text << "Cmd+";
 #else
@@ -258,7 +258,7 @@ private:
         const auto modifiers = binding.modifiers;
         juce::String name;
         
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
         // macOS convention: symbol modifiers without + separators, order: ⌃⌥⇧⌘
         if (modifiers.isCtrlDown() && !modifiers.isCommandDown())
             name << juce::String::fromUTF8("\xe2\x8c\x83"); // ⌃ (Control)
@@ -322,7 +322,7 @@ inline const ShortcutInfo kShortcutInfos[] = {
     { ShortcutId::PlayPause, "shared.shortcuts.playPause", Loc::Keys::kPlayPause,
       kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding(juce::KeyPress::spaceKey, {}) } },
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
     { ShortcutId::Stop, "shared.shortcuts.stop", Loc::Keys::kStop,
       kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding('.', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier
@@ -359,7 +359,7 @@ inline const ShortcutInfo kShortcutInfos[] = {
     { ShortcutId::SelectAll, "shared.shortcuts.selectAll", Loc::Keys::kSelectAll,
       kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding('A', juce::ModifierKeys::commandModifier) } },
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
     { ShortcutId::Delete, "shared.shortcuts.delete", Loc::Keys::kDelete,
       kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope, {
         KeyBinding(juce::KeyPress::deleteKey, {}),
@@ -373,7 +373,7 @@ inline const ShortcutInfo kShortcutInfos[] = {
         KeyBinding('1', {})
     } },
 #endif
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
     { ShortcutId::SplitClip, "shared.shortcuts.splitClip", Loc::Keys::kSplitClip,
       kStandaloneArrangementScope, { KeyBinding('E', juce::ModifierKeys::commandModifier) } },
     { ShortcutId::MergeClips, "shared.shortcuts.mergeClips", Loc::Keys::kMergeClips,
@@ -400,7 +400,7 @@ inline const ShortcutInfo kShortcutInfos[] = {
       kPianoRollOpenTuneScope, { KeyBinding('3', {}) } },
     { ShortcutId::ToolLineAnchor, "shared.shortcuts.toolLineAnchor", Loc::Keys::kToolLineAnchor,
       kPianoRollOpenTuneScope, { KeyBinding('4', {}) } },
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
     { ShortcutId::ToolHandDraw, "shared.shortcuts.toolHandDraw", Loc::Keys::kToolHandDraw,
       kPianoRollOpenTuneScope | kPianoRollOpenDyneScope, { KeyBinding('H', {}) } },
     { ShortcutId::ToolAutoTune, "shared.shortcuts.toolAutoTune", Loc::Keys::kToolAutoTune,
@@ -418,7 +418,7 @@ inline const ShortcutInfo kShortcutInfos[] = {
     { ShortcutId::CancelSelection, "shared.shortcuts.cancelSelection", Loc::Keys::kCancelSelection,
       kPluginEditorGeneralScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding(juce::KeyPress::escapeKey, {}) } },
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
     // OpenDyne工具按界面顺序分配数字键1-6
     { ShortcutId::ToolODSelect, "shared.shortcuts.toolODSelect", Loc::Keys::kToolODSelect,
       kPianoRollOpenDyneScope, { KeyBinding('1', {}) } },
@@ -457,7 +457,7 @@ inline const ShortcutInfo kShortcutInfos[] = {
       kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding(juce::KeyPress::rightKey, juce::ModifierKeys::altModifier),
         KeyBinding(BindingType::WheelDown, juce::ModifierKeys::altModifier) } },
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
     { ShortcutId::ZoomHorizontalIn, "shared.shortcuts.zoomHorizontalIn", Loc::Keys::kZoomHorizontalIn,
       kPluginEditorGeneralScope | kStandaloneArrangementScope | kPianoRollOpenTuneScope | kPianoRollOpenDyneScope,
       { KeyBinding(juce::KeyPress::rightKey,
@@ -554,7 +554,7 @@ inline juce::String toCanonicalString(const KeyBinding& binding)
     const auto modifierFlags = binding.modifiers.getRawFlags();
 
     if (binding.type == BindingType::Keyboard) {
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
         if ((modifierFlags & juce::ModifierKeys::ctrlModifier) != 0)
             text << "Ctrl+";
         if ((modifierFlags & juce::ModifierKeys::commandModifier) != 0)
@@ -565,7 +565,7 @@ inline juce::String toCanonicalString(const KeyBinding& binding)
             text << "Ctrl+";
 #endif
     } else {
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
         if ((modifierFlags & juce::ModifierKeys::ctrlModifier) != 0)
             text << "Ctrl+";
         if ((modifierFlags & juce::ModifierKeys::commandModifier) != 0)

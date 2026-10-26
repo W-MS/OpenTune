@@ -11,6 +11,7 @@
 #include "../../Utils/PianoRollNotePatchAction.h"
 #include "../../Utils/VolumeEnvelopeRegionEdit.h"
 #include "../../Utils/CursorTheme.h"
+#include "../../Utils/TouchInput.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -4595,6 +4596,8 @@ void PianoRollComponent::mouseMove(const juce::MouseEvent& e) {
 }
 
 void PianoRollComponent::mouseDoubleClick(const juce::MouseEvent& e) {
+    if (std::exchange(fingerGesture_.suppressDoubleClick, false))
+        return;
     // OpenDyne: Cmd+Alt+double-click → zoom to note / restore zoom
     if (isOpenDyne() && e.mods.isCommandDown() && e.mods.isAltDown() && e.x >= getTimelineContentStartX()) {
         // Find note under cursor
@@ -4614,6 +4617,237 @@ void PianoRollComponent::mouseDoubleClick(const juce::MouseEvent& e) {
 }
 
 void PianoRollComponent::mouseDown(const juce::MouseEvent& e) {
+    if (TouchInput::isFingerPress(e) && beginFingerPress(e))
+        return;
+    dispatchMouseDown(e);
+}
+
+void PianoRollComponent::mouseDrag(const juce::MouseEvent& e) {
+    if (continueFingerDrag(e))
+        return;
+    dispatchMouseDrag(e);
+}
+
+void PianoRollComponent::mouseUp(const juce::MouseEvent& e) {
+    if (endFingerPress(e))
+        return;
+    dispatchMouseUp(e);
+}
+
+bool PianoRollComponent::fingerDragOnEmptySpacePans() const noexcept {
+    if (currentTool_ == ToolId::HandDraw)
+        return false;
+    if (currentTool_ == ToolId::DrawNote && !isOpenDyne())
+        return false;
+    return true;
+}
+
+bool PianoRollComponent::beginFingerPress(const juce::MouseEvent& e) {
+    auto& g = fingerGesture_;
+    const int index = e.source.getIndex();
+    g.fingers[index] = e.position;
+    g.suppressDoubleClick = false;
+
+    if (g.fingers.size() == 1) {
+        g.primaryIndex = index;
+        g.lastPrimaryEvent.emplace(e);
+        dispatchMouseDown(e);
+        g.mode = interactionState_.emptySpaceIntent.active && fingerDragOnEmptySpacePans()
+            ? FingerGesture::Mode::EmptyTap
+            : FingerGesture::Mode::Forwarded;
+        return true;
+    }
+
+    if (g.mode == FingerGesture::Mode::Pinch || g.mode == FingerGesture::Mode::Ignore)
+        return true;
+
+    // 第二根手指落下：结束单指动作后转入捏合。空白单击意图直接丢弃，避免移动播放头。
+    switch (g.mode) {
+        case FingerGesture::Mode::EmptyTap:
+            interactionState_.emptySpaceIntent.clear();
+            break;
+        case FingerGesture::Mode::Forwarded:
+            if (g.lastPrimaryEvent.has_value())
+                dispatchMouseUp(*g.lastPrimaryEvent);
+            break;
+        case FingerGesture::Mode::Idle:
+        case FingerGesture::Mode::Panning:
+        case FingerGesture::Mode::Pinch:
+        case FingerGesture::Mode::Ignore:
+            break;
+    }
+
+    g.pinchA = g.primaryIndex;
+    g.pinchB = index;
+    if (g.fingers.count(g.pinchA) == 0)
+        g.pinchA = g.fingers.begin()->first;
+    beginFingerPinch();
+    return true;
+}
+
+bool PianoRollComponent::continueFingerDrag(const juce::MouseEvent& e) {
+    auto& g = fingerGesture_;
+    const int index = e.source.getIndex();
+    const auto it = g.fingers.find(index);
+    if (it == g.fingers.end())
+        return false;
+    it->second = e.position;
+
+    switch (g.mode) {
+        case FingerGesture::Mode::Pinch:
+            if (index == g.pinchA || index == g.pinchB)
+                updateFingerPinch();
+            return true;
+        case FingerGesture::Mode::EmptyTap:
+            if (index != g.primaryIndex)
+                return true;
+            if (e.position.getDistanceFrom(e.mouseDownPosition) <= static_cast<float>(dragThreshold_))
+                return true;
+            interactionState_.emptySpaceIntent.clear();
+            g.mode = FingerGesture::Mode::Panning;
+            g.panStartPos = e.position;
+            g.panStartVisibleSeconds = camera_.visibleStartSeconds;
+            g.panStartScrollY = verticalScrollOffset_;
+            return true;
+        case FingerGesture::Mode::Panning:
+            if (index == g.primaryIndex)
+                updateFingerPan(e);
+            return true;
+        case FingerGesture::Mode::Forwarded:
+            if (index != g.primaryIndex)
+                return true;
+            g.lastPrimaryEvent.emplace(e);
+            dispatchMouseDrag(e);
+            return true;
+        case FingerGesture::Mode::Idle:
+        case FingerGesture::Mode::Ignore:
+            return true;
+    }
+    return true;
+}
+
+bool PianoRollComponent::endFingerPress(const juce::MouseEvent& e) {
+    auto& g = fingerGesture_;
+    const int index = e.source.getIndex();
+    if (g.fingers.erase(index) == 0)
+        return false;
+
+    const bool wasPrimary = index == g.primaryIndex;
+    const auto mode = g.mode;
+
+    if (g.fingers.empty()) {
+        g.mode = FingerGesture::Mode::Idle;
+        g.primaryIndex = -1;
+        g.lastPrimaryEvent.reset();
+    } else if (mode == FingerGesture::Mode::Pinch) {
+        g.mode = FingerGesture::Mode::Ignore;
+    }
+
+    if (!wasPrimary)
+        return true;
+
+    switch (mode) {
+        case FingerGesture::Mode::EmptyTap:
+            // 单击空白：交给工具处理（取消选择 + 移动播放头）；双击空白：再切换播放/暂停。
+            dispatchMouseUp(e);
+            if (e.getNumberOfClicks() == 2) {
+                g.suppressDoubleClick = true;
+                listeners_.call([](Listener& l) { l.playPauseToggleRequested(); });
+            }
+            break;
+        case FingerGesture::Mode::Forwarded:
+            dispatchMouseUp(e);
+            break;
+        case FingerGesture::Mode::Panning:
+            grabKeyboardFocus();
+            break;
+        case FingerGesture::Mode::Idle:
+        case FingerGesture::Mode::Pinch:
+        case FingerGesture::Mode::Ignore:
+            break;
+    }
+    return true;
+}
+
+void PianoRollComponent::updateFingerPan(const juce::MouseEvent& e) {
+    const auto& g = fingerGesture_;
+    const auto delta = e.position - g.panStartPos;
+    applyViewportFromGesture(g.panStartVisibleSeconds - static_cast<double>(delta.x) / camera_.pixelsPerSecond,
+                             camera_.pixelsPerSecond,
+                             g.panStartScrollY - delta.y);
+}
+
+void PianoRollComponent::beginFingerPinch() {
+    auto& g = fingerGesture_;
+    const auto a = g.fingers[g.pinchA];
+    const auto b = g.fingers[g.pinchB];
+    const auto mid = (a + b) * 0.5f;
+
+    g.mode = FingerGesture::Mode::Pinch;
+    g.pinchStartSpan = { std::abs(a.x - b.x), std::abs(a.y - b.y) };
+
+    // 按手指连线方向决定缩放轴：接近水平只缩放时间轴，接近竖直只缩放音高轴，斜向两轴同时缩放。
+    constexpr float kTan30 = 0.577f;
+    constexpr float kMinSpanPx = 24.0f;
+    const bool nearlyHorizontal = g.pinchStartSpan.y <= g.pinchStartSpan.x * kTan30;
+    const bool nearlyVertical = g.pinchStartSpan.x <= g.pinchStartSpan.y * kTan30;
+    g.pinchZoomsTime = g.pinchStartSpan.x >= kMinSpanPx && !nearlyVertical;
+    g.pinchZoomsPitch = g.pinchStartSpan.y >= kMinSpanPx && !nearlyHorizontal;
+
+    g.pinchStartPps = camera_.pixelsPerSecond;
+    g.pinchStartPixelsPerSemitone = pixelsPerSemitone_;
+    g.pinchAnchorTime = camera_.visibleStartSeconds
+        + static_cast<double>(mid.x - static_cast<float>(getTimelineContentStartX())) / camera_.pixelsPerSecond;
+    g.pinchAnchorMidi = makeViewMapper().yToMidi(mid.y - static_cast<float>(rulerHeight_));
+}
+
+void PianoRollComponent::updateFingerPinch() {
+    const auto& g = fingerGesture_;
+    const auto a = g.fingers.at(g.pinchA);
+    const auto b = g.fingers.at(g.pinchB);
+    const auto mid = (a + b) * 0.5f;
+
+    double pps = g.pinchStartPps;
+    if (g.pinchZoomsTime) {
+        const auto ratio = static_cast<double>(std::max(1.0f, std::abs(a.x - b.x)) / g.pinchStartSpan.x);
+        pps = TimelineViewportPolicy::normalisePixelsPerSecond(
+            g.pinchStartPps * ratio, TimelineViewportRequest::ViewKind::PianoRoll);
+    }
+
+    if (g.pinchZoomsPitch) {
+        const auto ratio = std::max(1.0f, std::abs(a.y - b.y)) / g.pinchStartSpan.y;
+        pixelsPerSemitone_ = juce::jlimit(5.0f, 60.0f, g.pinchStartPixelsPerSemitone * ratio);
+        userHasManuallyZoomed_ = true;
+    }
+
+    // 锚点（捏合起点处的时间/音高）始终跟随两指中点，捏合时同时平移。
+    const double visibleStart = g.pinchAnchorTime
+        - static_cast<double>(mid.x - static_cast<float>(getTimelineContentStartX())) / pps;
+    const float scrollY = (maxMidi_ - g.pinchAnchorMidi) * pixelsPerSemitone_
+        - (mid.y - static_cast<float>(rulerHeight_));
+    applyViewportFromGesture(visibleStart, pps, scrollY);
+}
+
+void PianoRollComponent::applyViewportFromGesture(double visibleStartSeconds, double pps, float scrollY) {
+    const float maxScroll = getTotalHeight() - static_cast<float>(getTimelineContentViewportHeight());
+    verticalScrollOffset_ = juce::jlimit(0.0f, std::max(0.0f, maxScroll), scrollY);
+
+    userScrollHold_ = true;
+    commitViewportRequest(makeViewportRequest(
+        TimelineViewportRequest::Kind::Manual,
+        visibleStartSeconds,
+        0.0,
+        pps));
+
+    staticDirty_ = true;
+    contentDirty_ = true;
+    rasterizeDirtySurfaces();
+    updateScrollBars();
+    repaint();
+    overlay_->repaint();
+}
+
+void PianoRollComponent::dispatchMouseDown(const juce::MouseEvent& e) {
     if (e.mods.isMiddleButtonDown()
         && handlePointerShortcut({ KeyShortcutConfig::BindingType::MiddleMouseButton, e.mods }))
         return;
@@ -4682,7 +4916,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e) {
     toolHandler_->mouseDown(e);
 }
 
-void PianoRollComponent::mouseDrag(const juce::MouseEvent& e) {
+void PianoRollComponent::dispatchMouseDrag(const juce::MouseEvent& e) {
     if (openDyneZoomPanActive_) {
         updateOpenDyneZoomPan(e);
         return;
@@ -4743,7 +4977,7 @@ void PianoRollComponent::mouseDrag(const juce::MouseEvent& e) {
     // feedback directly.
 }
 
-void PianoRollComponent::mouseUp(const juce::MouseEvent& e) {
+void PianoRollComponent::dispatchMouseUp(const juce::MouseEvent& e) {
     if (openDyneZoomPanActive_) {
         endOpenDyneZoomPan();
         grabKeyboardFocus();
@@ -4840,7 +5074,7 @@ void PianoRollComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::M
     float deltaX = wheel.deltaX;
     float deltaY = wheel.deltaY;
 
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
     if (e.mods.isShiftDown() && deltaY == 0.0f && deltaX != 0.0f) {
         deltaY = deltaX;
         deltaX = 0.0f;

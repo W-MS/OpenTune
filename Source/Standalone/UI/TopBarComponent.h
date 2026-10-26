@@ -4,6 +4,7 @@
 #include <functional>
 #include "MenuBarComponent.h"
 #include "TransportBarComponent.h"
+#include "TouchTooltipPresenter.h"
 #include "UIColors.h"
 #include "../../Utils/LocalizationManager.h"
 
@@ -38,6 +39,8 @@ private:
     UnifiedToolbarButton trackPanelToggleButton_ { LOC(kTracks), {} }; // Icon set in constructor
     UnifiedToolbarButton parameterPanelToggleButton_ { LOC(kProps), {} };
     bool trackPanelToggleVisible_{true};
+
+    TouchTooltipPresenter touchTooltips_ { *this };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TopBarComponent)
 };
