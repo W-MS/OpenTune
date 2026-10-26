@@ -12,8 +12,8 @@ namespace OpenTune::PlatformFileDialogs {
  * （工程需要同级 *_Media 目录），后台线程也无法持有访问权限。因此 iPadOS 上：
  * - 保存/导出：提示输入文件名，目标固定在 App 的 Documents/<子目录> 下，
  *   通过 UIFileSharingEnabled + LSSupportsOpeningDocumentsInPlace 在“文件”App 中可见；
- * - 打开：位于 Documents 之外的文件先复制进 Documents/Imported（copyExternalFiles=true），
- *   或在可直接访问时按本地路径返回。
+ * - 打开：copyExternalFiles=true 时以副本方式打开并移入 Documents/Imported，
+ *   否则就地打开并按本地路径返回。
  */
 
 using SaveTargetCallback = std::function<void(const juce::File&)>;
@@ -34,7 +34,7 @@ void chooseSaveTarget(const juce::String& title,
 
 /**
  * 选择要打开的文件。用户取消或没有可用文件时不调用 onChosen。
- * copyExternalFiles 仅影响 iPadOS：为 true 时 Documents 之外的文件复制进 Documents/Imported。
+ * copyExternalFiles 仅影响 iPadOS：为 true 时所选文件复制进 Documents/Imported。
  */
 void chooseFilesToOpen(const juce::String& title,
                        const juce::File& desktopInitialLocation,

@@ -2,6 +2,7 @@
 
 #include "Editor/ConfirmDialogContent.h"
 #include "Utils/AppLogger.h"
+#include "Utils/IosDocumentPicker.h"
 #include "Utils/LocalizationManager.h"
 
 #include <memory>
@@ -42,29 +43,18 @@ void promptForFileName(const juce::String& title,
         true);
 }
 
-bool isInside(const juce::File& file, const juce::File& directory)
+juce::StringArray extensionsFromWildcard(const juce::String& wildcard)
 {
-    return file == directory || file.isAChildOf(directory);
-}
+    juce::StringArray tokens;
+    tokens.addTokens(wildcard, ";,", "\"");
 
-bool copyUrlToFile(const juce::URL& url, const juce::File& destination)
-{
-    auto input = url.createInputStream(juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress));
-    if (input == nullptr)
-        return false;
-
-    juce::TemporaryFile temporary(destination);
-    {
-        juce::FileOutputStream output(temporary.getFile());
-        if (!output.openedOk())
-            return false;
-        if (output.writeFromInputStream(*input, -1) < 0)
-            return false;
-        output.flush();
-        if (output.getStatus().failed())
-            return false;
+    juce::StringArray extensions;
+    for (auto token : tokens) {
+        token = token.trim().fromLastOccurrenceOf(".", false, false).toLowerCase();
+        if (token.isNotEmpty() && token != "*")
+            extensions.addIfNotAlreadyThere(token);
     }
-    return temporary.overwriteTargetFileWithTemporary();
+    return extensions;
 }
 #endif
 
@@ -123,59 +113,40 @@ void chooseFilesToOpen(const juce::String& title,
                        juce::Component* messageParent,
                        OpenFilesCallback onChosen)
 {
+#if JUCE_IOS
+    juce::ignoreUnused(title, desktopInitialLocation);
+
+    const auto destination = copyExternalFiles
+        ? getAppDocumentsDirectory().getChildFile("Imported")
+        : juce::File();
+    juce::Component::SafePointer<juce::Component> safeParent(messageParent);
+
+    IosDocumentPicker::presentOpenPicker(extensionsFromWildcard(wildcardFilter), allowMultiple, destination,
+        [safeParent, onChosen = std::move(onChosen)](const IosDocumentPicker::Result& result) {
+            if (!result.failures.isEmpty() && safeParent != nullptr) {
+                ConfirmDialogContent::showMessage(safeParent.getComponent(),
+                                                  LOC(kImportFailed),
+                                                  LOC_RAW("These files could not be copied into OpenTune:")
+                                                      + "\n" + result.failures.joinIntoString("\n"));
+            }
+            if (!result.files.isEmpty())
+                onChosen(result.files);
+        });
+#else
+    juce::ignoreUnused(copyExternalFiles, messageParent);
+
     auto chooser = std::make_shared<juce::FileChooser>(title, desktopInitialLocation, wildcardFilter);
     auto flags = juce::FileBrowserComponent::openMode
                | juce::FileBrowserComponent::canSelectFiles;
     if (allowMultiple)
         flags |= juce::FileBrowserComponent::canSelectMultipleItems;
 
-    juce::Component::SafePointer<juce::Component> safeParent(messageParent);
-
-    chooser->launchAsync(flags,
-        [chooser, copyExternalFiles, safeParent, onChosen = std::move(onChosen)](const juce::FileChooser& fc) {
-#if JUCE_IOS
-            const auto documents = getAppDocumentsDirectory();
-            const auto importDirectory = documents.getChildFile("Imported");
-            juce::Array<juce::File> files;
-            juce::StringArray failures;
-
-            for (const auto& url : fc.getURLResults()) {
-                const auto local = url.isLocalFile() ? url.getLocalFile() : juce::File{};
-
-                if (local != juce::File{} && (isInside(local, documents) || !copyExternalFiles)) {
-                    files.add(local);
-                    continue;
-                }
-
-                const auto displayName = local != juce::File{} ? local.getFileName() : url.getFileName();
-                const auto legalName = juce::File::createLegalFileName(displayName);
-                const auto destination = importDirectory.getNonexistentChildFile(
-                    juce::File(legalName).getFileNameWithoutExtension(),
-                    juce::File(legalName).getFileExtension(),
-                    false);
-
-                if (importDirectory.createDirectory().wasOk() && copyUrlToFile(url, destination)) {
-                    AppLogger::info("[PlatformFileDialogs] Copied " + displayName + " to " + destination.getFullPathName());
-                    files.add(destination);
-                } else {
-                    AppLogger::error("[PlatformFileDialogs] Copy failed for " + url.toString(false));
-                    failures.add(displayName);
-                }
-            }
-
-            if (!failures.isEmpty() && safeParent != nullptr) {
-                ConfirmDialogContent::showMessage(safeParent.getComponent(),
-                                                  LOC(kImportFailed),
-                                                  LOC_RAW("These files could not be copied into OpenTune:")
-                                                      + "\n" + failures.joinIntoString("\n"));
-            }
-#else
-            juce::ignoreUnused(copyExternalFiles, safeParent);
-            const auto files = fc.getResults();
+    chooser->launchAsync(flags, [chooser, onChosen = std::move(onChosen)](const juce::FileChooser& fc) {
+        const auto files = fc.getResults();
+        if (!files.isEmpty())
+            onChosen(files);
+    });
 #endif
-            if (!files.isEmpty())
-                onChosen(files);
-        });
 }
 
 } // namespace OpenTune::PlatformFileDialogs

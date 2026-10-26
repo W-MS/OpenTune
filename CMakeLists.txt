@@ -941,7 +941,9 @@ endforeach()
 target_sources(OpenTuneStandalone PRIVATE ${OPENTUNE_STANDALONE_SOURCES})
 if(OPENTUNE_IOS)
     target_sources(OpenTuneStandalone PRIVATE
-        Source/Utils/TouchInput_ios.mm)
+        Source/Utils/TouchInput_ios.mm
+        Source/Utils/IosDocumentPicker.h
+        Source/Utils/IosDocumentPicker.mm)
 endif()
 if(NOT OPENTUNE_IOS)
     target_sources(OpenTune PRIVATE ${OPENTUNE_NON_STANDALONE_SOURCES})
