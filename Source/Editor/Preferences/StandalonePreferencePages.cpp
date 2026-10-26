@@ -367,13 +367,12 @@ private:
         const auto currentType = deviceManager_.getCurrentAudioDeviceType();
         const auto previousSetup = deviceManager_.getAudioDeviceSetup();
         const bool hadDevice = deviceManager_.getCurrentAudioDevice() != nullptr;
-        if (currentType == "ASIO" && requestedType != currentType
-            && !restoreAsioSampleRateToSystem(deviceManager_, "audio type switch"))
-        {
-            errorLabel_.setText(LOC(kAudioDeviceSwitchFailed), juce::dontSendNotification);
-            refresh();
-            return;
-        }
+
+        // Best-effort close-time rate restore. A failure is reported to the
+        // user but never blocks the requested transition.
+        const bool leavingAsio = currentType == "ASIO" && requestedType != currentType;
+        const bool restoreOk = ! leavingAsio
+            || restoreAsioSampleRateToSystem(deviceManager_, "audio type switch");
 
         deviceManager_.setCurrentAudioDeviceType(requestedType, true);
         const bool typeMismatch = deviceManager_.getCurrentAudioDeviceType() != requestedType;
@@ -397,7 +396,8 @@ private:
 
             errorLabel_.setText(LOC(kAudioDeviceSwitchFailed), juce::dontSendNotification);
         } else {
-            errorLabel_.setText(juce::String(), juce::dontSendNotification);
+            errorLabel_.setText(restoreOk ? juce::String() : LOC(kAudioDeviceRestoreWarning),
+                                juce::dontSendNotification);
         }
 
         refresh();
@@ -435,16 +435,16 @@ private:
                 setup.inputDeviceName = setup.outputDeviceName;
         }
 
-        if (deviceManager_.getCurrentAudioDeviceType() == "ASIO"
-            && setup.outputDeviceName != currentSetup.outputDeviceName
-            && !restoreAsioSampleRateToSystem(deviceManager_, "audio output switch"))
-        {
-            errorLabel_.setText(LOC(kAudioDeviceSwitchFailed), juce::dontSendNotification);
-            refresh();
-            return;
-        }
+        // Best-effort close-time rate restore. A failure is reported to the
+        // user but never blocks the requested transition.
+        const bool changingAsioOutput = deviceManager_.getCurrentAudioDeviceType() == "ASIO"
+            && setup.outputDeviceName != currentSetup.outputDeviceName;
+        const bool restoreOk = ! changingAsioOutput
+            || restoreAsioSampleRateToSystem(deviceManager_, "audio output switch");
 
         applySetup(setup, &currentSetup);
+        if (! restoreOk && errorLabel_.getText().isEmpty())
+            errorLabel_.setText(LOC(kAudioDeviceRestoreWarning), juce::dontSendNotification);
     }
 
     void sampleRateChanged()

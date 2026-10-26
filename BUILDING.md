@@ -10,6 +10,7 @@
 | **架构** | x64 | universal2 (x86_64 + arm64) |
 | **编译器** | Visual Studio 2022 (MSVC 17+) | Xcode Command Line Tools / Apple Clang |
 | **CMake** | 3.22+ | 3.22+ |
+| **Python** | Python 3 (`python`) | Python 3 (`python3`) |
 | **C++ 标准** | C++17 | C++17 |
 | **构建系统** | MSBuild (VS Generator) / Ninja | Ninja |
 
@@ -32,7 +33,17 @@ cd OpenTune
 克隆到项目根目录（**JUCE 例外，不在 `ThirdParty/`**），文件夹名必须为 `JUCE-master`：
 
 ```bash
-git clone https://github.com/juce-framework/JUCE.git JUCE-master
+git clone --depth 1 --branch 8.0.12 https://github.com/juce-framework/JUCE.git JUCE-master
+```
+
+Windows：
+```powershell
+python scripts/github_actions/patch-juce-ara.py
+```
+
+macOS：
+```bash
+python3 scripts/github_actions/patch-juce-ara.py
 ```
 
 ### 2. ARA SDK
@@ -43,11 +54,11 @@ git clone --recursive --branch releases/2.3.0 https://github.com/Celemony/ARA_SD
 cd ..
 ```
 
-> ⚠️ **ARA 2.3.0 需要同步修补本地 JUCE 分支**：`JUCE-master/`（被 gitignore，不随仓库分发）的
+> ⚠️ **ARA 2.3.0 需要修补本地 JUCE checkout**：`JUCE-master/`（被 gitignore，不随仓库分发）的
 > `modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp` 仍 include 2.2.0 的
 > `ARA_Library/Utilities/ARAChannelArrangement.cpp`，而 2.3.0 已将该文件改名为 `ARAChannelFormat.cpp`。
-> 克隆 SDK 后必须把该行改为 `#include <ARA_Library/Utilities/ARAChannelFormat.cpp>`，
-> 否则编译 `juce_audio_plugin_client_ARA.cpp` 时报 C1083 找不到包含文件。
+> 不要手工编辑该文件；克隆 JUCE 8.0.12 后运行上文对应操作系统的 Python 命令，
+> 脚本会同时应用 ARA include 改名和 AudioDeviceManager 临时 setup API 补丁。
 
 ### 3. r8brain 与 SoundTouch
 
@@ -168,7 +179,7 @@ ThirdParty/microsoft.direct3d.d3d12.1.619.5/
 
 | 路径 | 必需性 | 准备方式 / 用途 |
 |------|--------|----------------|
-| `JUCE-master/` | 必需 | 克隆 JUCE 到仓库根目录；按上文 ARA 2.3.0 说明修改 `juce_audio_plugin_client_ARA.cpp` 的 include 路径。 |
+| `JUCE-master/` | 必需 | 克隆 JUCE 8.0.12 到仓库根目录，随后运行 `python3 scripts/github_actions/patch-juce-ara.py`（macOS 命令；同一脚本同时处理 ARA include 与 AudioDeviceManager 补丁）。 |
 | `ThirdParty/ARA_SDK-releases-2.3.0/` | 必需 | 克隆 ARA SDK `releases/2.3.0` 分支并包含子模块。 |
 | `ThirdParty/r8brain-free-src-master/` | 必需 | 已随 Git 仓库提供，无需另行下载。 |
 | `ThirdParty/soundtouch-2.3.2/` | 必需 | 从上文链接的 SoundTouch 官方仓库克隆 `2.3.2` tag。 |

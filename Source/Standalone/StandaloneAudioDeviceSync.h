@@ -4,9 +4,11 @@
 
 namespace OpenTune {
 
-// Restores an active ASIO device to the Windows shared render rate before a
-// transition closes it. Returns false when a required restore could not be
-// verified; callers should keep the current device in that case.
+// Best-effort: moves an active ASIO device to the Windows shared render rate
+// before a transition closes it, so firmware does not retain the ASIO rate.
+// Returns false when the restore could not be verified. Callers continue the
+// user's transition and report the failure; this is never a precondition.
+// Does not overwrite the user's saved device settings.
 bool restoreAsioSampleRateToSystem(juce::AudioDeviceManager& deviceManager,
                                    const juce::String& reason = {});
 

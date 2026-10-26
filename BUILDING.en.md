@@ -10,6 +10,7 @@
 | **Architecture** | x64 | universal2 (x86_64 + arm64) |
 | **Compiler** | Visual Studio 2022 (MSVC 17+) | Xcode Command Line Tools / Apple Clang |
 | **CMake** | 3.22+ | 3.22+ |
+| **Python** | Python 3 (`python`) | Python 3 (`python3`) |
 | **C++ Standard** | C++17 | C++17 |
 | **Build System** | MSBuild (VS Generator) / Ninja | Ninja |
 
@@ -32,7 +33,17 @@ cd OpenTune
 Clone to the project root directory (**JUCE is an exception, not in `ThirdParty/`**), the folder name must be `JUCE-master`:
 
 ```bash
-git clone https://github.com/juce-framework/JUCE.git JUCE-master
+git clone --depth 1 --branch 8.0.12 https://github.com/juce-framework/JUCE.git JUCE-master
+```
+
+Windows:
+```powershell
+python scripts/github_actions/patch-juce-ara.py
+```
+
+macOS:
+```bash
+python3 scripts/github_actions/patch-juce-ara.py
 ```
 
 ### 2. ARA SDK
@@ -44,11 +55,11 @@ cd ..
 ```
 
 > ⚠️ **ARA 2.3.0 requires a matching patch to your local JUCE checkout**: `JUCE-master/` (gitignored,
-> not shipped with this repository) still has
-> `modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp` including the 2.2.0 file
+> not shipped with this repository) still includes the 2.2.0 file
 > `ARA_Library/Utilities/ARAChannelArrangement.cpp`, which ARA 2.3.0 renamed to `ARAChannelFormat.cpp`.
-> After cloning the SDK, change that line to `#include <ARA_Library/Utilities/ARAChannelFormat.cpp>`,
-> otherwise compiling `juce_audio_plugin_client_ARA.cpp` fails with C1083 (include file not found).
+> Do not edit the file by hand; after cloning JUCE 8.0.12 run the platform-specific command above.
+> The script applies both the ARA include rename
+> and the AudioDeviceManager temporary-setup patch.
 
 ### 3. r8brain and SoundTouch
 
@@ -161,7 +172,7 @@ Except for the r8brain source included in the repository, obtain the following d
 
 | Path | Required? | Setup / purpose |
 |------|----------|-----------------|
-| `JUCE-master/` | Yes | Clone JUCE at the repository root; apply the ARA 2.3.0 include-path edit to `juce_audio_plugin_client_ARA.cpp` described above. |
+| `JUCE-master/` | Yes | Clone JUCE 8.0.12 at the repository root, then run `python3 scripts/github_actions/patch-juce-ara.py` (macOS command; the same script handles the ARA include and AudioDeviceManager patches). |
 | `ThirdParty/ARA_SDK-releases-2.3.0/` | Yes | Clone the ARA SDK `releases/2.3.0` branch with submodules. |
 | `ThirdParty/r8brain-free-src-master/` | Yes | Included in the Git repository; no separate download is needed. |
 | `ThirdParty/soundtouch-2.3.2/` | Yes | Clone the `2.3.2` tag from the official SoundTouch repository linked above. |
