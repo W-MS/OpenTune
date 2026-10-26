@@ -36,9 +36,9 @@ void promptForFileName(const juce::String& title,
 
     // ModalComponentManager 先执行回调再删除 deleteWhenDismissed 的组件，回调里读取输入框是安全的。
     window->enterModalState(true,
-        juce::ModalCallbackFunction::create([window, onAccepted = std::move(onAccepted)](int result) {
+        juce::ModalCallbackFunction::create([window, accept = std::move(onAccepted)](int result) {
             if (result == 1)
-                onAccepted(window->getTextEditorContents("name"));
+                accept(window->getTextEditorContents("name"));
         }),
         true);
 }
@@ -77,7 +77,7 @@ void chooseSaveTarget(const juce::String& title,
         : juce::String("Untitled");
 
     promptForFileName(title, defaultBaseName,
-        [extension, mobileSubdirectory, onChosen = std::move(onChosen)](const juce::String& rawName) {
+        [extension, mobileSubdirectory, callback = std::move(onChosen)](const juce::String& rawName) {
             const auto baseName = sanitiseBaseName(rawName, extension);
             if (baseName.isEmpty())
                 return;
@@ -87,7 +87,7 @@ void chooseSaveTarget(const juce::String& title,
                 AppLogger::error("[PlatformFileDialogs] Cannot create " + directory.getFullPathName());
                 return;
             }
-            onChosen(directory.getChildFile(baseName + extension));
+            callback(directory.getChildFile(baseName + extension));
         });
 #else
     juce::ignoreUnused(mobileSubdirectory);
@@ -122,7 +122,7 @@ void chooseFilesToOpen(const juce::String& title,
     juce::Component::SafePointer<juce::Component> safeParent(messageParent);
 
     IosDocumentPicker::presentOpenPicker(extensionsFromWildcard(wildcardFilter), allowMultiple, destination,
-        [safeParent, onChosen = std::move(onChosen)](const IosDocumentPicker::Result& result) {
+        [safeParent, callback = std::move(onChosen)](const IosDocumentPicker::Result& result) {
             if (!result.failures.isEmpty() && safeParent != nullptr) {
                 ConfirmDialogContent::showMessage(safeParent.getComponent(),
                                                   LOC(kImportFailed),
@@ -130,7 +130,7 @@ void chooseFilesToOpen(const juce::String& title,
                                                       + "\n" + result.failures.joinIntoString("\n"));
             }
             if (!result.files.isEmpty())
-                onChosen(result.files);
+                callback(result.files);
         });
 #else
     juce::ignoreUnused(copyExternalFiles, messageParent);

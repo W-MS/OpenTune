@@ -209,13 +209,13 @@ void presentOpenPicker(const juce::StringArray& extensions,
     picker.modalPresentationStyle = UIModalPresentationFormSheet;
 
     auto* delegate = [[[OpenTuneDocumentPickerDelegate alloc] init] autorelease];
-    delegate->handler = [extensions, filterByExtension, copyIntoDirectory, onFinished = std::move(onFinished)]
+    delegate->handler = [extensions, filterByExtension, copyIntoDirectory, callback = std::move(onFinished)]
         (NSArray<NSURL*>* urls)
     {
-        auto result = collectResults(urls, extensions, filterByExtension, copyIntoDirectory);
+        auto picked = collectResults(urls, extensions, filterByExtension, copyIntoDirectory);
 
         // 推迟到选择器退场之后，回调里弹出的 JUCE 对话框才能获得焦点。
-        juce::MessageManager::callAsync([onFinished, result = std::move(result)] { onFinished(result); });
+        juce::MessageManager::callAsync([callback, picked = std::move(picked)] { callback(picked); });
     };
 
     picker.delegate = delegate;

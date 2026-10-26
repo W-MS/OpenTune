@@ -21,7 +21,8 @@ void recordTouchType(UITouchType type)
             gLastPressKind = Kind::Pencil;
             gPointerActive = false;
             break;
-        default:
+        case UITouchTypeIndirect:
+        case UITouchTypeIndirectPointer:
             gLastPressKind = Kind::Pointer;
             gPointerActive = true;
             break;
@@ -84,7 +85,10 @@ void recordTouchType(UITouchType type)
         case UIGestureRecognizerStateChanged:
             gPointerActive = true;
             break;
-        default:
+        case UIGestureRecognizerStatePossible:
+        case UIGestureRecognizerStateEnded:
+        case UIGestureRecognizerStateCancelled:
+        case UIGestureRecognizerStateFailed:
             break;
     }
 }

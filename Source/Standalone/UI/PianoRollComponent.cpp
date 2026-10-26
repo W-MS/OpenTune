@@ -4670,7 +4670,10 @@ bool PianoRollComponent::beginFingerPress(const juce::MouseEvent& e) {
             if (g.lastPrimaryEvent.has_value())
                 dispatchMouseUp(*g.lastPrimaryEvent);
             break;
-        default:
+        case FingerGesture::Mode::Idle:
+        case FingerGesture::Mode::Panning:
+        case FingerGesture::Mode::Pinch:
+        case FingerGesture::Mode::Ignore:
             break;
     }
 
@@ -4758,7 +4761,9 @@ bool PianoRollComponent::endFingerPress(const juce::MouseEvent& e) {
         case FingerGesture::Mode::Panning:
             grabKeyboardFocus();
             break;
-        default:
+        case FingerGesture::Mode::Idle:
+        case FingerGesture::Mode::Pinch:
+        case FingerGesture::Mode::Ignore:
             break;
     }
     return true;
