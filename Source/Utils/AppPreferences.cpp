@@ -264,7 +264,7 @@ KeyShortcutConfig::KeyShortcutSettings decodeShortcutSettings(const juce::Proper
     auto settings = KeyShortcutConfig::KeyShortcutSettings::getDefault();
     const int storedSchemaVersion = properties.getIntValue(kShortcutSchemaVersionKey, 0);
     const bool migrateMouseDefaults = storedSchemaVersion < kShortcutMouseSchemaVersion;
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
     const bool migrateMacDefaultShortcuts = storedSchemaVersion < kShortcutMacModifierSchemaVersion;
     const bool restoreMacSpacePlay = storedSchemaVersion < kShortcutSchemaVersion;
 #endif
@@ -287,7 +287,7 @@ KeyShortcutConfig::KeyShortcutSettings decodeShortcutSettings(const juce::Proper
                         decoded.addBinding(defaultBinding);
                 }
             }
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
             if (migrateMacDefaultShortcuts) {
                 const auto zoomModifiers = juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier;
                 const auto transportModifiers = zoomModifiers | juce::ModifierKeys::shiftModifier;

@@ -293,7 +293,7 @@ private:
         if (modifiers.isCtrlDown())  parts.add ("Ctrl");
         if (modifiers.isAltDown())   parts.add ("Alt");
         if (modifiers.isShiftDown()) parts.add ("Shift");
-       #if JUCE_MAC
+       #if JUCE_MAC || JUCE_IOS
         if (modifiers.isCommandDown()) parts.add ("Cmd");
        #endif
 

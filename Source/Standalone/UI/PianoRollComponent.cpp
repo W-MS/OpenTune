@@ -4840,7 +4840,7 @@ void PianoRollComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::M
     float deltaX = wheel.deltaX;
     float deltaY = wheel.deltaY;
 
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
     if (e.mods.isShiftDown() && deltaY == 0.0f && deltaX != 0.0f) {
         deltaY = deltaX;
         deltaX = 0.0f;
