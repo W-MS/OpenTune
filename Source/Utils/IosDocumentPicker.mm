@@ -215,7 +215,7 @@ void presentOpenPicker(const juce::StringArray& extensions,
         auto picked = collectResults(urls, extensions, filterByExtension, copyIntoDirectory);
 
         // 推迟到选择器退场之后，回调里弹出的 JUCE 对话框才能获得焦点。
-        juce::MessageManager::callAsync([callback, picked = std::move(picked)] { callback(picked); });
+        juce::MessageManager::callAsync([callback, result = std::move(picked)] { callback(result); });
     };
 
     picker.delegate = delegate;
