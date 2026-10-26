@@ -50,31 +50,37 @@ $PatchJuce = Join-Path $Root "scripts\github_actions\patch-juce-ara.py"
 
 function Install-Juce {
     $JuceDir = Join-Path $Root "JUCE-master"
-    $ready = $false
     if (Test-Path -LiteralPath $JuceDir) {
+        # JUCE-master may hold user data; never delete it automatically.
         $head = & git -C $JuceDir rev-parse HEAD
-        if ($LASTEXITCODE -eq 0 -and $head.Trim() -eq $JuceCommit) {
-            & $Python $PatchJuce
-            if ($LASTEXITCODE -eq 0) { $ready = $true }
+        if ($LASTEXITCODE -ne 0) {
+            throw "JUCE-master exists but is not a recognizable Git checkout; refusing to modify or delete it. Resolve it manually (remove it yourself or fix the checkout)."
         }
-        if (-not $ready) {
-            Remove-Item -LiteralPath $JuceDir -Recurse -Force
-        }
-    }
-    if (-not $ready) {
-        Invoke-Checked "git" @(
-            "-c", "core.longpaths=true",
-            "clone", "--depth", "1", "--branch", $JuceRef,
-            "https://github.com/juce-framework/JUCE.git",
-            $JuceDir
-        )
-        $head = & git -C $JuceDir rev-parse HEAD
-        if ($LASTEXITCODE -ne 0) { throw "JUCE-master is not a readable Git checkout" }
         if ($head.Trim() -ne $JuceCommit) {
-            Remove-Item -LiteralPath $JuceDir -Recurse -Force
-            throw "JUCE $JuceRef tag revision mismatch: expected $JuceCommit, got $($head.Trim())"
+            throw "Existing JUCE-master is not at the pinned revision: expected $JuceCommit, got $($head.Trim()). Refusing to modify or delete it; resolve it manually."
         }
-        Invoke-Checked $Python @($PatchJuce)
+        & $Python $PatchJuce
+        if ($LASTEXITCODE -ne 0) {
+            throw "patch-juce-ara.py failed on the existing JUCE-master; the directory is left untouched. Fix or remove it manually and re-run."
+        }
+        return
+    }
+    Invoke-Checked "git" @(
+        "-c", "core.longpaths=true",
+        "clone", "--depth", "1", "--branch", $JuceRef,
+        "https://github.com/juce-framework/JUCE.git",
+        $JuceDir
+    )
+    $head = & git -C $JuceDir rev-parse HEAD
+    if ($LASTEXITCODE -ne 0) {
+        throw "Fresh JUCE-master clone is not a readable Git checkout; keeping the failed directory for inspection"
+    }
+    if ($head.Trim() -ne $JuceCommit) {
+        throw "JUCE $JuceRef tag revision mismatch: expected $JuceCommit, got $($head.Trim()); keeping the failed JUCE-master directory for inspection"
+    }
+    & $Python $PatchJuce
+    if ($LASTEXITCODE -ne 0) {
+        throw "patch-juce-ara.py failed on the freshly cloned JUCE-master; keeping the directory for inspection"
     }
 }
 

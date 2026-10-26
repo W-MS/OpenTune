@@ -250,6 +250,7 @@ constexpr const char* kAudioNoOutputChannels = "No output channels available";
 constexpr const char* kAudioChannel = "Channel {0}";
 constexpr const char* kAudioDeviceError = "Audio device error";
 constexpr const char* kAudioDeviceSwitchFailed = "Failed to switch audio device";
+constexpr const char* kAudioDeviceRestoreWarning = "ASIO sample rate restore failed; the switch continued.";
 constexpr const char* kEditing = "Editing";
 constexpr const char* kMouse = "Mouse";
 constexpr const char* kShortcuts = "Shortcuts";
@@ -598,6 +599,7 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kAudioChannel, "Channel {0}", "通道 {0}", "チャンネル {0}", "Канал {0}", "Canal {0}" },
         { Keys::kAudioDeviceError, "Audio device error", "音频设备错误", "オーディオデバイスエラー", "Ошибка аудиоустройства", "Error del dispositivo de audio" },
         { Keys::kAudioDeviceSwitchFailed, "Failed to switch audio device", "音频设备切换失败", "オーディオデバイスの切り替えに失敗しました", "Не удалось переключить аудиоустройство", "Error al cambiar el dispositivo de audio" },
+        { Keys::kAudioDeviceRestoreWarning, "ASIO sample rate restore failed; the switch continued.", "ASIO 采样率恢复失败，已继续切换。", "ASIO のサンプルレート復元に失敗しました。切り替えは続行しました。", "Не удалось восстановить частоту ASIO; переключение продолжено.", "No se pudo restaurar la frecuencia de ASIO; el cambio continuó." },
         { Keys::kEditing, "Editing", "编辑", "編集", "Редактирование", "Edicion" },
         { Keys::kMouse, "Mouse", "鼠标", "マウス", "Мышь", "Ratón" },
         { Keys::kShortcuts, "Shortcuts", "快捷键", "ショートカット", "Сочетания клавиш", "Atajos de teclado" },

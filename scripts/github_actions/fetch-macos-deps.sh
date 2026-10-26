@@ -15,29 +15,38 @@ SOUNDTOUCH_REF="2.3.2"
 SOUNDTOUCH_COMMIT="29fba832a7920a04eab956b3990c50e13d8c93f9"
 SOUNDTOUCH_ARCHIVE_SHA256="ed714f84a3e748de87b24f385ec69d3bdc51ca47b7f4710d2048b84b2761e7ff"
 
-juce_ready=0
 if [ -e JUCE-master ]; then
-    if juce_head="$(git -C JUCE-master rev-parse HEAD 2>/dev/null)" && \
-        [ "${juce_head}" = "${JUCE_COMMIT}" ] && \
-        python3 scripts/github_actions/patch-juce-ara.py; then
-        juce_ready=1
-    else
-        rm -rf JUCE-master
+    # JUCE-master may hold user data; never delete it automatically.
+    if ! juce_head="$(git -C JUCE-master rev-parse HEAD 2>/dev/null)"; then
+        echo "JUCE-master exists but is not a recognizable Git checkout; refusing to modify or delete it. Resolve it manually." >&2
+        exit 1
     fi
-fi
-if [ "${juce_ready}" -eq 0 ]; then
+    if [ "${juce_head}" != "${JUCE_COMMIT}" ]; then
+        echo "Existing JUCE-master is not at the pinned revision: expected ${JUCE_COMMIT}, got ${juce_head}. Refusing to modify or delete it; resolve it manually." >&2
+        exit 1
+    fi
+    if ! python3 scripts/github_actions/patch-juce-ara.py; then
+        echo "patch-juce-ara.py failed on the existing JUCE-master; the directory is left untouched. Fix or remove it manually and re-run." >&2
+        exit 1
+    fi
+else
     if ! git clone --depth 1 --branch "${JUCE_REF}" \
         https://github.com/juce-framework/JUCE.git JUCE-master; then
-        rm -rf JUCE-master
+        echo "JUCE clone failed; keeping any partial JUCE-master directory for inspection" >&2
         exit 1
     fi
-    juce_head="$(git -C JUCE-master rev-parse HEAD)"
+    juce_head="$(git -C JUCE-master rev-parse HEAD)" || {
+        echo "Fresh JUCE-master clone is not a readable Git checkout; keeping the failed directory for inspection" >&2
+        exit 1
+    }
     if [ "${juce_head}" != "${JUCE_COMMIT}" ]; then
-        rm -rf JUCE-master
-        echo "JUCE ${JUCE_REF} tag revision mismatch: expected ${JUCE_COMMIT}, got ${juce_head}" >&2
+        echo "JUCE ${JUCE_REF} tag revision mismatch: expected ${JUCE_COMMIT}, got ${juce_head}; keeping the failed JUCE-master directory for inspection" >&2
         exit 1
     fi
-    python3 scripts/github_actions/patch-juce-ara.py
+    if ! python3 scripts/github_actions/patch-juce-ara.py; then
+        echo "patch-juce-ara.py failed on the freshly cloned JUCE-master; keeping the directory for inspection" >&2
+        exit 1
+    fi
 fi
 
 ara_checkout_clean() {

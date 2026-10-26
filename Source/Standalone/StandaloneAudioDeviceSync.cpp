@@ -105,7 +105,9 @@ bool restoreAsioSampleRateToSystem(juce::AudioDeviceManager& deviceManager,
 
     auto setup = deviceManager.getAudioDeviceSetup();
     setup.sampleRate = systemRate;
-    const auto error = deviceManager.setAudioDeviceSetup(setup, true);
+    // Close-time hardware fix only: do not overwrite the user's persisted
+    // device settings with the temporary system rate.
+    const auto error = deviceManager.setAudioDeviceSetupTemporarily(setup);
     if (error.isNotEmpty())
     {
         AppLogger::error("[AudioDeviceSync] ASIO sample-rate restore failed: " + error + suffix);
