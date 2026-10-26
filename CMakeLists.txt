@@ -448,6 +448,8 @@ if(OPENTUNE_IOS)
         <dict>
             <key>LSSupportsOpeningDocumentsInPlace</key>
             <true/>
+            <key>UIApplicationSupportsIndirectInputEvents</key>
+            <true/>
             <key>NSHumanReadableCopyright</key>
             <string>Copyright © 2024-2026 DAYA. All rights reserved.</string>
         </dict>
@@ -922,6 +924,7 @@ set(OPENTUNE_STANDALONE_SOURCES
         Source/Standalone/UI/TimelineCompositeCache.cpp
         Source/Standalone/UI/TimelineCompositeCache.h
         Source/Standalone/UI/RippleOverlayComponent.h
+        Source/Utils/TouchInput.h
 )
 
 # Non-Standalone state/capture sources (never referenced by the Standalone target).
@@ -936,6 +939,10 @@ foreach(_opentune_target IN LISTS OPENTUNE_SHARED_CODE_TARGETS)
     target_sources(${_opentune_target} PRIVATE ${OPENTUNE_COMMON_SOURCES})
 endforeach()
 target_sources(OpenTuneStandalone PRIVATE ${OPENTUNE_STANDALONE_SOURCES})
+if(OPENTUNE_IOS)
+    target_sources(OpenTuneStandalone PRIVATE
+        Source/Utils/TouchInput_ios.mm)
+endif()
 if(NOT OPENTUNE_IOS)
     target_sources(OpenTune PRIVATE ${OPENTUNE_NON_STANDALONE_SOURCES})
 endif()

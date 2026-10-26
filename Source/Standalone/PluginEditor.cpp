@@ -20,6 +20,7 @@
 #include "StandaloneArrangementHelpers.h"
 #include "Utils/ProjectSession.h"
 #include "Utils/PlatformFileDialogs.h"
+#include "Utils/TouchInput.h"
 #include "Utils/PitchCurve.h"
 #include "Utils/LegacyNoteGenerator.h"
 #include "Utils/PitchControlConfig.h"
@@ -753,6 +754,7 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
 
     // Add Ripple Overlay (Topmost)
     contentRoot_.addAndMakeVisible(rippleOverlay_);
+    TouchInput::startObserving();
     // No need for setAlwaysOnTop on component level, we handle z-order in resized
 
     applyThemeToEditor(resolveEffectiveTheme(appPreferences_.getState().shared.theme));
