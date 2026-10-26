@@ -371,9 +371,26 @@ PluginEditorSize readDefaultPluginEditorSize(const juce::PropertiesFile& propert
              stored.substring(separator + 1).getIntValue() };
 }
 
+#if JUCE_IOS
+Language languageFromSystemLocale()
+{
+    const auto code = juce::SystemStats::getDisplayLanguage().toLowerCase();
+    if (code.startsWith("zh")) return Language::Chinese;
+    if (code.startsWith("ja")) return Language::Japanese;
+    if (code.startsWith("ru")) return Language::Russian;
+    if (code.startsWith("es")) return Language::Spanish;
+    return Language::English;
+}
+#endif
+
 AppPreferencesState loadStateFromProperties(const juce::PropertiesFile& properties)
 {
     AppPreferencesState state;
+#if JUCE_IOS
+    // 首次启动跟随设备语言；不支持的语言回退 English。
+    if (!properties.containsKey(kSharedLanguageKey))
+        state.shared.language = languageFromSystemLocale();
+#endif
     state.shared.language = languageFromToken(properties.getValue(kSharedLanguageKey, toLanguageToken(state.shared.language)));
     state.shared.theme = themeFromToken(properties.getValue(kSharedThemeKey, toThemeToken(state.shared.theme)));
     state.shared.audioEditingScheme = audioEditingSchemeFromToken(
