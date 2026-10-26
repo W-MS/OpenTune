@@ -5,11 +5,12 @@ name: iPadOS Build
 # unsigned .ipa; sign it locally (Xcode, AltStore, etc.) before installing.
 on:
   workflow_dispatch:
+  # Feature branches are covered by their pull request; listing them here too
+  # would queue two macOS jobs per push.
   push:
     branches:
       - ipados
       - 'ipados/**'
-      - 'cursor/ipados-*'
   pull_request:
     branches:
       - standalone
