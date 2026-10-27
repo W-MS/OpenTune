@@ -115,12 +115,12 @@ ADM_CPP_CACHE_NEW = b'''        updateCurrentSetup();
 
 # 3) Unit test for the temporary-setup semantics, inserted after the
 #    "long sequence of configuration changes" test.
-ADM_CPP_TEST_ANCHOR = b'''            closeDeviceByRequestingEmptyNames    (manager);
+ADM_CPP_TEST_ANCHOR = b'''            closeDeviceByRequestingEmptyNames       (manager);
         }
 
         beginTest ("AudioDeviceManager updates its current settings before notifying callbacks when device restarts itself");'''
 
-ADM_CPP_TEST_NEW = b'''            closeDeviceByRequestingEmptyNames    (manager);
+ADM_CPP_TEST_NEW = b'''            closeDeviceByRequestingEmptyNames       (manager);
         }
 
         beginTest ("A temporary setup does not pollute the per-device-type cache or the saved state");
