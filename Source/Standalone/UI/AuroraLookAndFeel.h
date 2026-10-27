@@ -4,6 +4,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "ThemeTokens.h"
 #include "UiAssets.h"
+#include "../../Utils/TouchInput.h"
 
 namespace OpenTune {
 
@@ -65,6 +66,17 @@ public:
                            bool isTicked, bool hasSubMenu, const juce::String& text,
                            const juce::String& shortcutKeyText,
                            const juce::Drawable* icon, const juce::Colour* textColour) override;
+
+#if JUCE_IOS
+    // 手指/笔打开的菜单使用与轨道长按菜单相同的 40px 行高。
+    void getIdealPopupMenuItemSize(const juce::String& text, bool isSeparator, int standardMenuItemHeight,
+                                   int& idealWidth, int& idealHeight) override
+    {
+        if (!isSeparator && TouchInput::lastPressKind() != TouchInput::Kind::Pointer)
+            standardMenuItemHeight = juce::jmax(standardMenuItemHeight, 40);
+        juce::LookAndFeel_V4::getIdealPopupMenuItemSize(text, isSeparator, standardMenuItemHeight, idealWidth, idealHeight);
+    }
+#endif
 
     // Mouse Cursor Theme
     juce::MouseCursor getMouseCursorFor(juce::Component& component) override;

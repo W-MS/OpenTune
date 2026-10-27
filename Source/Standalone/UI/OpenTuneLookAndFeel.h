@@ -6,6 +6,7 @@
 #include "UiAssets.h"
 #include "TopBarComponent.h"
 #include "../../Utils/CursorTheme.h"
+#include "../../Utils/TouchInput.h"
 
 namespace OpenTune {
 
@@ -661,6 +662,17 @@ public:
             return UIColors::getUIFont(static_cast<float>(static_cast<double>(box.getProperties()["fontHeight"])));
         return UIColors::getUIFont(16.0f);
     }
+
+#if JUCE_IOS
+    // 手指/笔打开的菜单使用与轨道长按菜单相同的 40px 行高。
+    void getIdealPopupMenuItemSize(const juce::String& text, bool isSeparator, int standardMenuItemHeight,
+                                   int& idealWidth, int& idealHeight) override
+    {
+        if (!isSeparator && TouchInput::lastPressKind() != TouchInput::Kind::Pointer)
+            standardMenuItemHeight = juce::jmax(standardMenuItemHeight, 40);
+        juce::LookAndFeel_V4::getIdealPopupMenuItemSize(text, isSeparator, standardMenuItemHeight, idealWidth, idealHeight);
+    }
+#endif
 
     juce::Font getPopupMenuFont() override
     {
