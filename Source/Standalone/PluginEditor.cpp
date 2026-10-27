@@ -20,6 +20,7 @@
 #include "StandaloneArrangementHelpers.h"
 #include "Utils/ProjectSession.h"
 #include "Utils/PlatformFileDialogs.h"
+#include "Utils/IosDocumentPicker.h"
 #include "Utils/TouchInput.h"
 #include "Utils/PitchCurve.h"
 #include "Utils/LegacyNoteGenerator.h"
@@ -2571,18 +2572,14 @@ void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::Export
 
     juce::Component::SafePointer<OpenTuneAudioProcessorEditor> safeThis(this);
 
-    PlatformFileDialogs::chooseSaveTarget(
-        LOC(kExportAudioFile),
-        juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(defaultFileName),
-        ".wav",
-        "Exports",
-        [safeThis, exportType](const juce::File& file)
+    // pickLocation（仅 iOS）：渲染完成后再由系统导出面板把文件移到用户选择的位置
+    auto exportTo = [safeThis, exportType](const juce::File& file, bool pickLocation)
     {
         if (safeThis == nullptr)
             return;
 
         // 从构造导出请求到启动导出线程的完整流程；目标文件已存在时先经主题确认再调用
-        auto startExport = [safeThis, exportType, file]()
+        auto startExport = [safeThis, exportType, file, pickLocation]()
         {
             if (safeThis == nullptr)
                 return;
@@ -2651,7 +2648,7 @@ void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::Export
             safeThis->exportInProgress_.store(true);
 
             // Create new controlled export thread
-            safeThis->exportWorker_ = std::thread([processor, outFile, outRequest, uiSafe, exportLanguage]()
+            safeThis->exportWorker_ = std::thread([processor, outFile, outRequest, uiSafe, exportLanguage, pickLocation]()
                 {
                     bool ok = false;
                     juce::String errorText;
@@ -2674,7 +2671,7 @@ void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::Export
                         errorText = processor->getLastExportError();
                     }
 
-                    juce::MessageManager::callAsync([ok, outFile, outRequest, errorText, uiSafe]()
+                    juce::MessageManager::callAsync([ok, outFile, outRequest, errorText, uiSafe, pickLocation]()
                     {
                         // Check if editor is still alive
                         if (uiSafe == nullptr)
@@ -2686,10 +2683,39 @@ void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::Export
                         if (ok)
                         {
                             DBG("Successfully exported " + outRequest.targetName);
+#if JUCE_IOS
+                            const auto documents = PlatformFileDialogs::getAppDocumentsDirectory();
+                            const auto inAppPath = "OpenTune/" + outFile.getRelativePathFrom(documents);
+
+                            if (pickLocation)
+                            {
+                                IosDocumentPicker::presentExportPicker(outFile,
+                                    [uiSafe, targetName = outRequest.targetName, inAppPath](const juce::File& destination)
+                                    {
+                                        if (uiSafe == nullptr)
+                                            return;
+
+                                        ConfirmDialogContent::showMessage(
+                                            &uiSafe->contentRoot_,
+                                            LOC_RAW("Export Complete"),
+                                            destination != juce::File()
+                                                ? targetName + LOC_RAW(" has been exported to: ") + destination.getFileName()
+                                                : LOC_RAW("No location was chosen. The file was kept in: ") + inAppPath);
+                                    });
+                                return;
+                            }
+
+                            ConfirmDialogContent::showMessage(
+                                &uiSafe->contentRoot_,
+                                LOC_RAW("Export Complete"),
+                                outRequest.targetName + LOC_RAW(" has been exported to: ") + inAppPath);
+#else
+                            juce::ignoreUnused(pickLocation);
                             ConfirmDialogContent::showMessage(
                                 &uiSafe->contentRoot_,
                                 LOC_RAW("Export Complete"),
                                 outRequest.targetName + LOC_RAW(" has been exported to: ") + outFile.getFullPathName());
+#endif
                             return;
                         }
 
@@ -2720,6 +2746,30 @@ void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::Export
         }
 
         startExport();
+    };
+
+    PlatformFileDialogs::chooseSaveTarget(
+        LOC(kExportAudioFile),
+        juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(defaultFileName),
+        ".wav",
+        "Exports",
+        [safeThis, exportTo](const juce::File& file)
+    {
+        if (safeThis == nullptr)
+            return;
+
+#if JUCE_IOS
+        ConfirmDialogContent::launch(
+            new ConfirmDialogContent(
+                LOC_RAW("Save Exported Audio"),
+                LOC_RAW("Save to the OpenTune Exports folder, or choose another location in Files?"),
+                { { LOC_RAW("OpenTune Exports"), [exportTo, file] { exportTo(file, false); }, true },
+                  { LOC_RAW("Choose Location..."), [exportTo, file] { exportTo(file, true); }, false },
+                  { LOC(kCancel), nullptr, false } }),
+            &safeThis->contentRoot_);
+#else
+        exportTo(file, false);
+#endif
     });
 }
 

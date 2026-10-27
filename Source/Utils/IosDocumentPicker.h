@@ -28,5 +28,14 @@ void presentOpenPicker(const juce::StringArray& extensions,
                        const juce::File& copyIntoDirectory,
                        Callback onFinished);
 
+/** 回调参数为最终保存位置；用户取消时为空 File。 */
+using ExportCallback = std::function<void(const juce::File& destination)>;
+
+/**
+ * 以“移动”方式把 file 交给系统导出面板，由用户在“文件”中选择保存位置。
+ * 成功时原文件被系统移走；取消时原文件保持不动。回调总在消息线程上执行。
+ */
+void presentExportPicker(const juce::File& file, ExportCallback onFinished);
+
 } // namespace OpenTune::IosDocumentPicker
 #endif

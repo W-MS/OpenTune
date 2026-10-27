@@ -225,4 +225,40 @@ void presentOpenPicker(const juce::StringArray& extensions,
     [controller presentViewController: picker animated: YES completion: nil];
 }
 
+void presentExportPicker(const juce::File& file, ExportCallback onFinished)
+{
+    auto* controller = topViewController();
+    if (controller == nil)
+    {
+        AppLogger::error("[IosDocumentPicker] No view controller to present from");
+        onFinished({});
+        return;
+    }
+
+    auto* sourceURL = [NSURL fileURLWithPath: toNS(file.getFullPathName())];
+    auto* picker = [[[UIDocumentPickerViewController alloc] initForExportingURLs: @[sourceURL]
+                                                                          asCopy: NO] autorelease];
+    picker.shouldShowFileExtensions = YES;
+    picker.modalPresentationStyle = UIModalPresentationFormSheet;
+
+    auto* delegate = [[[OpenTuneDocumentPickerDelegate alloc] init] autorelease];
+    delegate->handler = [callback = std::move(onFinished)](NSArray<NSURL*>* urls)
+    {
+        juce::File destination;
+        if ([urls count] > 0)
+        {
+            destination = juce::File(toJuce(urls.firstObject.path));
+            AppLogger::info("[IosDocumentPicker] Exported to " + destination.getFullPathName());
+        }
+
+        juce::MessageManager::callAsync([callback, destination] { callback(destination); });
+    };
+
+    picker.delegate = delegate;
+    picker.presentationController.delegate = delegate;
+    objc_setAssociatedObject(picker, &kDelegateKey, delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    [controller presentViewController: picker animated: YES completion: nil];
+}
+
 } // namespace OpenTune::IosDocumentPicker
