@@ -3385,6 +3385,12 @@ void OpenTuneAudioProcessorEditor::visibleTrackCountChanged(int newCount)
 
 void OpenTuneAudioProcessorEditor::trackColorChangeRequested(int trackId)
 {
+#if JUCE_IOS
+    static constexpr int kButtonRowHeight = 48;
+#else
+    static constexpr int kButtonRowHeight = 0;
+#endif
+
     // Wrapper component: holds ColourSelector, applies result when the call-out closes.
     struct ColourPickerContent : public juce::Component,
                                  private juce::ComponentListener
@@ -3401,6 +3407,16 @@ void OpenTuneAudioProcessorEditor::trackColorChangeRequested(int trackId)
             selector_->setCurrentColour(current);
             selector_->setSize(380, 300);
             addAndMakeVisible(selector_.get());
+
+#if JUCE_IOS
+            // 触屏上没有“点外部关闭”的自然提示，给出明确的确认/取消。
+            okButton_.setButtonText(LOC(kOK));
+            cancelButton_.setButtonText(LOC(kCancel));
+            okButton_.onClick = [this] { close(); };
+            cancelButton_.onClick = [this] { applyOnClose_ = false; close(); };
+            addAndMakeVisible(okButton_);
+            addAndMakeVisible(cancelButton_);
+#endif
         }
 
         ~ColourPickerContent() override
@@ -3408,7 +3424,7 @@ void OpenTuneAudioProcessorEditor::trackColorChangeRequested(int trackId)
             auto* editor = dynamic_cast<OpenTuneAudioProcessorEditor*>(subscription_.target());
             subscription_.reset();
 
-            if (editor != nullptr)
+            if (editor != nullptr && applyOnClose_)
             {
                 juce::Colour selected = selector_->getCurrentColour();
                 setStandaloneTrackColour(editor->processorRef_, trackId_, selected);
@@ -3420,28 +3436,45 @@ void OpenTuneAudioProcessorEditor::trackColorChangeRequested(int trackId)
 
         void resized() override
         {
+            auto area = getLocalBounds();
+#if JUCE_IOS
+            auto buttons = area.removeFromBottom(kButtonRowHeight).reduced(8, 6);
+            okButton_.setBounds(buttons.removeFromRight(110));
+            buttons.removeFromRight(8);
+            cancelButton_.setBounds(buttons.removeFromRight(110));
+#endif
             if (selector_)
-                selector_->setBounds(getLocalBounds());
+                selector_->setBounds(area);
         }
 
     private:
+        void close()
+        {
+            if (auto* callOutBox = findParentComponentOfClass<juce::CallOutBox>())
+                callOutBox->dismiss();
+        }
+
         void componentBeingDeleted(juce::Component& comp) override
         {
             if (!subscription_.resetIfWatching(comp))
                 return;
 
-            if (auto* callOutBox = findParentComponentOfClass<juce::CallOutBox>())
-                callOutBox->dismiss();
+            close();
         }
 
         int trackId_;
         std::unique_ptr<juce::ColourSelector> selector_;
         ComponentListenerSubscription subscription_;
+        bool applyOnClose_ = true;
+#if JUCE_IOS
+        juce::TextButton okButton_;
+        juce::TextButton cancelButton_;
+#endif
     };
 
     juce::Colour current = getStandaloneTrackColour(processorRef_, trackId);
     auto* content = new ColourPickerContent(*this, trackId, current);
-    content->setSize(380, 300);
+    content->setSize(380, 300 + kButtonRowHeight);
 
     juce::CallOutBox::launchAsynchronously(
         std::unique_ptr<juce::Component>(content),
