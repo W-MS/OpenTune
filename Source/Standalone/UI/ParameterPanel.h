@@ -16,6 +16,7 @@
 #include "OpenTuneLookAndFeel.h"
 #include "UIColors.h"
 #include "ToolIds.h"
+#include "TouchTooltipPresenter.h"
 
 namespace OpenTune {
 
@@ -210,6 +211,11 @@ private:
 
     bool experimentalFeaturesEnabled_ = false;
     bool openDyneMode_ = false;
+
+#if JUCE_IOS
+    void refreshTouchToolTexts();
+    TouchTooltipPresenter toolTouchTips_ { *this, TouchTooltipPresenter::Trigger::longPress };
+#endif
     
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ParameterPanel)
 };

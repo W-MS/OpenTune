@@ -17,6 +17,7 @@
 #include <unordered_set>
 #include <vector>
 #include <set>
+#include <map>
 #include <optional>
 #include "UIColors.h"
 #include "SmallButton.h"
@@ -90,6 +91,7 @@ public:
         // The editor owns transport decisions; the view never drives transport state.
         virtual bool playheadPositionChangeRequested(double /*timeSeconds*/) { return false; }
         virtual bool pointerShortcutRequested(KeyShortcutConfig::ShortcutId /*id*/) { return false; }
+        virtual void playPauseToggleRequested() {}
     };
 
     ArrangementViewComponent(OpenTuneAudioProcessor& processor);
@@ -377,6 +379,44 @@ private:
     bool isAdjustingGain_{false};
     bool isDraggingPlayhead_{false};
     bool isPanning_{false};
+
+    // 手指手势（仅 TouchInput 判定为手指时启用）：空白处拖动平移，双击空白处播放/暂停，
+    // 双指捏合按手指连线方向分别缩放时间轴与轨道高度。
+    struct FingerGesture
+    {
+        enum class Mode { Idle, Forwarded, EmptyTap, Panning, Pinch, Ignore };
+
+        Mode mode = Mode::Idle;
+        std::map<int, juce::Point<float>> fingers;
+        int primaryIndex = -1;
+        std::optional<juce::MouseEvent> lastPrimaryEvent;
+
+        juce::Point<float> panStartPos;
+        double panStartVisibleSeconds = 0.0;
+        int panStartScrollY = 0;
+
+        int pinchA = -1;
+        int pinchB = -1;
+        juce::Point<float> pinchStartSpan;
+        bool pinchZoomsTime = false;
+        bool pinchZoomsTracks = false;
+        double pinchStartPps = 0.0;
+        int pinchStartTrackHeight = 100;
+        double pinchAnchorTime = 0.0;
+        double pinchAnchorTrack = 0.0;
+
+        bool suppressDoubleClick = false;
+    };
+    FingerGesture fingerGesture_;
+
+    bool beginFingerPress(const juce::MouseEvent& e);
+    bool continueFingerDrag(const juce::MouseEvent& e);
+    bool endFingerPress(const juce::MouseEvent& e);
+    void beginFingerPinch();
+    void updateFingerPinch();
+    void dispatchMouseDown(const juce::MouseEvent& e);
+    void dispatchMouseDrag(const juce::MouseEvent& e);
+    void dispatchMouseUp(const juce::MouseEvent& e);
     // 轴锁定状态（与 InteractionState::AxisLockState 同构，避免跨模块依赖）
     struct AxisLockState {
         enum class Axis { None, Horizontal, Vertical };

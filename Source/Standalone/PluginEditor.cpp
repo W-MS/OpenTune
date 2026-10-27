@@ -19,6 +19,9 @@
 #include "Audio/AsyncAudioLoader.h"
 #include "StandaloneArrangementHelpers.h"
 #include "Utils/ProjectSession.h"
+#include "Utils/PlatformFileDialogs.h"
+#include "Utils/IosDocumentPicker.h"
+#include "Utils/TouchInput.h"
 #include "Utils/PitchCurve.h"
 #include "Utils/LegacyNoteGenerator.h"
 #include "Utils/PitchControlConfig.h"
@@ -752,6 +755,7 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
 
     // Add Ripple Overlay (Topmost)
     contentRoot_.addAndMakeVisible(rippleOverlay_);
+    TouchInput::startObserving();
     // No need for setAlwaysOnTop on component level, we handle z-order in resized
 
     applyThemeToEditor(resolveEffectiveTheme(appPreferences_.getState().shared.theme));
@@ -1508,6 +1512,10 @@ void OpenTuneAudioProcessorEditor::restoreStandaloneWindowGeometryOnce()
     if (standaloneWindowGeometryRestored_)
         return;
 
+#if JUCE_IOS
+    // iPadOS 的 StandaloneFilterWindow 始终全屏，保存的桌面窗口几何没有意义。
+    standaloneWindowGeometryRestored_ = true;
+#else
     auto* window = dynamic_cast<juce::StandaloneFilterWindow*>(getTopLevelComponent());
     if (window == nullptr || window->getPeer() == nullptr)
         return;  // 尚未挂入默认 StandaloneFilterWindow
@@ -1543,6 +1551,7 @@ void OpenTuneAudioProcessorEditor::restoreStandaloneWindowGeometryOnce()
 
     // 由 StandaloneFilterWindow 现有 constrainer 同步外层窗口与 editor，不手算窗口边框。
     window->setBoundsConstrained(candidate);
+#endif
 }
 
 void OpenTuneAudioProcessorEditor::applyUiZoomIfNeeded()
@@ -2168,20 +2177,18 @@ void OpenTuneAudioProcessorEditor::importAudioRequested()
 
     juce::Component::SafePointer<OpenTuneAudioProcessorEditor> safeThis(this);
 
-    auto chooser = std::make_shared<juce::FileChooser>(
+    PlatformFileDialogs::chooseFilesToOpen(
         LOC(kSelectAudioFilesToImport),
         juce::File::getSpecialLocation(juce::File::userHomeDirectory),
-        wildcardFilter);
-    const auto chooserFlags = juce::FileBrowserComponent::openMode
-                            | juce::FileBrowserComponent::canSelectFiles
-                            | juce::FileBrowserComponent::canSelectMultipleItems;
-
-    chooser->launchAsync(chooserFlags, [safeThis, chooser](const juce::FileChooser& fc)
+        wildcardFilter,
+        true,
+        true,
+        &contentRoot_,
+        [safeThis](const juce::Array<juce::File>& selectedFiles)
     {
         if (safeThis == nullptr)
             return;
 
-        const juce::Array<juce::File>& selectedFiles = fc.getResults();
         if (selectedFiles.isEmpty())
         {
             DBG("No files selected");
@@ -2565,27 +2572,14 @@ void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::Export
 
     juce::Component::SafePointer<OpenTuneAudioProcessorEditor> safeThis(this);
 
-    auto chooser = std::make_shared<juce::FileChooser>(
-        LOC(kExportAudioFile),
-        juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(defaultFileName),
-        "*.wav");
-    const auto chooserFlags = juce::FileBrowserComponent::saveMode
-                            | juce::FileBrowserComponent::canSelectFiles;
-
-    chooser->launchAsync(chooserFlags, [safeThis, exportType, chooser](const juce::FileChooser& fc)
+    // pickLocation（仅 iOS）：渲染完成后再由系统导出面板把文件移到用户选择的位置
+    auto exportTo = [safeThis, exportType](const juce::File& file, bool pickLocation)
     {
         if (safeThis == nullptr)
             return;
 
-        auto file = fc.getResult();
-        if (file == juce::File{})
-            return;
-
-        if (!file.hasFileExtension(".wav"))
-            file = file.withFileExtension(".wav");
-
         // 从构造导出请求到启动导出线程的完整流程；目标文件已存在时先经主题确认再调用
-        auto startExport = [safeThis, exportType, file]()
+        auto startExport = [safeThis, exportType, file, pickLocation]()
         {
             if (safeThis == nullptr)
                 return;
@@ -2654,7 +2648,7 @@ void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::Export
             safeThis->exportInProgress_.store(true);
 
             // Create new controlled export thread
-            safeThis->exportWorker_ = std::thread([processor, outFile, outRequest, uiSafe, exportLanguage]()
+            safeThis->exportWorker_ = std::thread([processor, outFile, outRequest, uiSafe, exportLanguage, pickLocation]()
                 {
                     bool ok = false;
                     juce::String errorText;
@@ -2677,7 +2671,7 @@ void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::Export
                         errorText = processor->getLastExportError();
                     }
 
-                    juce::MessageManager::callAsync([ok, outFile, outRequest, errorText, uiSafe]()
+                    juce::MessageManager::callAsync([ok, outFile, outRequest, errorText, uiSafe, pickLocation]()
                     {
                         // Check if editor is still alive
                         if (uiSafe == nullptr)
@@ -2689,10 +2683,39 @@ void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::Export
                         if (ok)
                         {
                             DBG("Successfully exported " + outRequest.targetName);
+#if JUCE_IOS
+                            const auto documents = PlatformFileDialogs::getAppDocumentsDirectory();
+                            const auto inAppPath = "OpenTune/" + outFile.getRelativePathFrom(documents);
+
+                            if (pickLocation)
+                            {
+                                IosDocumentPicker::presentExportPicker(outFile,
+                                    [uiSafe, targetName = outRequest.targetName, inAppPath](const juce::File& destination)
+                                    {
+                                        if (uiSafe == nullptr)
+                                            return;
+
+                                        ConfirmDialogContent::showMessage(
+                                            &uiSafe->contentRoot_,
+                                            LOC_RAW("Export Complete"),
+                                            destination != juce::File()
+                                                ? targetName + LOC_RAW(" has been exported to: ") + destination.getFileName()
+                                                : LOC_RAW("No location was chosen. The file was kept in: ") + inAppPath);
+                                    });
+                                return;
+                            }
+
+                            ConfirmDialogContent::showMessage(
+                                &uiSafe->contentRoot_,
+                                LOC_RAW("Export Complete"),
+                                outRequest.targetName + LOC_RAW(" has been exported to: ") + inAppPath);
+#else
+                            juce::ignoreUnused(pickLocation);
                             ConfirmDialogContent::showMessage(
                                 &uiSafe->contentRoot_,
                                 LOC_RAW("Export Complete"),
                                 outRequest.targetName + LOC_RAW(" has been exported to: ") + outFile.getFullPathName());
+#endif
                             return;
                         }
 
@@ -2723,6 +2746,30 @@ void OpenTuneAudioProcessorEditor::exportAudioRequested(MenuBarComponent::Export
         }
 
         startExport();
+    };
+
+    PlatformFileDialogs::chooseSaveTarget(
+        LOC(kExportAudioFile),
+        juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(defaultFileName),
+        ".wav",
+        "Exports",
+        [safeThis, exportTo](const juce::File& file)
+    {
+        if (safeThis == nullptr)
+            return;
+
+#if JUCE_IOS
+        ConfirmDialogContent::launch(
+            new ConfirmDialogContent(
+                LOC_RAW("Save Exported Audio"),
+                LOC_RAW("Save to the OpenTune Exports folder, or choose another location in Files?"),
+                { { LOC_RAW("OpenTune Exports"), [exportTo, file] { exportTo(file, false); }, true },
+                  { LOC_RAW("Choose Location..."), [exportTo, file] { exportTo(file, true); }, false },
+                  { LOC(kCancel), nullptr, false } }),
+            &safeThis->contentRoot_);
+#else
+        exportTo(file, false);
+#endif
     });
 }
 
@@ -2770,19 +2817,66 @@ void OpenTuneAudioProcessorEditor::openProjectRequested()
 
 void OpenTuneAudioProcessorEditor::launchOpenProjectChooser()
 {
-    auto chooser = std::make_shared<juce::FileChooser>(
-        LOC(kOpenProject), juce::File(), "*.otproj");
-    const auto chooserFlags = juce::FileBrowserComponent::openMode
-                             | juce::FileBrowserComponent::canSelectFiles;
+#if JUCE_IOS
+    // App 自己保存的工程都在 Documents 下，直接在应用内列出（只显示 .otproj，媒体目录不出现），
+    // 系统文件选择器只作为“浏览文件”后备入口。
+    {
+        juce::Component::SafePointer<OpenTuneAudioProcessorEditor> safeThis(this);
+        auto projects = PlatformFileDialogs::getAppDocumentsDirectory()
+            .findChildFiles(juce::File::findFiles, true, "*.otproj");
+        std::sort(projects.begin(), projects.end(), [](const juce::File& a, const juce::File& b) {
+            return a.getLastModificationTime() > b.getLastModificationTime();
+        });
+
+        juce::PopupMenu menu;
+        constexpr int kBrowseItemId = 1;
+        constexpr int kFirstProjectItemId = 100;
+        const auto documents = PlatformFileDialogs::getAppDocumentsDirectory();
+        for (int i = 0; i < projects.size() && i < 50; ++i) {
+            const auto& project = projects.getReference(i);
+            const auto folder = project.getParentDirectory().getRelativePathFrom(documents);
+            menu.addItem(kFirstProjectItemId + i,
+                         project.getFileNameWithoutExtension()
+                             + (folder == "." ? juce::String() : "  (" + folder + ")"));
+        }
+        if (projects.isEmpty())
+            menu.addItem(-1, LOC_RAW("No saved projects"), false);
+        menu.addSeparator();
+        menu.addItem(kBrowseItemId, LOC_RAW("Browse Files..."));
+
+        menu.showMenuAsync(juce::PopupMenu::Options()
+                               .withTargetComponent(&transportBar_.getFileButton())
+                               .withParentComponent(&contentRoot_)
+                               .withStandardItemHeight(40)
+                               .withMinimumWidth(320),
+            [safeThis, projects](int result) {
+                if (safeThis == nullptr || result == 0)
+                    return;
+                if (result == kBrowseItemId) {
+                    safeThis->launchOpenProjectFilePicker();
+                    return;
+                }
+                const int index = result - kFirstProjectItemId;
+                if (juce::isPositiveAndBelow(index, projects.size()))
+                    safeThis->openProjectFile(projects.getReference(index));
+            });
+    }
+#else
+    launchOpenProjectFilePicker();
+#endif
+}
+
+void OpenTuneAudioProcessorEditor::launchOpenProjectFilePicker()
+{
     juce::Component::SafePointer<OpenTuneAudioProcessorEditor> safeThis(this);
 
-    chooser->launchAsync(chooserFlags, [safeThis, chooser](const juce::FileChooser& fc) {
-        if (safeThis == nullptr) return;
-        auto file = fc.getResult();
-        if (file == juce::File{}) return;
-
-        safeThis->openProjectFile(file);
-    });
+    // 工程依赖同级 *_Media 目录，单独复制 .otproj 没有意义，因此不复制外部工程文件。
+    PlatformFileDialogs::chooseFilesToOpen(
+        LOC(kOpenProject), juce::File(), "*.otproj", false, false, &contentRoot_,
+        [safeThis](const juce::Array<juce::File>& files) {
+            if (safeThis == nullptr) return;
+            safeThis->openProjectFile(files.getFirst());
+        });
 }
 
 void OpenTuneAudioProcessorEditor::saveProjectAsThenOpenProject()
@@ -2790,18 +2884,12 @@ void OpenTuneAudioProcessorEditor::saveProjectAsThenOpenProject()
     if (rejectProjectOperationIfBusy())
         return;
 
-    auto chooser = std::make_shared<juce::FileChooser>(
-        LOC(kSaveProject), juce::File(), "*.otproj");
-    const auto chooserFlags = juce::FileBrowserComponent::saveMode
-                             | juce::FileBrowserComponent::canSelectFiles;
     juce::Component::SafePointer<OpenTuneAudioProcessorEditor> safeThis(this);
 
-    chooser->launchAsync(chooserFlags, [safeThis, chooser](const juce::FileChooser& fc) {
+    PlatformFileDialogs::chooseSaveTarget(
+        LOC(kSaveProject), juce::File(), ".otproj", "Projects",
+        [safeThis](const juce::File& file) {
         if (safeThis == nullptr) return;
-        auto file = fc.getResult();
-        if (file == juce::File{}) return;
-        if (!file.hasFileExtension(".otproj"))
-            file = file.withFileExtension(".otproj");
 
         if (file.existsAsFile()) {
             ConfirmDialogContent::launch(
@@ -3347,6 +3435,12 @@ void OpenTuneAudioProcessorEditor::visibleTrackCountChanged(int newCount)
 
 void OpenTuneAudioProcessorEditor::trackColorChangeRequested(int trackId)
 {
+#if JUCE_IOS
+    static constexpr int kButtonRowHeight = 48;
+#else
+    static constexpr int kButtonRowHeight = 0;
+#endif
+
     // Wrapper component: holds ColourSelector, applies result when the call-out closes.
     struct ColourPickerContent : public juce::Component,
                                  private juce::ComponentListener
@@ -3363,6 +3457,16 @@ void OpenTuneAudioProcessorEditor::trackColorChangeRequested(int trackId)
             selector_->setCurrentColour(current);
             selector_->setSize(380, 300);
             addAndMakeVisible(selector_.get());
+
+#if JUCE_IOS
+            // 触屏上没有“点外部关闭”的自然提示，给出明确的确认/取消。
+            okButton_.setButtonText(LOC(kOK));
+            cancelButton_.setButtonText(LOC(kCancel));
+            okButton_.onClick = [this] { close(); };
+            cancelButton_.onClick = [this] { applyOnClose_ = false; close(); };
+            addAndMakeVisible(okButton_);
+            addAndMakeVisible(cancelButton_);
+#endif
         }
 
         ~ColourPickerContent() override
@@ -3370,7 +3474,7 @@ void OpenTuneAudioProcessorEditor::trackColorChangeRequested(int trackId)
             auto* editor = dynamic_cast<OpenTuneAudioProcessorEditor*>(subscription_.target());
             subscription_.reset();
 
-            if (editor != nullptr)
+            if (editor != nullptr && applyOnClose_)
             {
                 juce::Colour selected = selector_->getCurrentColour();
                 setStandaloneTrackColour(editor->processorRef_, trackId_, selected);
@@ -3382,28 +3486,45 @@ void OpenTuneAudioProcessorEditor::trackColorChangeRequested(int trackId)
 
         void resized() override
         {
+            auto area = getLocalBounds();
+#if JUCE_IOS
+            auto buttons = area.removeFromBottom(kButtonRowHeight).reduced(8, 6);
+            okButton_.setBounds(buttons.removeFromRight(110));
+            buttons.removeFromRight(8);
+            cancelButton_.setBounds(buttons.removeFromRight(110));
+#endif
             if (selector_)
-                selector_->setBounds(getLocalBounds());
+                selector_->setBounds(area);
         }
 
     private:
+        void close()
+        {
+            if (auto* callOutBox = findParentComponentOfClass<juce::CallOutBox>())
+                callOutBox->dismiss();
+        }
+
         void componentBeingDeleted(juce::Component& comp) override
         {
             if (!subscription_.resetIfWatching(comp))
                 return;
 
-            if (auto* callOutBox = findParentComponentOfClass<juce::CallOutBox>())
-                callOutBox->dismiss();
+            close();
         }
 
         int trackId_;
         std::unique_ptr<juce::ColourSelector> selector_;
         ComponentListenerSubscription subscription_;
+        bool applyOnClose_ = true;
+#if JUCE_IOS
+        juce::TextButton okButton_;
+        juce::TextButton cancelButton_;
+#endif
     };
 
     juce::Colour current = getStandaloneTrackColour(processorRef_, trackId);
     auto* content = new ColourPickerContent(*this, trackId, current);
-    content->setSize(380, 300);
+    content->setSize(380, 300 + kButtonRowHeight);
 
     juce::CallOutBox::launchAsynchronously(
         std::unique_ptr<juce::Component>(content),
@@ -3732,18 +3853,12 @@ void OpenTuneAudioProcessorEditor::saveProjectAsRequested()
     if (rejectProjectOperationIfBusy())
         return;
 
-    auto chooser = std::make_shared<juce::FileChooser>(
-        LOC(kSaveProject), juce::File(), "*.otproj");
-    const auto chooserFlags = juce::FileBrowserComponent::saveMode
-                             | juce::FileBrowserComponent::canSelectFiles;
     juce::Component::SafePointer<OpenTuneAudioProcessorEditor> safeThis(this);
 
-    chooser->launchAsync(chooserFlags, [safeThis, chooser](const juce::FileChooser& fc) {
+    PlatformFileDialogs::chooseSaveTarget(
+        LOC(kSaveProject), juce::File(), ".otproj", "Projects",
+        [safeThis](const juce::File& file) {
         if (safeThis == nullptr) return;
-        auto file = fc.getResult();
-        if (file == juce::File{}) return;
-        if (!file.hasFileExtension(".otproj"))
-            file = file.withFileExtension(".otproj");
 
         if (file.existsAsFile()) {
             ConfirmDialogContent::launch(
@@ -3782,18 +3897,10 @@ void OpenTuneAudioProcessorEditor::openRecentProjectRequested(const juce::File& 
                     if (safeThis == nullptr) return;
                     if (!safeThis->projectSession_.hasProjectPath()) {
                         // No project path: async save-as, then open recent file
-                        auto chooser = std::make_shared<juce::FileChooser>(
-                            LOC(kSaveProject),
-                            juce::File(),
-                            "*.otproj");
-                        const auto chooserFlags = juce::FileBrowserComponent::saveMode
-                                                 | juce::FileBrowserComponent::canSelectFiles;
-                        chooser->launchAsync(chooserFlags, [safeThis, chooser, file](const juce::FileChooser& fc) {
+                        PlatformFileDialogs::chooseSaveTarget(
+                            LOC(kSaveProject), juce::File(), ".otproj", "Projects",
+                            [safeThis, file](const juce::File& saveFile) {
                             if (safeThis == nullptr) return;
-                            auto saveFile = fc.getResult();
-                            if (saveFile == juce::File{}) return;
-                            if (!saveFile.hasFileExtension(".otproj"))
-                                saveFile = saveFile.withFileExtension(".otproj");
 
                             auto handleSaveAndOpen = [safeThis, file](const juce::File& saveFile) {
                                 if (safeThis == nullptr) return;

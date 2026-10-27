@@ -32,6 +32,7 @@
 #include "UI/AuroraLookAndFeel.h"
 #include "UI/UIColors.h"
 #include "UI/RippleOverlayComponent.h"
+#include "UI/TouchSubmenuOpener.h"
 #include "Editor/AutoRenderOverlayComponent.h"
 #include "../Editor/RenderBadgeComponent.h"
 #include "Utils/PitchShiftSettings.h"
@@ -203,6 +204,7 @@ private:
     void syncRecentProjectsToMenu();
     void refreshAllUIFromProject();
     void launchOpenProjectChooser();
+    void launchOpenProjectFilePicker();
     void saveProjectAsThenOpenProject();
     void playFromStartToggleRequested();  // 播放/暂停并回到起始位置
     void importAudioFileToTrack(int trackId, const juce::File& file,
@@ -257,6 +259,9 @@ private:
     PianoRollComponent pianoRoll_;
     TimelineOverviewComponent overviewStrip_;
     RippleOverlayComponent rippleOverlay_;
+#if JUCE_IOS
+    TouchSubmenuOpener touchSubmenuOpener_;
+#endif
     AutoRenderOverlayComponent autoRenderOverlay_;
     RenderBadgeComponent renderBadge_;
     OpenTuneTooltipWindow tooltipWindow_{ &contentRoot_, 600 };

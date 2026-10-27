@@ -608,6 +608,47 @@ private:
     float dragStartVerticalScrollOffset_ = 0.0f;
     double dragStartVisibleStartSeconds_ = 0.0;
 
+    // 手指手势（仅 TouchInput 判定为手指时启用；鼠标/触控板/Apple Pencil 走原有路径）：
+    // 空白处拖动平移视图，双击空白处播放/暂停，双指捏合按手指连线方向分别缩放两轴。
+    struct FingerGesture
+    {
+        enum class Mode { Idle, Forwarded, EmptyTap, Panning, Pinch, Ignore };
+
+        Mode mode = Mode::Idle;
+        std::map<int, juce::Point<float>> fingers;
+        int primaryIndex = -1;
+        std::optional<juce::MouseEvent> lastPrimaryEvent;
+
+        juce::Point<float> panStartPos;
+        double panStartVisibleSeconds = 0.0;
+        float panStartScrollY = 0.0f;
+
+        int pinchA = -1;
+        int pinchB = -1;
+        juce::Point<float> pinchStartSpan;
+        bool pinchZoomsTime = false;
+        bool pinchZoomsPitch = false;
+        double pinchStartPps = 0.0;
+        float pinchStartPixelsPerSemitone = 25.0f;
+        double pinchAnchorTime = 0.0;
+        float pinchAnchorMidi = 60.0f;
+
+        bool suppressDoubleClick = false;
+    };
+    FingerGesture fingerGesture_;
+
+    bool beginFingerPress(const juce::MouseEvent& e);
+    bool continueFingerDrag(const juce::MouseEvent& e);
+    bool endFingerPress(const juce::MouseEvent& e);
+    void beginFingerPinch();
+    void updateFingerPinch();
+    void updateFingerPan(const juce::MouseEvent& e);
+    void applyViewportFromGesture(double visibleStartSeconds, double pps, float scrollY);
+    bool fingerDragOnEmptySpacePans() const noexcept;
+    void dispatchMouseDown(const juce::MouseEvent& e);
+    void dispatchMouseDrag(const juce::MouseEvent& e);
+    void dispatchMouseUp(const juce::MouseEvent& e);
+
 private:
 
     bool showWaveform_ = true;

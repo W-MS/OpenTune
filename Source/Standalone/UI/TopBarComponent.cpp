@@ -36,6 +36,9 @@ TopBarComponent::TopBarComponent(MenuBarComponent& menuBar, TransportBarComponen
         if (onToggleParameterPanel) onToggleParameterPanel();
     };
     addAndMakeVisible(parameterPanelToggleButton_);
+
+    trackPanelToggleButton_.getProperties().set(TouchTooltipPresenter::kSuppressProperty, true);
+    parameterPanelToggleButton_.getProperties().set(TouchTooltipPresenter::kSuppressProperty, true);
 }
 
 void TopBarComponent::applyTheme()

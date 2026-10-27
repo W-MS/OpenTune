@@ -2,6 +2,8 @@
 #include "UIColors.h"
 #include "../../Utils/LocalizationManager.h"
 
+#include <utility>
+
 namespace OpenTune {
 
     // MuteSoloIconButton implementation
@@ -541,11 +543,47 @@ void TrackPanelComponent::mouseDown(const juce::MouseEvent& event)
     if (clickedTrack >= 0 && clickedTrack < visibleTrackCount_)
     {
         onTrackSelected(clickedTrack);
+
+        if (event.source.isTouch())
+        {
+            longPressTrack_ = clickedTrack;
+            longPressScreenPos_ = event.getScreenPosition();
+            longPressFired_ = false;
+            longPressTimer_.startTimer(500);
+        }
     }
+}
+
+void TrackPanelComponent::mouseDrag(const juce::MouseEvent& event)
+{
+    constexpr int kLongPressSlopPx = 10;
+    if (longPressTimer_.isTimerRunning()
+        && event.getScreenPosition().getDistanceFrom(longPressScreenPos_) > kLongPressSlopPx)
+        longPressTimer_.stopTimer();
+}
+
+void TrackPanelComponent::onLongPress()
+{
+    longPressTimer_.stopTimer();
+    if (longPressTrack_ < 0 || longPressTrack_ >= visibleTrackCount_)
+        return;
+
+    longPressFired_ = true;
+    constexpr int kFingerClearancePx = 28;
+    showTrackMenu(longPressTrack_,
+                  juce::PopupMenu::Options()
+                      .withTargetComponent(this)
+                      .withTargetScreenArea(juce::Rectangle<int>(longPressScreenPos_, longPressScreenPos_)
+                                                .expanded(kFingerClearancePx))
+                      .withStandardItemHeight(40));
 }
 
 void TrackPanelComponent::mouseUp(const juce::MouseEvent& event)
 {
+    longPressTimer_.stopTimer();
+    if (std::exchange(longPressFired_, false))
+        return;
+
     if (!event.mods.isPopupMenu()) {
         juce::Component::mouseUp(event);
         return;
@@ -555,6 +593,13 @@ void TrackPanelComponent::mouseUp(const juce::MouseEvent& event)
     if (trackIndex < 0 || trackIndex >= visibleTrackCount_)
         return;
 
+    showTrackMenu(trackIndex, juce::PopupMenu::Options()
+                                  .withTargetComponent(this)
+                                  .withMousePosition());
+}
+
+void TrackPanelComponent::showTrackMenu(int trackIndex, const juce::PopupMenu::Options& options)
+{
     juce::PopupMenu menu;
     menu.addItem(1, LOC(kAddTrack));
     menu.addItem(2, LOC(kDuplicateTrack));
@@ -568,9 +613,7 @@ void TrackPanelComponent::mouseUp(const juce::MouseEvent& event)
     menu.addSeparator();
     menu.addItem(5, LOC(kDeleteTrack));
 
-    menu.showMenuAsync(juce::PopupMenu::Options()
-                           .withTargetComponent(this)
-                           .withMousePosition(),
+    menu.showMenuAsync(options,
         [safeThis = juce::Component::SafePointer<TrackPanelComponent>(this), trackIndex](int result) {
             if (safeThis == nullptr)
                 return;
