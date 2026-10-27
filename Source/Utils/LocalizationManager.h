@@ -986,6 +986,8 @@ inline juce::String get(Language lang, const char* key)
         { "Save", "Save", "保存", "保存", "Сохранить", "Guardar" },
         { "Do Not Save", "Do Not Save", "不保存", "保存しない", "Не сохранять", "No guardar" },
         { "File name", "File name", "文件名", "ファイル名", "Имя файла", "Nombre de archivo" },
+        { "No saved projects", "No saved projects", "没有已保存的工程", "保存済みのプロジェクトはありません", "Нет сохранённых проектов", "No hay proyectos guardados" },
+        { "Browse Files...", "Browse Files...", "浏览文件...", "ファイルを参照...", "Обзор файлов...", "Explorar archivos..." },
         { "These files could not be copied into OpenTune:", "These files could not be copied into OpenTune:", "以下文件无法复制到 OpenTune：", "次のファイルを OpenTune にコピーできませんでした：", "Не удалось скопировать эти файлы в OpenTune:", "No se pudieron copiar estos archivos a OpenTune:" },
     };
     

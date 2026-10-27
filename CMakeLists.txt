@@ -450,6 +450,27 @@ if(OPENTUNE_IOS)
             <true/>
             <key>UIApplicationSupportsIndirectInputEvents</key>
             <true/>
+            <key>UTExportedTypeDeclarations</key>
+            <array>
+                <dict>
+                    <key>UTTypeIdentifier</key>
+                    <string>com.daya.opentune.project</string>
+                    <key>UTTypeDescription</key>
+                    <string>OpenTune Project</string>
+                    <key>UTTypeConformsTo</key>
+                    <array>
+                        <string>public.xml</string>
+                        <string>public.data</string>
+                    </array>
+                    <key>UTTypeTagSpecification</key>
+                    <dict>
+                        <key>public.filename-extension</key>
+                        <array>
+                            <string>otproj</string>
+                        </array>
+                    </dict>
+                </dict>
+            </array>
             <key>NSHumanReadableCopyright</key>
             <string>Copyright © 2024-2026 DAYA. All rights reserved.</string>
         </dict>

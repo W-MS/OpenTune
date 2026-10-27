@@ -712,8 +712,14 @@ ProjectSession::SaveTask ProjectSession::prepareSave(const juce::File& targetFil
     task.snapshot = captureSnapshot();
     task.snapshot.header.projectName = targetFile.getFileNameWithoutExtension();
     task.targetFile = targetFile;
+#if JUCE_IOS
+    // iPadOS 的 Documents 在“文件”App 中可见；以点开头的目录会被隐藏，用户只看到 .otproj。
+    const juce::String mediaPrefix = ".";
+#else
+    const juce::String mediaPrefix;
+#endif
     task.mediaDirectory = targetFile.getParentDirectory().getChildFile(
-        targetFile.getFileNameWithoutExtension() + "_Media");
+        mediaPrefix + targetFile.getFileNameWithoutExtension() + "_Media");
     task.language = LocalizationManager::getInstance().resolveLanguage();
     return task;
 }

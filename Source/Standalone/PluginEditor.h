@@ -203,6 +203,7 @@ private:
     void syncRecentProjectsToMenu();
     void refreshAllUIFromProject();
     void launchOpenProjectChooser();
+    void launchOpenProjectFilePicker();
     void saveProjectAsThenOpenProject();
     void playFromStartToggleRequested();  // 播放/暂停并回到起始位置
     void importAudioFileToTrack(int trackId, const juce::File& file,
