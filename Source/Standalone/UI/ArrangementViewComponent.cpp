@@ -14,6 +14,7 @@
 #include "../../Utils/LocalizationManager.h"
 #include "../../Utils/SnapUtils.h"
 #include "../../Utils/TrackConstants.h"
+#include "../../Utils/TouchInput.h"
 #include "../../Utils/WaveformTime.h"
 #include "../StandaloneArrangementHelpers.h"
 
@@ -2236,6 +2237,231 @@ void ArrangementViewComponent::mouseMove(const juce::MouseEvent& e)
 
 void ArrangementViewComponent::mouseDown(const juce::MouseEvent& e)
 {
+    if (TouchInput::isFingerPress(e) && beginFingerPress(e))
+        return;
+    dispatchMouseDown(e);
+}
+
+void ArrangementViewComponent::mouseDrag(const juce::MouseEvent& e)
+{
+    if (continueFingerDrag(e))
+        return;
+    dispatchMouseDrag(e);
+}
+
+void ArrangementViewComponent::mouseUp(const juce::MouseEvent& e)
+{
+    if (endFingerPress(e))
+        return;
+    dispatchMouseUp(e);
+}
+
+bool ArrangementViewComponent::beginFingerPress(const juce::MouseEvent& e)
+{
+    auto& g = fingerGesture_;
+    const int index = e.source.getIndex();
+    g.fingers[index] = e.position;
+    g.suppressDoubleClick = false;
+
+    if (g.fingers.size() == 1)
+    {
+        g.primaryIndex = index;
+        g.lastPrimaryEvent.emplace(e);
+
+        // 空白处的单击（定位播放头 + 取消选择）推迟到抬起时执行，拖动则改为平移。
+        if (e.y > rulerHeight_ && hitTestPlacement(e.getPosition()).trackId < 0)
+        {
+            grabKeyboardFocus();
+            g.mode = FingerGesture::Mode::EmptyTap;
+            return true;
+        }
+
+        dispatchMouseDown(e);
+        g.mode = FingerGesture::Mode::Forwarded;
+        return true;
+    }
+
+    if (g.mode == FingerGesture::Mode::Pinch || g.mode == FingerGesture::Mode::Ignore)
+        return true;
+
+    if (g.mode == FingerGesture::Mode::Forwarded && g.lastPrimaryEvent.has_value())
+        dispatchMouseUp(*g.lastPrimaryEvent);
+
+    g.pinchA = g.fingers.count(g.primaryIndex) != 0 ? g.primaryIndex : g.fingers.begin()->first;
+    g.pinchB = index;
+    beginFingerPinch();
+    return true;
+}
+
+bool ArrangementViewComponent::continueFingerDrag(const juce::MouseEvent& e)
+{
+    auto& g = fingerGesture_;
+    const int index = e.source.getIndex();
+    const auto it = g.fingers.find(index);
+    if (it == g.fingers.end())
+        return false;
+    it->second = e.position;
+
+    switch (g.mode)
+    {
+        case FingerGesture::Mode::Pinch:
+            if (index == g.pinchA || index == g.pinchB)
+                updateFingerPinch();
+            return true;
+        case FingerGesture::Mode::EmptyTap:
+        {
+            constexpr float kPanThresholdPx = 6.0f;
+            if (index != g.primaryIndex || e.position.getDistanceFrom(e.mouseDownPosition) <= kPanThresholdPx)
+                return true;
+            g.mode = FingerGesture::Mode::Panning;
+            g.panStartPos = e.position;
+            g.panStartVisibleSeconds = camera_.visibleStartSeconds;
+            g.panStartScrollY = verticalScrollOffset_;
+            return true;
+        }
+        case FingerGesture::Mode::Panning:
+        {
+            if (index != g.primaryIndex)
+                return true;
+            const auto delta = e.position - g.panStartPos;
+            commitViewportRequest(makeViewportRequest(
+                TimelineViewportRequest::Kind::Manual,
+                g.panStartVisibleSeconds - static_cast<double>(delta.x) / camera_.pixelsPerSecond,
+                0.0,
+                camera_.pixelsPerSecond));
+            setVerticalScrollOffset(g.panStartScrollY - juce::roundToInt(delta.y));
+            listeners_.call([this](Listener& l) { l.verticalScrollChanged(verticalScrollOffset_); });
+            return true;
+        }
+        case FingerGesture::Mode::Forwarded:
+            if (index == g.primaryIndex)
+            {
+                g.lastPrimaryEvent.emplace(e);
+                dispatchMouseDrag(e);
+            }
+            return true;
+        case FingerGesture::Mode::Idle:
+        case FingerGesture::Mode::Ignore:
+            return true;
+    }
+    return true;
+}
+
+bool ArrangementViewComponent::endFingerPress(const juce::MouseEvent& e)
+{
+    auto& g = fingerGesture_;
+    const int index = e.source.getIndex();
+    if (g.fingers.erase(index) == 0)
+        return false;
+
+    const bool wasPrimary = index == g.primaryIndex;
+    const auto mode = g.mode;
+
+    if (g.fingers.empty())
+    {
+        g.mode = FingerGesture::Mode::Idle;
+        g.primaryIndex = -1;
+        g.lastPrimaryEvent.reset();
+    }
+    else if (mode == FingerGesture::Mode::Pinch)
+    {
+        g.mode = FingerGesture::Mode::Ignore;
+    }
+
+    if (!wasPrimary)
+        return true;
+
+    switch (mode)
+    {
+        case FingerGesture::Mode::EmptyTap:
+            dispatchMouseDown(e);
+            dispatchMouseUp(e);
+            if (e.getNumberOfClicks() == 2)
+            {
+                g.suppressDoubleClick = true;
+                listeners_.call([](Listener& l) { l.playPauseToggleRequested(); });
+            }
+            break;
+        case FingerGesture::Mode::Forwarded:
+            dispatchMouseUp(e);
+            break;
+        case FingerGesture::Mode::Idle:
+        case FingerGesture::Mode::Panning:
+        case FingerGesture::Mode::Pinch:
+        case FingerGesture::Mode::Ignore:
+            break;
+    }
+    return true;
+}
+
+void ArrangementViewComponent::beginFingerPinch()
+{
+    auto& g = fingerGesture_;
+    const auto a = g.fingers[g.pinchA];
+    const auto b = g.fingers[g.pinchB];
+    const auto mid = (a + b) * 0.5f;
+
+    g.mode = FingerGesture::Mode::Pinch;
+    g.pinchStartSpan = { std::abs(a.x - b.x), std::abs(a.y - b.y) };
+
+    constexpr float kTan30 = 0.577f;
+    constexpr float kMinSpanPx = 24.0f;
+    const bool nearlyHorizontal = g.pinchStartSpan.y <= g.pinchStartSpan.x * kTan30;
+    const bool nearlyVertical = g.pinchStartSpan.x <= g.pinchStartSpan.y * kTan30;
+    g.pinchZoomsTime = g.pinchStartSpan.x >= kMinSpanPx && !nearlyVertical;
+    g.pinchZoomsTracks = g.pinchStartSpan.y >= kMinSpanPx && !nearlyHorizontal;
+
+    g.pinchStartPps = camera_.pixelsPerSecond;
+    g.pinchStartTrackHeight = processor_.getTrackHeight();
+    g.pinchAnchorTime = camera_.visibleStartSeconds
+        + static_cast<double>(mid.x - static_cast<float>(kArrangementContentStartX)) / camera_.pixelsPerSecond;
+    g.pinchAnchorTrack = (static_cast<double>(mid.y) - rulerHeight_ + verticalScrollOffset_)
+        / static_cast<double>(juce::jmax(1, g.pinchStartTrackHeight));
+}
+
+void ArrangementViewComponent::updateFingerPinch()
+{
+    const auto& g = fingerGesture_;
+    const auto a = g.fingers.at(g.pinchA);
+    const auto b = g.fingers.at(g.pinchB);
+    const auto mid = (a + b) * 0.5f;
+
+    double pps = g.pinchStartPps;
+    if (g.pinchZoomsTime)
+    {
+        const auto ratio = static_cast<double>(std::max(1.0f, std::abs(a.x - b.x)) / g.pinchStartSpan.x);
+        pps = TimelineViewportPolicy::normalisePixelsPerSecond(
+            g.pinchStartPps * ratio, TimelineViewportRequest::ViewKind::Arrangement);
+        userHasManuallyZoomed_ = true;
+    }
+    commitViewportRequest(makeViewportRequest(
+        TimelineViewportRequest::Kind::Manual,
+        g.pinchAnchorTime - static_cast<double>(mid.x - static_cast<float>(kArrangementContentStartX)) / pps,
+        0.0,
+        pps));
+
+    int trackHeight = processor_.getTrackHeight();
+    if (g.pinchZoomsTracks)
+    {
+        const auto ratio = std::max(1.0f, std::abs(a.y - b.y)) / g.pinchStartSpan.y;
+        const int newHeight = juce::jlimit(70, 300,
+            juce::roundToInt(static_cast<float>(g.pinchStartTrackHeight) * ratio));
+        if (newHeight != trackHeight)
+        {
+            trackHeight = newHeight;
+            processor_.setTrackHeight(newHeight);
+            listeners_.call([newHeight](Listener& l) { l.trackHeightChanged(newHeight); });
+            invalidateStableScene();
+        }
+    }
+
+    setVerticalScrollOffset(juce::roundToInt(g.pinchAnchorTrack * trackHeight
+                                             - (static_cast<double>(mid.y) - rulerHeight_)));
+    listeners_.call([this](Listener& l) { l.verticalScrollChanged(verticalScrollOffset_); });
+}
+
+void ArrangementViewComponent::dispatchMouseDown(const juce::MouseEvent& e)
+{
     grabKeyboardFocus();
 
     if (e.mods.isMiddleButtonDown()
@@ -2427,7 +2653,7 @@ void ArrangementViewComponent::mouseDown(const juce::MouseEvent& e)
     clearMoveDragOverlay();
     }
 
-void ArrangementViewComponent::mouseDrag(const juce::MouseEvent& e)
+void ArrangementViewComponent::dispatchMouseDrag(const juce::MouseEvent& e)
 {
     if (isPanning_)
     {
@@ -2559,7 +2785,7 @@ void ArrangementViewComponent::mouseDrag(const juce::MouseEvent& e)
         }
 }
 
-void ArrangementViewComponent::mouseUp(const juce::MouseEvent& e)
+void ArrangementViewComponent::dispatchMouseUp(const juce::MouseEvent& e)
 {
     // Record Trim undo
     if ((currentDragOp_ == DragOperation::TrimLeft || currentDragOp_ == DragOperation::TrimRight) && dragOperationPlacementId_ != 0) {
@@ -2640,6 +2866,9 @@ void ArrangementViewComponent::mouseUp(const juce::MouseEvent& e)
 
 void ArrangementViewComponent::mouseDoubleClick(const juce::MouseEvent& e)
 {
+    if (std::exchange(fingerGesture_.suppressDoubleClick, false))
+        return;
+
     auto hit = hitTestPlacement(e.getPosition());
     if (hit.trackId >= 0 && hit.placementIndex >= 0)
     {
