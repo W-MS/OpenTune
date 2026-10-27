@@ -782,6 +782,7 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Standalone/UI/TopBarComponent.cpp
         Source/Standalone/UI/TopBarComponent.h
         Source/Standalone/UI/TouchTooltipPresenter.h
+        Source/Standalone/UI/TouchSubmenuOpener.h
         Source/Standalone/UI/TimelineOverviewComponent.cpp
         Source/Standalone/UI/TimelineOverviewComponent.h
 
