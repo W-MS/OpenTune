@@ -990,6 +990,11 @@ inline juce::String get(Language lang, const char* key)
         { "File name", "File name", "文件名", "ファイル名", "Имя файла", "Nombre de archivo" },
         { "No saved projects", "No saved projects", "没有已保存的工程", "保存済みのプロジェクトはありません", "Нет сохранённых проектов", "No hay proyectos guardados" },
         { "Browse Files...", "Browse Files...", "浏览文件...", "ファイルを参照...", "Обзор файлов...", "Explorar archivos..." },
+        { "Save Exported Audio", "Save Exported Audio", "保存导出的音频", "書き出したオーディオを保存", "Сохранение экспортированного аудио", "Guardar audio exportado" },
+        { "Save to the OpenTune Exports folder, or choose another location in Files?", "Save to the OpenTune Exports folder, or choose another location in Files?", "保存到 OpenTune 的 Exports 文件夹，还是在“文件”中选择其他位置？", "OpenTune の Exports フォルダに保存しますか？それとも「ファイル」で別の場所を選びますか？", "Сохранить в папку Exports приложения OpenTune или выбрать другое место в «Файлах»?", "¿Guardar en la carpeta Exports de OpenTune o elegir otra ubicación en Archivos?" },
+        { "OpenTune Exports", "OpenTune Exports", "OpenTune 导出文件夹", "OpenTune の Exports", "Папка OpenTune Exports", "Exports de OpenTune" },
+        { "Choose Location...", "Choose Location...", "选择位置...", "場所を選択...", "Выбрать место...", "Elegir ubicación..." },
+        { "No location was chosen. The file was kept in: ", "No location was chosen. The file was kept in: ", "未选择位置，文件保留在：", "場所が選択されなかったため、ファイルは次の場所に残っています：", "Место не выбрано. Файл сохранён в: ", "No se eligió ubicación. El archivo se conservó en: " },
         { "These files could not be copied into OpenTune:", "These files could not be copied into OpenTune:", "以下文件无法复制到 OpenTune：", "次のファイルを OpenTune にコピーできませんでした：", "Не удалось скопировать эти файлы в OpenTune:", "No se pudieron copiar estos archivos a OpenTune:" },
     };
     
