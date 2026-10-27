@@ -32,6 +32,7 @@
 #include "UI/AuroraLookAndFeel.h"
 #include "UI/UIColors.h"
 #include "UI/RippleOverlayComponent.h"
+#include "UI/TouchSubmenuOpener.h"
 #include "Editor/AutoRenderOverlayComponent.h"
 #include "../Editor/RenderBadgeComponent.h"
 #include "Utils/PitchShiftSettings.h"
@@ -258,6 +259,9 @@ private:
     PianoRollComponent pianoRoll_;
     TimelineOverviewComponent overviewStrip_;
     RippleOverlayComponent rippleOverlay_;
+#if JUCE_IOS
+    TouchSubmenuOpener touchSubmenuOpener_;
+#endif
     AutoRenderOverlayComponent autoRenderOverlay_;
     RenderBadgeComponent renderBadge_;
     OpenTuneTooltipWindow tooltipWindow_{ &contentRoot_, 600 };
