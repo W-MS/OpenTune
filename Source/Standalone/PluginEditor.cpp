@@ -2767,6 +2767,57 @@ void OpenTuneAudioProcessorEditor::openProjectRequested()
 
 void OpenTuneAudioProcessorEditor::launchOpenProjectChooser()
 {
+#if JUCE_IOS
+    // App 自己保存的工程都在 Documents 下，直接在应用内列出（只显示 .otproj，媒体目录不出现），
+    // 系统文件选择器只作为“浏览文件”后备入口。
+    {
+        juce::Component::SafePointer<OpenTuneAudioProcessorEditor> safeThis(this);
+        auto projects = PlatformFileDialogs::getAppDocumentsDirectory()
+            .findChildFiles(juce::File::findFiles, true, "*.otproj");
+        std::sort(projects.begin(), projects.end(), [](const juce::File& a, const juce::File& b) {
+            return a.getLastModificationTime() > b.getLastModificationTime();
+        });
+
+        juce::PopupMenu menu;
+        constexpr int kBrowseItemId = 1;
+        constexpr int kFirstProjectItemId = 100;
+        const auto documents = PlatformFileDialogs::getAppDocumentsDirectory();
+        for (int i = 0; i < projects.size() && i < 50; ++i) {
+            const auto& project = projects.getReference(i);
+            const auto folder = project.getParentDirectory().getRelativePathFrom(documents);
+            menu.addItem(kFirstProjectItemId + i,
+                         project.getFileNameWithoutExtension()
+                             + (folder == "." ? juce::String() : "  (" + folder + ")"));
+        }
+        if (projects.isEmpty())
+            menu.addItem(-1, LOC_RAW("No saved projects"), false);
+        menu.addSeparator();
+        menu.addItem(kBrowseItemId, LOC_RAW("Browse Files..."));
+
+        menu.showMenuAsync(juce::PopupMenu::Options()
+                               .withTargetComponent(&transportBar_.getFileButton())
+                               .withParentComponent(&contentRoot_)
+                               .withStandardItemHeight(40)
+                               .withMinimumWidth(320),
+            [safeThis, projects](int result) {
+                if (safeThis == nullptr || result == 0)
+                    return;
+                if (result == kBrowseItemId) {
+                    safeThis->launchOpenProjectFilePicker();
+                    return;
+                }
+                const int index = result - kFirstProjectItemId;
+                if (juce::isPositiveAndBelow(index, projects.size()))
+                    safeThis->openProjectFile(projects.getReference(index));
+            });
+    }
+#else
+    launchOpenProjectFilePicker();
+#endif
+}
+
+void OpenTuneAudioProcessorEditor::launchOpenProjectFilePicker()
+{
     juce::Component::SafePointer<OpenTuneAudioProcessorEditor> safeThis(this);
 
     // 工程依赖同级 *_Media 目录，单独复制 .otproj 没有意义，因此不复制外部工程文件。
