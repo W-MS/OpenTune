@@ -603,6 +603,10 @@ ParameterPanel::ParameterPanel()
     // 滚轮调参：ComboBox 在 JUCE 中默认关闭，此处显式开启；鼠标在控件上时事件被其消费，Viewport 不滚
     pitchGridSelector_.setScrollWheelEnabled(true);
     contentComponent_.addChildComponent(pitchGridSelector_);
+
+#if JUCE_IOS
+    refreshTouchToolTexts();
+#endif
 }
 
 ParameterPanel::~ParameterPanel()
@@ -931,8 +935,45 @@ void ParameterPanel::refreshLocalizedText()
     if (pitchDriftToolButton_)
         pitchDriftToolButton_->setTooltip(LOC(kToolODPitchDrift));
 
+#if JUCE_IOS
+    refreshTouchToolTexts();
+#endif
     repaint();
 }
+
+#if JUCE_IOS
+void ParameterPanel::refreshTouchToolTexts()
+{
+    const auto setText = [](ToolIconButton* button, const juce::String& name, const char* usage) {
+        if (button != nullptr)
+            button->getProperties().set(TouchTooltipPresenter::kTouchTextProperty,
+                                        usage != nullptr ? name + "\n" + LOC_RAW(usage) : name);
+    };
+
+    if (openDyneMode_)
+        setText(selectToolButton_.get(), LOC(kTooltipSelect),
+                "Tap a note to select it. Drag empty space to scroll.");
+    else
+        setText(selectToolButton_.get(), LOC(kTooltipSelect),
+                "Tap a note to select it, drag a note to correct its pitch. Drag empty space to scroll.\n"
+                "After editing notes, switch back to this cursor tool so you can scroll and edit normally.");
+
+    setText(drawNoteToolButton_.get(), LOC(kTooltipDrawNote), "Drag sideways to draw a new note.");
+    setText(lineAnchorToolButton_.get(), LOC(kTooltipLineAnchor),
+            "Tap to place anchors; the pitch follows straight lines between them.");
+    setText(handDrawToolButton_.get(), LOC(kTooltipHandDraw), "Drag to draw the pitch curve freehand.");
+    setText(eraserToolButton_.get(), LOC(kEraser), "Drag over notes or pitch to erase them.");
+    setText(timeToolButton_.get(), LOC(kTooltipTimeTool), nullptr);
+    setText(pitchToolButton_.get(), LOC(kToolODPitch), "Drag a note up or down to change its pitch.");
+    setText(pitchModulationToolButton_.get(), LOC(kToolODPitchModulation),
+            "Drag a note up or down to scale its vibrato.");
+    setText(pitchDriftToolButton_.get(), LOC(kToolODPitchDrift),
+            "Drag a note up or down to scale its slow pitch drift.");
+    setText(volumeEnvelopeToolButton_.get(), LOC(kToolODVolumeEnvelope),
+            "Drag a note up or down to change its volume.");
+    setText(scissorsToolButton_.get(), LOC(kToolODScissors), "Tap inside a note to split it there.");
+}
+#endif
 
 void ParameterPanel::setPitchShiftIndicator(int semitone, int cents)
 {

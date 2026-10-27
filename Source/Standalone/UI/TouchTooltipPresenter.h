@@ -8,17 +8,27 @@ namespace OpenTune {
 
 /**
  * juce::TooltipWindow 忽略触摸输入，iPad 上图标按钮的提示永远不会出现。
- * 本类监听宿主组件（含所有子组件）的触摸按下：显示被按控件的 tooltip，
- * 按下起 2 秒后（若仍按住则等到抬起）淡出。
- * 在控件的 properties 中设置 kSuppressProperty = true 可跳过该控件。
+ * 本类监听宿主组件（含所有子组件）的触摸：Trigger::press 在按下时显示被按控件的
+ * tooltip，Trigger::longPress 在原地按住约半秒后才显示（手指移动则取消）。
+ * 标签在松手 2 秒后淡出。
+ * 控件 properties 中 kTouchTextProperty 非空时优先显示它（可多行，用于触屏专用的用法说明）；
+ * 设置 kSuppressProperty = true 可跳过该控件。
  */
 class TouchTooltipPresenter final : private juce::MouseListener,
                                     private juce::Timer
 {
 public:
     static constexpr const char* kSuppressProperty = "touchTooltipSuppressed";
+    static constexpr const char* kTouchTextProperty = "touchTooltipText";
 
-    explicit TouchTooltipPresenter(juce::Component& host) : host_(host)
+    enum class Trigger
+    {
+        press,
+        longPress
+    };
+
+    explicit TouchTooltipPresenter(juce::Component& host, Trigger trigger = Trigger::press)
+        : host_(host), trigger_(trigger)
     {
         host_.addMouseListener(this, true);
     }
@@ -37,13 +47,19 @@ private:
             setInterceptsMouseClicks(false, false);
         }
 
-        void setText(const juce::String& text)
+        /** 按最大宽度排版文本，返回所需尺寸。 */
+        juce::Point<int> layoutText(const juce::String& text, int maxWidth)
         {
-            text_ = text;
-            repaint();
-        }
+            juce::AttributedString attributed;
+            attributed.setJustification(juce::Justification::centred);
+            attributed.append(text, UIColors::getLabelFont(15.0f), juce::Colours::white);
 
-        juce::Font getFont() const { return UIColors::getLabelFont(15.0f); }
+            layout_.createLayout(attributed, static_cast<float>(juce::jmax(40, maxWidth - kPaddingX * 2)));
+            repaint();
+
+            return { juce::roundToInt(std::ceil(layout_.getWidth())) + kPaddingX * 2,
+                     juce::roundToInt(std::ceil(layout_.getHeight())) + kPaddingY * 2 };
+        }
 
         void paint(juce::Graphics& g) override
         {
@@ -52,20 +68,22 @@ private:
             g.fillRoundedRectangle(bounds, 6.0f);
             g.setColour(juce::Colours::white.withAlpha(0.18f));
             g.drawRoundedRectangle(bounds, 6.0f, 1.0f);
-            g.setColour(juce::Colours::white);
-            g.setFont(getFont());
-            g.drawFittedText(text_, getLocalBounds().reduced(kPaddingX, 4), juce::Justification::centred, 3);
+            layout_.draw(g, getLocalBounds().reduced(kPaddingX, kPaddingY).toFloat());
         }
 
-        static constexpr int kPaddingX = 10;
-
     private:
-        juce::String text_;
+        static constexpr int kPaddingX = 10;
+        static constexpr int kPaddingY = 5;
+
+        juce::TextLayout layout_;
     };
 
     static constexpr int kVisibleMs = 2000;
     static constexpr int kFadeMs = 250;
     static constexpr int kTickMs = 33;
+    static constexpr int kLongPressMs = 500;
+    static constexpr int kLongPressSlop = 10;
+    static constexpr int kMaxBubbleWidth = 380;
 
     void mouseDown(const juce::MouseEvent& e) override
     {
@@ -73,27 +91,58 @@ private:
             return;
 
         juce::String text;
-        for (auto* c = e.originalComponent; c != nullptr && c != &host_; c = c->getParentComponent())
-        {
-            if (static_cast<bool>(c->getProperties().getWithDefault(kSuppressProperty, false)))
-                return;
+        auto* target = findTarget(e.originalComponent, text);
+        if (target == nullptr)
+            return;
 
-            if (auto* client = dynamic_cast<juce::TooltipClient*>(c))
-            {
-                text = client->getTooltip().trim();
-                if (text.isNotEmpty())
-                {
-                    show(*c, text);
-                    return;
-                }
-            }
+        if (trigger_ == Trigger::press)
+        {
+            show(*target, text);
+            return;
         }
+
+        pendingTarget_ = target;
+        pendingText_ = text;
+        pendingMs_ = 0;
+        startTimer(kTickMs);
+    }
+
+    void mouseDrag(const juce::MouseEvent& e) override
+    {
+        if (pendingTarget_ != nullptr && e.getDistanceFromDragStart() > kLongPressSlop)
+            pendingTarget_ = nullptr;
     }
 
     void mouseUp(const juce::MouseEvent& e) override
     {
-        if (e.source.isTouch())
+        if (!e.source.isTouch())
+            return;
+
+        pendingTarget_ = nullptr;
+        if (held_)
+        {
             held_ = false;
+            elapsedMs_ = 0;
+        }
+    }
+
+    juce::Component* findTarget(juce::Component* origin, juce::String& text) const
+    {
+        for (auto* c = origin; c != nullptr && c != &host_; c = c->getParentComponent())
+        {
+            const auto& properties = c->getProperties();
+            if (static_cast<bool>(properties.getWithDefault(kSuppressProperty, false)))
+                return nullptr;
+
+            text = properties[kTouchTextProperty].toString().trim();
+            if (text.isEmpty())
+                if (auto* client = dynamic_cast<juce::TooltipClient*>(c))
+                    text = client->getTooltip().trim();
+
+            if (text.isNotEmpty())
+                return c;
+        }
+        return nullptr;
     }
 
     void show(juce::Component& target, const juce::String& text)
@@ -115,19 +164,14 @@ private:
         if (bubble_->getParentComponent() != parent)
             parent->addChildComponent(*bubble_);
 
-        bubble_->setText(text);
-
-        const auto font = bubble_->getFont();
-        juce::GlyphArrangement glyphs;
-        glyphs.addLineOfText(font, text.upToFirstOccurrenceOf("\n", false, false), 0.0f, 0.0f);
-        const int lines = juce::jlimit(1, 3, juce::StringArray::fromLines(text).size());
-        const int width = juce::jmin(parent->getWidth() - 16,
-                                     juce::roundToInt(glyphs.getBoundingBox(0, -1, true).getWidth()) + Bubble::kPaddingX * 2 + 4);
-        const int height = juce::roundToInt(font.getHeight() * static_cast<float>(lines)) + 10;
-
+        const auto size = bubble_->layoutText(text, juce::jmin(kMaxBubbleWidth, parent->getWidth() - 16));
         const auto targetArea = parent->getLocalArea(&target, target.getLocalBounds());
-        auto area = juce::Rectangle<int>(width, height)
-                        .withCentre({ targetArea.getCentreX(), targetArea.getBottom() + 8 + height / 2 });
+
+        // 按住时手指遮住控件下方，长按的标签优先放在控件上方。
+        const bool above = trigger_ == Trigger::longPress && targetArea.getY() - 8 - size.y >= 8;
+        const int centreY = above ? targetArea.getY() - 8 - size.y / 2
+                                  : targetArea.getBottom() + 8 + size.y / 2;
+        auto area = juce::Rectangle<int>(size.x, size.y).withCentre({ targetArea.getCentreX(), centreY });
         area = area.constrainedWithin(parent->getLocalBounds().reduced(8));
 
         bubble_->setBounds(area);
@@ -161,7 +205,19 @@ private:
 
     void timerCallback() override
     {
-        if (bubble_ == nullptr)
+        if (pendingTarget_ != nullptr)
+        {
+            pendingMs_ += kTickMs;
+            if (pendingMs_ >= kLongPressMs)
+            {
+                auto* target = pendingTarget_.getComponent();
+                pendingTarget_ = nullptr;
+                show(*target, pendingText_);
+            }
+            return;
+        }
+
+        if (bubble_ == nullptr || !bubble_->isVisible())
         {
             stopTimer();
             return;
@@ -189,7 +245,11 @@ private:
     }
 
     juce::Component& host_;
+    const Trigger trigger_;
     std::unique_ptr<Bubble> bubble_;
+    juce::Component::SafePointer<juce::Component> pendingTarget_;
+    juce::String pendingText_;
+    int pendingMs_ = 0;
     bool held_ = false;
     int elapsedMs_ = 0;
     int fadeStartMs_ = -1;
