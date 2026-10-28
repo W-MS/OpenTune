@@ -56,6 +56,30 @@ xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1 \
 
 cd "${ROOT}"
 
+# Source files an existing generated project points at under the repo that are
+# gone (moved or deleted by a pull). Generated files inside BUILD_DIR are skipped.
+missing_project_sources() {
+    local pbxproj source
+    for pbxproj in "${BUILD_DIR}"/*.xcodeproj/project.pbxproj; do
+        [ -f "${pbxproj}" ] || continue
+        sed -n 's/.*[[:space:]]path = "\{0,1\}\(\/[^";]*\)"\{0,1\};.*/\1/p' "${pbxproj}" | sort -u |
+        while IFS= read -r source; do
+            case "${source}" in
+                "${BUILD_DIR}"/*) ;;
+                "${ROOT}"/*) [ -e "${source}" ] || echo "${source}" ;;
+            esac
+        done
+    done
+}
+
+missing="$(missing_project_sources || true)"
+if [ -n "${missing}" ]; then
+    echo "==> The existing Xcode project references files that no longer exist, e.g."
+    echo "    ${missing%%$'\n'*}"
+    echo "    Deleting ${BUILD_DIR} (git-ignored) and generating it again."
+    rm -rf "${BUILD_DIR}"
+fi
+
 echo "==> Downloading dependencies"
 bash scripts/github_actions/fetch-macos-deps.sh
 bash scripts/github_actions/fetch-ios-onnxruntime.sh
@@ -92,6 +116,8 @@ Xcode project: ${project}
 Run on an iPad: select the scheme and your device, then Product > Run.
 App Store:      Product > Archive, then Distribute App > App Store Connect.
 Re-run this script for each upload so the build number increases.
+If Xcode already has this project open, close it first: it keeps the old file
+list in memory and fails with "Build input file cannot be found".
 EOF
 
 if [ "${OPEN_PROJECT}" -eq 1 ]; then
