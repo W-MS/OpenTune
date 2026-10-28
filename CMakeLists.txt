@@ -432,8 +432,15 @@ if(OPENTUNE_IOS)
     # iPad only, landscape only: the editor needs at least 900x500 points.
     # Files the user saves land in the app's Documents folder, which the
     # Files app shows as "On My iPad > OpenTune".
+    # App Store builds (scripts/makeXcodeProject.sh) set their own registered
+    # bundle ID and an increasing build number; the defaults match the desktop app.
+    set(OPENTUNE_IOS_BUNDLE_ID "com.daya.opentune" CACHE STRING "iPadOS bundle identifier")
+    set(OPENTUNE_IOS_BUILD_NUMBER "${PROJECT_VERSION}" CACHE STRING
+        "iPadOS CFBundleVersion; must increase with every App Store upload")
     juce_add_plugin(OpenTuneStandalone
         ${OPENTUNE_PLUGIN_COMMON_ARGS}
+        BUNDLE_ID "${OPENTUNE_IOS_BUNDLE_ID}"
+        BUILD_VERSION "${OPENTUNE_IOS_BUILD_NUMBER}"
         FORMATS Standalone
         IS_ARA_EFFECT FALSE
         TARGETED_DEVICE_FAMILY "2"
@@ -473,6 +480,8 @@ if(OPENTUNE_IOS)
             </array>
             <key>NSHumanReadableCopyright</key>
             <string>Copyright © 2024-2026 DAYA. All rights reserved.</string>
+            <key>ITSAppUsesNonExemptEncryption</key>
+            <false/>
         </dict>
         </plist>"
     )
@@ -1372,37 +1381,44 @@ if(WIN32)
     )
 
 elseif(OPENTUNE_IOS)
-    # iOS bundles are flat: ModelPathResolver finds <executable dir>/models.
-    add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/models"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${HIFIGAN_MODEL_COMMUNITY}"
-            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/models/hifigan.onnx"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${FCPE_MODEL}"
-            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/models/fcpe.onnx"
-        COMMENT "Copying AI models into the iPadOS app bundle..."
-    )
-
-    # First-run demo (Source/Utils/DemoProject.cpp): the audio stays inside the bundle,
-    # only the project file is generated under Documents/Projects.
+    # iOS bundles are flat: ModelPathResolver finds <executable dir>/models, the
+    # first-run demo lives in Demo/ (Source/Utils/DemoProject.cpp; only the project
+    # file is generated under Documents/Projects) and the User Guide in docs/.
+    # CopyIntoIosBundle.cmake also targets the right bundle during Xcode Archive.
     file(GLOB OPENTUNE_DEMO_AUDIO "${CMAKE_CURRENT_SOURCE_DIR}/assets/*.wav")
     list(LENGTH OPENTUNE_DEMO_AUDIO OPENTUNE_DEMO_AUDIO_COUNT)
     if(NOT OPENTUNE_DEMO_AUDIO_COUNT EQUAL 1 OR NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/Demo.otproj")
         message(FATAL_ERROR "assets/ must contain Demo.otproj and exactly one demo .wav")
     endif()
+
+    set(OPENTUNE_IOS_BUNDLE_MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/ios-bundle-resources.txt")
+    set(_opentune_ios_resources
+        "${HIFIGAN_MODEL_COMMUNITY}\tmodels/hifigan.onnx"
+        "${FCPE_MODEL}\tmodels/fcpe.onnx"
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/Demo.otproj\tDemo/Demo.otproj"
+        "${OPENTUNE_DEMO_AUDIO}\tDemo/Demo.wav")
+    foreach(_opentune_guide UserGuide UserGuide_en UserGuide_ja UserGuide_ru UserGuide_es)
+        list(APPEND _opentune_ios_resources
+            "${CMAKE_CURRENT_SOURCE_DIR}/userguide/${_opentune_guide}.html\tdocs/${_opentune_guide}.html")
+    endforeach()
+    list(JOIN _opentune_ios_resources "\n" _opentune_ios_manifest)
+    file(WRITE "${OPENTUNE_IOS_BUNDLE_MANIFEST}" "${_opentune_ios_manifest}\n")
+
     add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/Demo"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/assets/Demo.otproj"
-            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/Demo/Demo.otproj"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${OPENTUNE_DEMO_AUDIO}"
-            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/Demo/Demo.wav"
-        COMMENT "Copying the demo project into the iPadOS app bundle..."
+        COMMAND ${CMAKE_COMMAND}
+            "-DBUNDLE_DIR=$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>"
+            "-DMANIFEST=${OPENTUNE_IOS_BUNDLE_MANIFEST}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyIntoIosBundle.cmake"
+        COMMENT "Copying models, demo and User Guide into the iPadOS app bundle..."
+        VERBATIM
     )
+
+    # Product > Archive must install only the app, otherwise Xcode produces a
+    # "Generic Xcode Archive" (scripts/makeXcodeProject.sh sets SKIP_INSTALL=YES
+    # for every other target).
+    set_target_properties(OpenTuneStandalone_Standalone PROPERTIES
+        XCODE_ATTRIBUTE_SKIP_INSTALL NO
+        XCODE_ATTRIBUTE_INSTALL_PATH "$(LOCAL_APPS_DIR)")
 
 elseif(APPLE)
     add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
@@ -1455,7 +1471,7 @@ if(OPENTUNE_MACOS)
             "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/Contents/Resources/docs/UserGuide_es.html"
         COMMENT "Copying UserGuide translations to app bundle Resources..."
     )
-else()
+elseif(NOT OPENTUNE_IOS)  # iPadOS copies docs/ with its other bundle resources
     # Windows and the flat iPadOS bundle: docs go alongside the executable
     add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
