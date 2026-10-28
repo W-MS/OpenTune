@@ -553,6 +553,7 @@ list(SORT OPENTUNE_CURSOR_ASSETS)
 juce_add_binary_data(OpenTuneResources
     SOURCES
         Resources/Fonts/HONORSansCN-Medium.ttf
+        Resources/About/about.md
         Resources/PianoSamples-mp3/piano_21.mp3
         Resources/PianoSamples-mp3/piano_22.mp3
         Resources/PianoSamples-mp3/piano_23.mp3
@@ -776,6 +777,7 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Editor/OnboardingOverlayComponent.h
         Source/Editor/PitchShiftDialogContent.h
         Source/Editor/ConfirmDialogContent.h
+        Source/Editor/AboutDialogContent.h
         Source/Editor/ShortcutCaptureDialogContent.h
         Source/Editor/ComponentListenerSubscription.h
 

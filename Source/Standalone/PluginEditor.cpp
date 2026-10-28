@@ -33,6 +33,7 @@
 #include "Utils/PitchShiftEditAction.h"
 #include "Editor/PitchShiftDialogContent.h"
 #include "Editor/ConfirmDialogContent.h"
+#include "Editor/AboutDialogContent.h"
 #include "Editor/ComponentListenerSubscription.h"
 #include "StandaloneAudioDeviceSync.h"
 #include "Utils/TimeCoordinate.h"
@@ -2919,6 +2920,11 @@ void OpenTuneAudioProcessorEditor::helpRequested()
             Loc::format(LOC(kHelpFileNotFound), helpFile.getFullPathName())
         );
     }
+}
+
+void OpenTuneAudioProcessorEditor::aboutRequested()
+{
+    AboutDialogContent::show(&contentRoot_);
 }
 
 void OpenTuneAudioProcessorEditor::showWaveformToggled(bool shouldShow)
