@@ -1469,7 +1469,8 @@ void OpenTuneAudioProcessorEditor::resized()
     if (onboardingOverlay_ == nullptr || !onboardingOverlay_->isActive())
         autoRenderOverlay_.toFront(false);
 
-    renderBadge_.setBounds(bounds.getRight() - 148, bounds.getY() + 8, 140, 28);
+    renderBadge_.setBounds(bounds.getRight() - RenderBadgeComponent::kWidth - 8, bounds.getY() + 8,
+                           RenderBadgeComponent::kWidth, RenderBadgeComponent::kHeight);
     if (onboardingOverlay_ == nullptr || !onboardingOverlay_->isActive())
         renderBadge_.toFront(false);
 
