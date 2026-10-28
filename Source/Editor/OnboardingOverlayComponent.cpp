@@ -85,7 +85,13 @@ void OnboardingOverlayComponent::start()
     updateLayout();
     toFront(false);
     grabKeyboardFocus();
+#if JUCE_IOS
+    // iPad 版固定以当前模式（默认 Tune）开始引导，不再弹出模式选择；可在设置中切换。
+    appPreferences_.setOnboardingShown(true);
+    chooseScheme(scheme_);
+#else
     showWorkflowChoice();
+#endif
 }
 
 void OnboardingOverlayComponent::showWorkflowChoice()
