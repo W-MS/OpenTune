@@ -1,7 +1,7 @@
 #!/bin/bash
 # Generate the iPadOS Xcode project for running on a device and App Store submission.
 #
-#   ./makeXcodeProject.sh [--team TEAM_ID] [--bundle-id ID] [--build-number N] [--no-open]
+#   ./scripts/makeXcodeProject.sh [--team TEAM_ID] [--bundle-id ID] [--build-number N] [--no-open]
 #
 # Downloads the dependencies (JUCE, SoundTouch, ARA headers, AI models, ONNX Runtime
 # iOS), then generates Build/ipados-xcode/OpenTune.xcodeproj (Build/ is git-ignored).
@@ -17,7 +17,7 @@
 # The CI workflow (.github/workflows/ipados.yml) does not use this script.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${ROOT}/Build/ipados-xcode"
 TEAM_ID="${OPENTUNE_TEAM_ID:-}"
 BUNDLE_ID="${OPENTUNE_IOS_BUNDLE_ID:-}"
