@@ -448,6 +448,9 @@ if(OPENTUNE_IOS)
         REQUIRES_FULL_SCREEN TRUE
         STATUS_BAR_HIDDEN TRUE
         FILE_SHARING_ENABLED TRUE
+        # Shown by iOS before main(). Labels are localized .strings, not drawn
+        # by the app, so they do not add to process startup.
+        LAUNCH_STORYBOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/Base.lproj/LaunchScreen.storyboard"
         # iPad edits imported files and plays them back. It does not record or
         # monitor live input, so the binary must not declare NSMicrophoneUsageDescription.
         PLIST_TO_MERGE
@@ -482,9 +485,37 @@ if(OPENTUNE_IOS)
             <string>Copyright © 2024-2026 DAYA. All rights reserved.</string>
             <key>ITSAppUsesNonExemptEncryption</key>
             <false/>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>en</string>
+            <key>CFBundleLocalizations</key>
+            <array>
+                <string>en</string>
+                <string>zh-Hans</string>
+                <string>zh-Hant</string>
+                <string>ja</string>
+                <string>ru</string>
+                <string>es</string>
+            </array>
         </dict>
         </plist>"
     )
+
+    # LaunchLogo lives in its own catalog so it does not replace the app icon
+    # catalog JUCE generates. .lproj strings ride the storyboard name.
+    set(_opentune_launch_assets "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/Launch.xcassets")
+    set(_opentune_launch_strings
+        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/en.lproj/LaunchScreen.strings"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/zh-Hans.lproj/LaunchScreen.strings"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/zh-Hant.lproj/LaunchScreen.strings"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/ja.lproj/LaunchScreen.strings"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/ru.lproj/LaunchScreen.strings"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/es.lproj/LaunchScreen.strings")
+    target_sources(OpenTuneStandalone_Standalone PRIVATE
+        "${_opentune_launch_assets}" ${_opentune_launch_strings})
+    set_property(TARGET OpenTuneStandalone_Standalone APPEND PROPERTY RESOURCE
+        "${_opentune_launch_assets}" ${_opentune_launch_strings})
+    set_target_properties(OpenTuneStandalone_Standalone PROPERTIES
+        XCODE_ATTRIBUTE_DEVELOPMENT_LANGUAGE en)
 else()
 juce_add_plugin(OpenTune
     ${OPENTUNE_PLUGIN_COMMON_ARGS}
