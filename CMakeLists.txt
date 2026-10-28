@@ -448,8 +448,8 @@ if(OPENTUNE_IOS)
         REQUIRES_FULL_SCREEN TRUE
         STATUS_BAR_HIDDEN TRUE
         FILE_SHARING_ENABLED TRUE
-        MICROPHONE_PERMISSION_ENABLED TRUE
-        MICROPHONE_PERMISSION_TEXT "OpenTune needs microphone access for real-time audio monitoring."
+        # iPad edits imported files and plays them back. It does not record or
+        # monitor live input, so the binary must not declare NSMicrophoneUsageDescription.
         PLIST_TO_MERGE
         "<plist version=\"1.0\">
         <dict>

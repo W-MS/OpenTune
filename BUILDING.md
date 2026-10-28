@@ -179,7 +179,7 @@ ThirdParty/microsoft.direct3d.d3d12.1.619.5/
 
 | 路径 | 必需性 | 准备方式 / 用途 |
 |------|--------|----------------|
-| `JUCE-master/` | 必需 | 克隆 JUCE 8.0.12 到仓库根目录，随后运行 `python3 scripts/github_actions/patch-juce-ara.py`（macOS 命令；同一脚本同时处理 ARA include 与 AudioDeviceManager 补丁）。 |
+| `JUCE-master/` | 必需 | 克隆 JUCE 8.0.12 到仓库根目录，随后运行 `python3 scripts/github_actions/patch-juce-ara.py`（macOS 命令；同一脚本同时处理 ARA include、AudioDeviceManager 补丁，以及 iOS 音频会话在探测时使用 Playback 类别、避免启动即请求麦克风）。 |
 | `ThirdParty/ARA_SDK-releases-2.3.0/` | 必需 | 克隆 ARA SDK `releases/2.3.0` 分支并包含子模块。 |
 | `ThirdParty/r8brain-free-src-master/` | 必需 | 已随 Git 仓库提供，无需另行下载。 |
 | `ThirdParty/soundtouch-2.3.2/` | 必需 | 从上文链接的 SoundTouch 官方仓库克隆 `2.3.2` tag。 |

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Apply the reproducible JUCE source patches required by this repository.
 
-Two patches are applied to the pinned JUCE 8.0.12 checkout in JUCE-master:
+Three patches are applied to the pinned JUCE 8.0.12 checkout in JUCE-master:
 
 1. The ARA 2.3.0 include rename required by BUILDING.md
    (modules/juce_audio_plugin_client/juce_audio_plugin_client_ARA.cpp).
@@ -15,10 +15,16 @@ Two patches are applied to the pinned JUCE 8.0.12 checkout in JUCE-master:
      wrapper over a new private setAudioDeviceSetupInternal(setup,
      treatAsChosenDevice, updateLastDeviceTypeConfigs).
    - a JUCE_UNIT_TESTS case covering the temporary-setup semantics.
+3. The iOS audio device probes sample rates with a playback session. The
+   upstream constructor activates AVAudioSessionCategoryPlayAndRecord, which
+   makes iOS ask for the microphone as soon as the device object is created,
+   even when the app opens zero input channels
+   (modules/juce_audio_devices/native/juce_Audio_ios.cpp). open() still
+   switches to PlayAndRecord when input channels are requested.
 
 The patches are needle-based: if the pinned upstream content does not contain
 the expected context exactly once, the script fails loudly instead of guessing.
-After patching, the JUCE checkout must be dirty in exactly the three expected
+After patching, the JUCE checkout must be dirty in exactly the four expected
 files and nothing else.
 """
 
@@ -36,8 +42,23 @@ ADM_H_RELATIVE = pathlib.Path(
     "modules/juce_audio_devices/audio_io/juce_AudioDeviceManager.h")
 ADM_CPP_RELATIVE = pathlib.Path(
     "modules/juce_audio_devices/audio_io/juce_AudioDeviceManager.cpp")
+IOS_AUDIO_RELATIVE = pathlib.Path(
+    "modules/juce_audio_devices/native/juce_Audio_ios.cpp")
 
-EXPECTED_FILES = [ARA_RELATIVE, ADM_H_RELATIVE, ADM_CPP_RELATIVE]
+EXPECTED_FILES = [ARA_RELATIVE, ADM_H_RELATIVE, ADM_CPP_RELATIVE, IOS_AUDIO_RELATIVE]
+
+# ---------------------------------------------------------------------------
+# Patch 3: iOS device construction must not activate a record session.
+# ---------------------------------------------------------------------------
+IOS_AUDIO_OLD = b"""        // We need to activate the audio session here to obtain the available sample rates and buffer sizes,
+        // but if we don't set a category first then background audio will always be stopped. This category
+        // may be changed later.
+        setAudioSessionCategory (AVAudioSessionCategoryPlayAndRecord);"""
+
+IOS_AUDIO_NEW = b"""        // Activate a playback session so sample rates and buffer sizes can be
+        // queried without prompting for the microphone. open() switches to
+        // PlayAndRecord only when input channels are actually requested.
+        setAudioSessionCategory (AVAudioSessionCategoryPlayback);"""
 
 # ---------------------------------------------------------------------------
 # Patch 1: ARA include rename.
@@ -262,6 +283,9 @@ def main() -> None:
             (ADM_CPP_CACHE_OLD, ADM_CPP_CACHE_NEW, "per-device-type cache guard"),
             (ADM_CPP_TEST_ANCHOR, ADM_CPP_TEST_NEW, "temporary setup unit test"),
         ],
+        IOS_AUDIO_RELATIVE: [
+            (IOS_AUDIO_OLD, IOS_AUDIO_NEW, "iOS playback session probe"),
+        ],
     }
 
     outputs = {}
@@ -307,7 +331,7 @@ def main() -> None:
             + "\n".join(s.decode("utf-8", errors="replace") for s in status_after))
 
     print("JUCE patches applied: ARA include + AudioDeviceManager temporary setup "
-          "(exactly 3 files dirty)")
+          "+ iOS playback session probe (exactly 4 files dirty)")
 
 
 if __name__ == "__main__":
