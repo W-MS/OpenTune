@@ -465,6 +465,7 @@ constexpr const char* kEraser = "Eraser";
         constexpr const char* kOnboarding = "Onboarding...";
         constexpr const char* kReplayOnboarding = "Replay onboarding";
         constexpr const char* kUserGuide = "User Guide...";
+        constexpr const char* kAbout = "About OpenTune";
 
 constexpr const char* kMouseSelectTool = "Mouse Select Tool";
 constexpr const char* kDrawNoteTool = "Draw Note Tool";
@@ -768,6 +769,7 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kHelp, "Help...", "帮助...", "ヘルプ...", "Справка...", "Ayuda..." },
         { Keys::kOnboarding, "Onboarding...", "上手引导...", "オンボーディング...", "Введение...", "Introducción..." },
         { Keys::kReplayOnboarding, "Replay onboarding", "重新进入上手引导", "オンボーディングを再表示", "Повторить обучение", "Repetir introducción" },
+        { Keys::kAbout, "About OpenTune", "关于", "OpenTune について", "О программе", "Acerca de OpenTune" },
         { Keys::kUserGuide, "User Guide...", "用户手册...", "ユーザーガイド...", "Руководство пользователя...", "Manual de usuario..." },
         
         { Keys::kMouseSelectTool, "Mouse Select Tool", "鼠标选择工具", "マウス選択ツール", "Инструмент выбора", "Herram. selec." },

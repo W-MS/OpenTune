@@ -81,6 +81,7 @@ public:
     void clearRecentProjectsRequested() override;
     void preferencesRequested() override;
     void helpRequested() override;
+    void aboutRequested() override;
     void showWaveformToggled(bool shouldShow) override;
     void showPianoKeyboardToggled(bool shouldShow) override;
     void scaleAssistToggled(bool enabled) override;
