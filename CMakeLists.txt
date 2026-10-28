@@ -2015,6 +2015,16 @@ if(OPENTUNE_BUILD_TESTS)
     endif()
     add_test(NAME DemoTourGateTests COMMAND OpenTuneDemoTourGateTests)
 
+    add_executable(OpenTunePianoRollNoteEntryTests
+        Tests/PianoRollNoteEntryTests.cpp
+    )
+    target_include_directories(OpenTunePianoRollNoteEntryTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    if(MSVC)
+        target_compile_options(OpenTunePianoRollNoteEntryTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME PianoRollNoteEntryTests COMMAND OpenTunePianoRollNoteEntryTests)
+
     # Standalone processor settings codec (OTSS v3 / legacy v2) tests.
     add_executable(OpenTuneStandaloneStateCodecTests
         Tests/StandaloneProcessorStateCodecTests.cpp

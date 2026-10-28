@@ -3941,11 +3941,17 @@ void OpenTuneAudioProcessorEditor::placementDoubleClicked(int trackId, int place
 {
     placementSelectionChanged(trackId, processorRef_.getPlacementId(trackId, placementIndex));
 
-    if (isWorkspaceView_)
-    {
-        transportBar_.setWorkspaceView(false);
-        viewToggled(false);
-    }
+    if (!isWorkspaceView_)
+        return;
+
+    // 记下钢琴卷帘自己的横向缩放。viewToggled 可能把编曲相机抄过来，
+    // 居中时仍用这个缩放，不跟着编曲视图的缩放走。
+    const double pianoPixelsPerSecond = pianoRoll_.timelineCamera().pixelsPerSecond;
+    const bool centerNote = pianoRoll_.prepareNoteCenterOnClipEntry();
+    transportBar_.setWorkspaceView(false);
+    viewToggled(false);
+    if (centerNote && !pianoRoll_.centerNoteNearestPlayhead(pianoPixelsPerSecond))
+        pianoRoll_.requestInitialF0View(pianoRoll_.editedContentKey());
 }
 
 
