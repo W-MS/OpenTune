@@ -88,6 +88,17 @@ jobs:
           test -f "${app}/models/hifigan.onnx"
           test -f "${app}/models/fcpe.onnx"
           test -f "${app}/docs/UserGuide.html"
+          # Launch screen: compiled storyboard, logo in the asset catalog, and
+          # one localized strings file per language, all drawn by iOS before main().
+          test "$(/usr/libexec/PlistBuddy -c 'Print :UILaunchStoryboardName' "${app}/Info.plist")" = "LaunchScreen"
+          test -e "${app}/LaunchScreen.storyboardc" || test -e "${app}/Base.lproj/LaunchScreen.storyboardc"
+          test -f "${app}/Assets.car"
+          for lang in en zh-Hans zh-Hant ja ru es; do
+            test -f "${app}/${lang}.lproj/LaunchScreen.strings"
+          done
+          xcrun --sdk iphoneos assetutil --info "${app}/Assets.car" | grep -q '"Name" : "LaunchLogo"'
+          plutil -p "${app}/zh-Hans.lproj/LaunchScreen.strings"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleLocalizations' "${app}/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "${app}/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :UIFileSharingEnabled' "${app}/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :LSSupportsOpeningDocumentsInPlace' "${app}/Info.plist"
