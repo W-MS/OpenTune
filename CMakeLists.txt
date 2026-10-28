@@ -450,7 +450,7 @@ if(OPENTUNE_IOS)
         FILE_SHARING_ENABLED TRUE
         # Shown by iOS before main(). Labels are localized .strings, not drawn
         # by the app, so they do not add to process startup.
-        LAUNCH_STORYBOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/Base.lproj/LaunchScreen.storyboard"
+        LAUNCH_STORYBOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/LaunchScreen.storyboard"
         # iPad edits imported files and plays them back. It does not record or
         # monitor live input, so the binary must not declare NSMicrophoneUsageDescription.
         PLIST_TO_MERGE
@@ -501,19 +501,14 @@ if(OPENTUNE_IOS)
     )
 
     # LaunchLogo lives in its own catalog so it does not replace the app icon
-    # catalog JUCE generates. .lproj strings ride the storyboard name.
+    # catalog JUCE generates. The per-language LaunchScreen.strings share one
+    # file name, so they are copied into <lang>.lproj by CopyIntoIosBundle
+    # rather than listed as Xcode resources (which would flatten and collide).
+    set(OPENTUNE_IOS_LAUNCH_LANGUAGES en zh-Hans zh-Hant ja ru es)
     set(_opentune_launch_assets "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/Launch.xcassets")
-    set(_opentune_launch_strings
-        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/en.lproj/LaunchScreen.strings"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/zh-Hans.lproj/LaunchScreen.strings"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/zh-Hant.lproj/LaunchScreen.strings"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/ja.lproj/LaunchScreen.strings"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/ru.lproj/LaunchScreen.strings"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/es.lproj/LaunchScreen.strings")
-    target_sources(OpenTuneStandalone_Standalone PRIVATE
-        "${_opentune_launch_assets}" ${_opentune_launch_strings})
+    target_sources(OpenTuneStandalone_Standalone PRIVATE "${_opentune_launch_assets}")
     set_property(TARGET OpenTuneStandalone_Standalone APPEND PROPERTY RESOURCE
-        "${_opentune_launch_assets}" ${_opentune_launch_strings})
+        "${_opentune_launch_assets}")
     set_target_properties(OpenTuneStandalone_Standalone PROPERTIES
         XCODE_ATTRIBUTE_DEVELOPMENT_LANGUAGE en)
 else()
@@ -1431,6 +1426,10 @@ elseif(OPENTUNE_IOS)
     foreach(_opentune_guide UserGuide UserGuide_en UserGuide_ja UserGuide_ru UserGuide_es)
         list(APPEND _opentune_ios_resources
             "${CMAKE_CURRENT_SOURCE_DIR}/userguide/${_opentune_guide}.html\tdocs/${_opentune_guide}.html")
+    endforeach()
+    foreach(_opentune_lang IN LISTS OPENTUNE_IOS_LAUNCH_LANGUAGES)
+        list(APPEND _opentune_ios_resources
+            "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/${_opentune_lang}.lproj/LaunchScreen.strings\t${_opentune_lang}.lproj/LaunchScreen.strings")
     endforeach()
     list(JOIN _opentune_ios_resources "\n" _opentune_ios_manifest)
     file(WRITE "${OPENTUNE_IOS_BUNDLE_MANIFEST}" "${_opentune_ios_manifest}\n")
