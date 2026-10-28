@@ -900,6 +900,7 @@ inline juce::String get(Language lang, const char* key)
         { "Total audio length is zero or invalid", "Total audio length is zero or invalid", "音频总长度为零或无效", "オーディオの合計長がゼロまたは無効です", "Общая длительность аудио равна нулю или недопустима", "La duración total del audio es cero o no válida" },
         { Keys::kOriginalF0NotReady, "Original Pitch is not ready.", "原始音高尚未就绪。", "元のピッチの準備ができていません。", "Исходная высота тона не готова.", "El tono original no está listo." },
         { "Processing audio", "Processing audio", "正在处理音频", "オーディオを処理しています", "Обработка аудио", "Procesando audio" },
+        { "Playback uses the original pitch until rendering finishes.", "Playback uses the original pitch until rendering finishes.", "音高将变为原始音高，渲染结束后恢复。", "レンダリング完了までは元のピッチで再生されます。", "До завершения рендеринга воспроизводится исходная высота тона.", "Hasta que termine el renderizado se reproduce el tono original." },
         { "Rendering (", "Rendering (", "渲染中 (", "レンダリング中 (", "Рендеринг (", "Renderizando (" },
         { "Failed to start OriginalF0 analysis.", "Failed to start Original Pitch analysis.", "未能启动原始音高分析。", "元のピッチの解析を開始できませんでした。", "Не удалось запустить анализ исходной высоты тона.", "No se pudo iniciar el análisis del tono original." },
         { Keys::kRenderFailure, "Render Failure", "渲染失败", "レンダリング失敗", "Ошибка рендеринга", "Error de renderizado" },
