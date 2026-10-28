@@ -1058,8 +1058,18 @@ juce::File demoTourMarkerFile()
         .getChildFile("DemoTourShown");
 }
 
+void markDemoTourDone()
+{
+    const auto marker = demoTourMarkerFile();
+    marker.getParentDirectory().createDirectory();
+    marker.replaceWithText({});
+}
+
 bool findFirstPlacement(OpenTuneAudioProcessor& processor, int& trackId, int& placementIndex)
 {
+    if (processor.getStandaloneArrangement() == nullptr)
+        return false;
+
     for (int track = 0; track < OpenTuneAudioProcessor::MAX_TRACKS; ++track)
     {
         if (getStandalonePlacementCount(processor, track) > 0)
@@ -1076,21 +1086,31 @@ bool findFirstPlacement(OpenTuneAudioProcessor& processor, int& trackId, int& pl
 
 void OpenTuneAudioProcessorEditor::startDemoTourIfFirstRun()
 {
-    const auto marker = demoTourMarkerFile();
-    if (demoTourStep_ != DemoTourStep::None || marker.existsAsFile())
+    if (demoTourSettled_ || demoTourStep_ != DemoTourStep::None)
         return;
 
-    marker.getParentDirectory().createDirectory();
-    marker.create();
+    if (demoTourMarkerFile().existsAsFile())
+    {
+        demoTourSettled_ = true;
+        return;
+    }
 
     int trackId = -1;
     int placementIndex = -1;
     if (projectOperationBusy_ || findFirstPlacement(processorRef_, trackId, placementIndex))
+    {
+        // 工程里已经有音频，不再覆盖。标记写在确认之后，安装失败时下次启动还会再试。
+        markDemoTourDone();
+        demoTourSettled_ = true;
         return;
+    }
 
     const auto demo = DemoProject::install();
     if (demo == juce::File())
+    {
+        demoTourSettled_ = true;
         return;
+    }
 
     showDemoTourStep(DemoTourStep::LoadingProject);
     openProjectFile(demo);
@@ -1141,7 +1161,9 @@ void OpenTuneAudioProcessorEditor::updateDemoTour()
             int placementIndex = -1;
             if (!findFirstPlacement(processorRef_, trackId, placementIndex))
             {
-                endDemoTour();
+                // 打开失败。不写标记，下次启动再试。
+                demoTourStep_ = DemoTourStep::None;
+                demoTourSettled_ = true;
                 return;
             }
             if (!isWorkspaceView_)
@@ -1192,6 +1214,8 @@ void OpenTuneAudioProcessorEditor::updateDemoTour()
 
 void OpenTuneAudioProcessorEditor::endDemoTour()
 {
+    markDemoTourDone();
+    demoTourSettled_ = true;
     demoTourStep_ = DemoTourStep::None;
     demoTourCallout_.setVisible(false);
 }
@@ -1773,6 +1797,10 @@ void OpenTuneAudioProcessorEditor::timerCallback()
     }
 
 #if JUCE_IOS
+    // 引导在开始时就记下“已展示”。这里等它结束（或上次已经结束）再加载演示工程。
+    if ((onboardingOverlay_ == nullptr || !onboardingOverlay_->isActive())
+        && appPreferences_.getState().shared.onboardingShown)
+        startDemoTourIfFirstRun();
     updateDemoTour();
 #endif
 

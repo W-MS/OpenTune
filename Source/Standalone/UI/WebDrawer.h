@@ -40,6 +40,7 @@ public:
         backButton_.setButtonText(LOC_RAW("Back"));
         closeButton_.setButtonText(LOC(kClose));
 
+        ++closeToken_;
         auto& animator = juce::Desktop::getInstance().getAnimator();
         animator.cancelAnimation(&panel_, false);
 
@@ -57,10 +58,11 @@ public:
         if (!isVisible())
             return;
 
+        const int token = ++closeToken_;
         auto& animator = juce::Desktop::getInstance().getAnimator();
         animator.animateComponent(&panel_, panelBounds().withX(getWidth()), 1.0f, kAnimationMs, false, 1.0, 0.0);
-        juce::Timer::callAfterDelay(kAnimationMs + 20, [safeThis = juce::Component::SafePointer<WebDrawer>(this)] {
-            if (safeThis == nullptr)
+        juce::Timer::callAfterDelay(kAnimationMs + 20, [safeThis = juce::Component::SafePointer<WebDrawer>(this), token] {
+            if (safeThis == nullptr || safeThis->closeToken_ != token)
                 return;
             safeThis->setVisible(false);
             safeThis->browser_.goToURL("about:blank");
@@ -158,6 +160,7 @@ private:
 
     juce::String title_;
     juce::Rectangle<int> titleArea_;
+    int closeToken_ = 0;
     Panel panel_{ *this };
     juce::TextButton backButton_;
     juce::TextButton closeButton_;
