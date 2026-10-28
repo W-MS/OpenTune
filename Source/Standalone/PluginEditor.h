@@ -305,6 +305,7 @@ private:
     // 首次运行：界面引导结束后加载演示工程，并逐步提示双击进入钢琴卷帘、渲染、工具用法。
     enum class DemoTourStep { None, LoadingProject, OpenPianoRoll, Rendering, Tools };
     DemoTourStep demoTourStep_ = DemoTourStep::None;
+    bool demoTourSettled_ = false;
     DemoTourCallout demoTourCallout_;
     WebDrawer webDrawer_;
     void startDemoTourIfFirstRun();
