@@ -306,12 +306,16 @@ private:
     enum class DemoTourStep { None, LoadingProject, OpenPianoRoll, Rendering, Tools };
     DemoTourStep demoTourStep_ = DemoTourStep::None;
     bool demoTourSettled_ = false;
+    // 自动打开已经发出。LoadingProject 在这条打开结束前不能当成失败。
+    bool demoTourOpenStarted_ = false;
     DemoTourCallout demoTourCallout_;
     WebDrawer webDrawer_;
     void startDemoTourIfFirstRun();
     void showDemoTourStep(DemoTourStep step);
     void updateDemoTour();
     void endDemoTour();
+    bool isDemoTourConsumed() const;
+    void markDemoTourDone();
 #endif
 
     // §5.1：外层窗口几何只在 peer/顶层可用后恢复一次，不在 resized 重入

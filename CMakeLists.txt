@@ -2004,6 +2004,17 @@ if(OPENTUNE_BUILD_TESTS)
     endif()
     add_test(NAME VisibleTrackCountTests COMMAND OpenTuneVisibleTrackCountTests)
 
+    # iPad demo-tour load gate: a not-yet-started open is not a failed open.
+    add_executable(OpenTuneDemoTourGateTests
+        Tests/DemoTourGateTests.cpp
+    )
+    target_include_directories(OpenTuneDemoTourGateTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    if(MSVC)
+        target_compile_options(OpenTuneDemoTourGateTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME DemoTourGateTests COMMAND OpenTuneDemoTourGateTests)
+
     # Standalone processor settings codec (OTSS v3 / legacy v2) tests.
     add_executable(OpenTuneStandaloneStateCodecTests
         Tests/StandaloneProcessorStateCodecTests.cpp

@@ -22,6 +22,9 @@
 #include "Utils/PlatformFileDialogs.h"
 #include "Utils/IosDocumentPicker.h"
 #include "Utils/DemoProject.h"
+#if JUCE_IOS
+#include "Utils/DemoTourGate.h"
+#endif
 #include "Utils/TouchInput.h"
 #include "Utils/PitchCurve.h"
 #include "Utils/LegacyNoteGenerator.h"
@@ -1058,13 +1061,6 @@ juce::File demoTourMarkerFile()
         .getChildFile("DemoTourShown");
 }
 
-void markDemoTourDone()
-{
-    const auto marker = demoTourMarkerFile();
-    marker.getParentDirectory().createDirectory();
-    marker.replaceWithText({});
-}
-
 bool findFirstPlacement(OpenTuneAudioProcessor& processor, int& trackId, int& placementIndex)
 {
     if (processor.getStandaloneArrangement() == nullptr)
@@ -1084,13 +1080,30 @@ bool findFirstPlacement(OpenTuneAudioProcessor& processor, int& trackId, int& pl
 
 } // namespace
 
+bool OpenTuneAudioProcessorEditor::isDemoTourConsumed() const
+{
+    return appPreferences_.getState().shared.demoTourConsumed
+        || demoTourMarkerFile().existsAsFile();
+}
+
+void OpenTuneAudioProcessorEditor::markDemoTourDone()
+{
+    const auto marker = demoTourMarkerFile();
+    marker.getParentDirectory().createDirectory();
+    marker.replaceWithText({});
+    appPreferences_.setDemoTourConsumed(true);
+}
+
 void OpenTuneAudioProcessorEditor::startDemoTourIfFirstRun()
 {
     if (demoTourSettled_ || demoTourStep_ != DemoTourStep::None)
         return;
 
-    if (demoTourMarkerFile().existsAsFile())
+    if (isDemoTourConsumed())
     {
+        // 旧版本只写了标记文件。补进偏好，下次不必再依赖那个文件。
+        if (!appPreferences_.getState().shared.demoTourConsumed)
+            markDemoTourDone();
         demoTourSettled_ = true;
         return;
     }
@@ -1099,7 +1112,7 @@ void OpenTuneAudioProcessorEditor::startDemoTourIfFirstRun()
     int placementIndex = -1;
     if (projectOperationBusy_ || findFirstPlacement(processorRef_, trackId, placementIndex))
     {
-        // 工程里已经有音频，不再覆盖。标记写在确认之后，安装失败时下次启动还会再试。
+        // 工程里已经有音频，不再覆盖。安装失败不走这里，下次启动还会再试。
         markDemoTourDone();
         demoTourSettled_ = true;
         return;
@@ -1112,8 +1125,12 @@ void OpenTuneAudioProcessorEditor::startDemoTourIfFirstRun()
         return;
     }
 
-    showDemoTourStep(DemoTourStep::LoadingProject);
+    // 先发出打开，再进入 LoadingProject。若在 projectOperationBusy_ 置上之前
+    // 就判断“还没有片段”，会把尚未开始的打开误当成失败：导览被取消、首次运行
+    // 不记消费，但工程仍然打开，于是每次启动都重复，第二段引导永远不出现。
+    demoTourOpenStarted_ = true;
     openProjectFile(demo);
+    showDemoTourStep(DemoTourStep::LoadingProject);
 }
 
 void OpenTuneAudioProcessorEditor::showDemoTourStep(DemoTourStep step)
@@ -1155,17 +1172,24 @@ void OpenTuneAudioProcessorEditor::updateDemoTour()
 
         case DemoTourStep::LoadingProject:
         {
-            if (projectOperationBusy_)
-                return;
             int trackId = -1;
             int placementIndex = -1;
-            if (!findFirstPlacement(processorRef_, trackId, placementIndex))
+            const bool hasPlacement = findFirstPlacement(processorRef_, trackId, placementIndex);
+            const auto phase = resolveDemoTourLoad({
+                demoTourOpenStarted_, projectOperationBusy_, hasPlacement });
+            if (phase == DemoTourLoadPhase::WaitingForOpen)
+                return;
+            if (phase == DemoTourLoadPhase::OpenFailed)
             {
-                // 打开失败。不写标记，下次启动再试。
+                // 打开已经结束，工程里仍然没有音频。不记消费，下次启动再试。
+                demoTourOpenStarted_ = false;
                 demoTourStep_ = DemoTourStep::None;
                 demoTourSettled_ = true;
                 return;
             }
+            // 片段已经在轨道上：此刻就记首次运行已消费，导览中途退出也不会再自动打开。
+            markDemoTourDone();
+            demoTourOpenStarted_ = false;
             if (!isWorkspaceView_)
             {
                 viewToggled(true);
@@ -1233,6 +1257,14 @@ void OpenTuneAudioProcessorEditor::startOpenProject(const juce::File& file)
             if (safeThis == nullptr)
                 return;
 
+            const auto finishOpen = [safeThis] {
+                safeThis->projectOperationBusy_ = false;
+#if JUCE_IOS
+                // 与心跳同一条判定：打开一结束就进入导览，不等下一拍。
+                safeThis->updateDemoTour();
+#endif
+            };
+
             if (!preparedResult->ok()) {
                 ConfirmDialogContent::launch(
                     new ConfirmDialogContent(
@@ -1241,7 +1273,7 @@ void OpenTuneAudioProcessorEditor::startOpenProject(const juce::File& file)
                         { { LOC(kOK), nullptr, true } }),
                     &safeThis->contentRoot_);
                 safeThis->projectSession_.clearRecentProjects();
-                safeThis->projectOperationBusy_ = false;
+                finishOpen();
                 return;
             }
 
@@ -1254,14 +1286,14 @@ void OpenTuneAudioProcessorEditor::startOpenProject(const juce::File& file)
                         projectErrorMessage(commitResult.error()),
                         { { LOC(kOK), nullptr, true } }),
                     &safeThis->contentRoot_);
-                safeThis->projectOperationBusy_ = false;
+                finishOpen();
                 return;
             }
 
             safeThis->syncRecentProjectsToMenu();
             safeThis->updateTitleWithProjectPath();
             safeThis->refreshAllUIFromProject();
-            safeThis->projectOperationBusy_ = false;
+            finishOpen();
         });
     });
 }
