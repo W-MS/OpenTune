@@ -3263,15 +3263,7 @@ void OpenTuneAudioProcessorEditor::helpRequested()
 
 void OpenTuneAudioProcessorEditor::aboutRequested()
 {
-#if JUCE_IOS
-    AboutDialogContent::show(&contentRoot_,
-        [safeThis = juce::Component::SafePointer<OpenTuneAudioProcessorEditor>(this)](const juce::String& url, const juce::String& title) {
-            if (safeThis != nullptr)
-                safeThis->webDrawer_.open(url, title);
-        });
-#else
     AboutDialogContent::show(&contentRoot_);
-#endif
 }
 
 void OpenTuneAudioProcessorEditor::showWaveformToggled(bool shouldShow)

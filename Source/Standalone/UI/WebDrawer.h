@@ -12,7 +12,7 @@
 namespace OpenTune {
 
 /**
- * iPad 内置网页抽屉：从右侧滑出，内嵌 WKWebView 打开用户手册或外部链接，
+ * iPad 内置网页抽屉：从右侧滑出，内嵌 WKWebView 打开用户手册，
  * 点击关闭按钮或抽屉外的遮罩随时关闭。铺满父组件，未打开时隐藏。
  */
 class WebDrawer : public juce::Component
