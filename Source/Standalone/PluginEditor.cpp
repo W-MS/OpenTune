@@ -21,6 +21,7 @@
 #include "Utils/ProjectSession.h"
 #include "Utils/PlatformFileDialogs.h"
 #include "Utils/IosDocumentPicker.h"
+#include "Utils/DemoProject.h"
 #include "Utils/TouchInput.h"
 #include "Utils/PitchCurve.h"
 #include "Utils/LegacyNoteGenerator.h"
@@ -748,6 +749,18 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
     contentRoot_.addAndMakeVisible(renderBadge_);
     renderBadge_.setVisible(false);
 
+#if JUCE_IOS
+    DemoProject::repairIfInstalled();
+    demoTourCallout_.onPrimary = [this] {
+        if (demoTourStep_ == DemoTourStep::Rendering)
+            showDemoTourStep(DemoTourStep::Tools);
+        else
+            endDemoTour();
+    };
+    demoTourCallout_.onSkip = [this] { endDemoTour(); };
+    contentRoot_.addChildComponent(demoTourCallout_);
+#endif
+
     // Ensure initial focus
     if (isWorkspaceView_)
         arrangementView_.grabKeyboardFocus();
@@ -792,6 +805,12 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
                 arrangementView_.grabKeyboardFocus();
             else
                 pianoRoll_.grabKeyboardFocus();
+#if JUCE_IOS
+            juce::MessageManager::callAsync([safeThis = juce::Component::SafePointer<OpenTuneAudioProcessorEditor>(this)] {
+                if (safeThis != nullptr)
+                    safeThis->startDemoTourIfFirstRun();
+            });
+#endif
         });
     contentRoot_.addChildComponent(*onboardingOverlay_);
 
@@ -1027,6 +1046,155 @@ void OpenTuneAudioProcessorEditor::openProjectFile(const juce::File& file)
     projectOperationBusy_ = true;
     startOpenProject(file);
 }
+
+#if JUCE_IOS
+namespace {
+
+juce::File demoTourMarkerFile()
+{
+    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+        .getChildFile("OpenTune")
+        .getChildFile("DemoTourShown");
+}
+
+bool findFirstPlacement(OpenTuneAudioProcessor& processor, int& trackId, int& placementIndex)
+{
+    for (int track = 0; track < OpenTuneAudioProcessor::MAX_TRACKS; ++track)
+    {
+        if (getStandalonePlacementCount(processor, track) > 0)
+        {
+            trackId = track;
+            placementIndex = 0;
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+void OpenTuneAudioProcessorEditor::startDemoTourIfFirstRun()
+{
+    const auto marker = demoTourMarkerFile();
+    if (demoTourStep_ != DemoTourStep::None || marker.existsAsFile())
+        return;
+
+    marker.getParentDirectory().createDirectory();
+    marker.create();
+
+    int trackId = -1;
+    int placementIndex = -1;
+    if (projectOperationBusy_ || findFirstPlacement(processorRef_, trackId, placementIndex))
+        return;
+
+    const auto demo = DemoProject::install();
+    if (demo == juce::File())
+        return;
+
+    showDemoTourStep(DemoTourStep::LoadingProject);
+    openProjectFile(demo);
+}
+
+void OpenTuneAudioProcessorEditor::showDemoTourStep(DemoTourStep step)
+{
+    demoTourStep_ = step;
+    const auto skip = LOC_RAW("Skip Tour");
+    switch (step)
+    {
+        case DemoTourStep::None:
+        case DemoTourStep::LoadingProject:
+            demoTourCallout_.setVisible(false);
+            break;
+        case DemoTourStep::OpenPianoRoll:
+            demoTourCallout_.show(LOC_RAW("Demo project"),
+                LOC_RAW("This demo song is now on the track. Double-tap the audio clip to open the piano roll and edit its pitch."),
+                {}, skip);
+            break;
+        case DemoTourStep::Rendering:
+            demoTourCallout_.show(LOC_RAW("Rendering audio"),
+                LOC_RAW("The audio is being rendered. Rendering starts after loading a project, editing pitch or transposing; please wait until it finishes. If you play now, you will hear the original pitch."),
+                LOC_RAW("Next"), skip);
+            break;
+        case DemoTourStep::Tools:
+            demoTourCallout_.show(LOC_RAW("Editing tools"),
+                LOC_RAW("The tools on the right edit pitch and notes. Long-press any tool to see its name and how to use it."),
+                LOC_RAW("Done"), skip);
+            break;
+    }
+    updateDemoTour();
+}
+
+void OpenTuneAudioProcessorEditor::updateDemoTour()
+{
+    juce::Rectangle<int> target;
+    switch (demoTourStep_)
+    {
+        case DemoTourStep::None:
+            return;
+
+        case DemoTourStep::LoadingProject:
+        {
+            if (projectOperationBusy_)
+                return;
+            int trackId = -1;
+            int placementIndex = -1;
+            if (!findFirstPlacement(processorRef_, trackId, placementIndex))
+            {
+                endDemoTour();
+                return;
+            }
+            if (!isWorkspaceView_)
+            {
+                viewToggled(true);
+                transportBar_.setWorkspaceView(true);
+            }
+            showDemoTourStep(DemoTourStep::OpenPianoRoll);
+            return;
+        }
+
+        case DemoTourStep::OpenPianoRoll:
+        {
+            if (!isWorkspaceView_)
+            {
+                showDemoTourStep(DemoTourStep::Rendering);
+                return;
+            }
+            int trackId = -1;
+            int placementIndex = -1;
+            if (findFirstPlacement(processorRef_, trackId, placementIndex))
+            {
+                const auto visible = arrangementView_.getLocalBounds()
+                    .withTrimmedTop(arrangementView_.getRulerHeight());
+                target = contentRoot_.getLocalArea(&arrangementView_,
+                    arrangementView_.getClipBounds(trackId, placementIndex).getIntersection(visible));
+            }
+            break;
+        }
+
+        case DemoTourStep::Rendering:
+            target = renderBadge_.isVisible() ? renderBadge_.getBounds() : juce::Rectangle<int>();
+            break;
+
+        case DemoTourStep::Tools:
+            if (!isParameterPanelVisible_)
+            {
+                isParameterPanelVisible_ = true;
+                parameterPanel_.setVisible(true);
+                topBar_.setSidePanelsVisible(isTrackPanelVisible_, isParameterPanelVisible_);
+                resized();
+            }
+            target = contentRoot_.getLocalArea(&parameterPanel_, parameterPanel_.getLocalBounds());
+            break;
+    }
+    demoTourCallout_.setTarget(target);
+}
+
+void OpenTuneAudioProcessorEditor::endDemoTour()
+{
+    demoTourStep_ = DemoTourStep::None;
+    demoTourCallout_.setVisible(false);
+}
+#endif
 
 void OpenTuneAudioProcessorEditor::startOpenProject(const juce::File& file)
 {
@@ -1474,6 +1642,12 @@ void OpenTuneAudioProcessorEditor::resized()
     if (onboardingOverlay_ == nullptr || !onboardingOverlay_->isActive())
         renderBadge_.toFront(false);
 
+#if JUCE_IOS
+    demoTourCallout_.setBounds(contentRoot_.getLocalBounds());
+    if (demoTourCallout_.isVisible())
+        demoTourCallout_.toFront(false);
+#endif
+
     if (onboardingOverlay_ != nullptr)
     {
         onboardingOverlay_->updateLayout();
@@ -1593,6 +1767,10 @@ void OpenTuneAudioProcessorEditor::timerCallback()
     {
         onboardingRequested();
     }
+
+#if JUCE_IOS
+    updateDemoTour();
+#endif
 
     const bool vocoderReady = processorRef_.isVocoderReady();
     const bool inferenceNow = false;
@@ -1826,11 +2004,18 @@ void OpenTuneAudioProcessorEditor::timerCallback()
     }
 
     // Combined badge visibility — Stage 1 only (Stage 2 is synchronous in CRS).
-    const bool shouldShowBadge = stage1HasWork && !isAutoProcessing;
+    bool shouldShowBadge = stage1HasWork && !isAutoProcessing;
     if (shouldShowBadge) {
         renderBadge_.setMessageText(LOC_RAW("Rendering (")
             + juce::String(stage1Done) + "/" + juce::String(stage1Total) + ")");
     }
+#if JUCE_IOS
+    // 引导讲解渲染时徽标保持可见；渲染已结束则显示 0/0。
+    if (demoTourStep_ == DemoTourStep::Rendering && !shouldShowBadge) {
+        renderBadge_.setMessageText(LOC_RAW("Rendering (") + "0/0)");
+        shouldShowBadge = true;
+    }
+#endif
     if (renderBadge_.isVisible() != shouldShowBadge) {
         renderBadge_.setVisible(shouldShowBadge);
     }
