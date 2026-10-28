@@ -968,7 +968,9 @@ if(OPENTUNE_IOS)
     target_sources(OpenTuneStandalone PRIVATE
         Source/Utils/TouchInput_ios.mm
         Source/Utils/IosDocumentPicker.h
-        Source/Utils/IosDocumentPicker.mm)
+        Source/Utils/IosDocumentPicker.mm
+        Source/Utils/DemoProject.h
+        Source/Utils/DemoProject.cpp)
 endif()
 if(NOT OPENTUNE_IOS)
     target_sources(OpenTune PRIVATE ${OPENTUNE_NON_STANDALONE_SOURCES})
@@ -1378,6 +1380,25 @@ elseif(OPENTUNE_IOS)
             "${FCPE_MODEL}"
             "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/models/fcpe.onnx"
         COMMENT "Copying AI models into the iPadOS app bundle..."
+    )
+
+    # First-run demo (Source/Utils/DemoProject.cpp): the audio stays inside the bundle,
+    # only the project file is generated under Documents/Projects.
+    file(GLOB OPENTUNE_DEMO_AUDIO "${CMAKE_CURRENT_SOURCE_DIR}/assets/*.wav")
+    list(LENGTH OPENTUNE_DEMO_AUDIO OPENTUNE_DEMO_AUDIO_COUNT)
+    if(NOT OPENTUNE_DEMO_AUDIO_COUNT EQUAL 1 OR NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/Demo.otproj")
+        message(FATAL_ERROR "assets/ must contain Demo.otproj and exactly one demo .wav")
+    endif()
+    add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/Demo"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/Demo.otproj"
+            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/Demo/Demo.otproj"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${OPENTUNE_DEMO_AUDIO}"
+            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/Demo/Demo.wav"
+        COMMENT "Copying the demo project into the iPadOS app bundle..."
     )
 
 elseif(APPLE)
