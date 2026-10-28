@@ -2,6 +2,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <vector>
 #include "BinaryData.h"
@@ -15,17 +16,20 @@ namespace OpenTune {
  * “关于”弹窗：渲染内嵌的 Resources/About/about.md。
  *
  * 支持的 Markdown 子集：`# ` 一级标题、`## ` 二级标题、普通文本行、空行分段，
- * 以及行内链接 `[文字](地址)`。链接显示为按钮（不显示地址），点击后用系统浏览器打开。
+ * 以及行内链接 `[文字](地址)`。链接显示为按钮（不显示地址），点击后用系统浏览器打开；
+ * 传入 openWebLink 时，http(s) 链接改由调用方打开（弹窗先关闭）。
  * 背景、字体与配色沿用 ConfirmDialogContent 的主题样式。
  */
 class AboutDialogContent : public juce::Component,
                            private juce::ComponentListener
 {
 public:
-    static void show(juce::Component* parent)
+    using WebLinkHandler = std::function<void(const juce::String& url, const juce::String& label)>;
+
+    static void show(juce::Component* parent, WebLinkHandler openWebLink = nullptr)
     {
         const auto markdown = juce::String::fromUTF8(BinaryData::about_md, BinaryData::about_mdSize);
-        auto* content = new AboutDialogContent(markdown);
+        auto* content = new AboutDialogContent(markdown, std::move(openWebLink));
 
         juce::DialogWindow::LaunchOptions options;
         options.content.setOwned(content);
@@ -42,8 +46,8 @@ public:
         options.launchAsync();
     }
 
-    explicit AboutDialogContent(const juce::String& markdown)
-        : parentSubscription_(*this)
+    explicit AboutDialogContent(const juce::String& markdown, WebLinkHandler openWebLink = nullptr)
+        : openWebLink_(std::move(openWebLink)), parentSubscription_(*this)
     {
         setWantsKeyboardFocus(true);
 
@@ -226,10 +230,19 @@ private:
         styleButton(*button, false);
 
         const auto target = url.trim();
-        button->onClick = [target] {
-            if (target.startsWithIgnoreCase("https://") || target.startsWithIgnoreCase("http://")
-                || target.startsWithIgnoreCase("mailto:"))
+        const auto title = label.trim();
+        button->onClick = [this, target, title] {
+            const bool isWeb = target.startsWithIgnoreCase("https://") || target.startsWithIgnoreCase("http://");
+            if (isWeb && openWebLink_ != nullptr)
+            {
+                auto handler = openWebLink_;
+                closeDialog();
+                handler(target, title);
+            }
+            else if (isWeb || target.startsWithIgnoreCase("mailto:"))
+            {
                 juce::URL(target).launchInDefaultBrowser();
+            }
         };
 
         body_.addAndMakeVisible(*button);
@@ -374,6 +387,7 @@ private:
     std::vector<Line> lines_;
     juce::Viewport viewport_;
     juce::TextButton closeButton_;
+    WebLinkHandler openWebLink_;
     bool closing_ = false;
     ComponentListenerSubscription parentSubscription_;
 
