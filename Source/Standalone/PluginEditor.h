@@ -34,6 +34,7 @@
 #include "UI/RippleOverlayComponent.h"
 #include "UI/TouchSubmenuOpener.h"
 #include "UI/DemoTourCallout.h"
+#include "UI/WebDrawer.h"
 #include "Editor/AutoRenderOverlayComponent.h"
 #include "../Editor/RenderBadgeComponent.h"
 #include "Utils/PitchShiftSettings.h"
@@ -305,6 +306,7 @@ private:
     enum class DemoTourStep { None, LoadingProject, OpenPianoRoll, Rendering, Tools };
     DemoTourStep demoTourStep_ = DemoTourStep::None;
     DemoTourCallout demoTourCallout_;
+    WebDrawer webDrawer_;
     void startDemoTourIfFirstRun();
     void showDemoTourStep(DemoTourStep step);
     void updateDemoTour();

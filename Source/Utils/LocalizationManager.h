@@ -908,6 +908,7 @@ inline juce::String get(Language lang, const char* key)
         { "Editing tools", "Editing tools", "编辑工具", "編集ツール", "Инструменты редактирования", "Herramientas de edición" },
         { "The tools on the right edit pitch and notes. Long-press any tool to see its name and how to use it.", "The tools on the right edit pitch and notes. Long-press any tool to see its name and how to use it.", "右侧是修音工具。长按任意工具，即可查看它的名称和用法。", "右側はピッチとノートを編集するツールです。ツールを長押しすると、名前と使い方が表示されます。", "Справа находятся инструменты для правки высоты тона и нот. Нажмите и удерживайте инструмент, чтобы увидеть его название и способ использования.", "A la derecha están las herramientas para editar el tono y las notas. Mantén pulsada una herramienta para ver su nombre y cómo usarla." },
         { "Done", "Done", "完成", "完了", "Готово", "Listo" },
+        { "Back", "Back", "返回", "戻る", "Назад", "Atrás" },
         { "Skip Tour", "Skip Tour", "跳过引导", "ガイドをスキップ", "Пропустить обучение", "Omitir guía" },
         { "Rendering (", "Rendering (", "渲染中 (", "レンダリング中 (", "Рендеринг (", "Renderizando (" },
         { "Failed to start OriginalF0 analysis.", "Failed to start Original Pitch analysis.", "未能启动原始音高分析。", "元のピッチの解析を開始できませんでした。", "Не удалось запустить анализ исходной высоты тона.", "No se pudo iniciar el análisis del tono original." },

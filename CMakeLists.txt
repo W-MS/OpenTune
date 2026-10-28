@@ -784,6 +784,7 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Standalone/UI/TopBarComponent.h
         Source/Standalone/UI/TouchTooltipPresenter.h
         Source/Standalone/UI/TouchSubmenuOpener.h
+        Source/Standalone/UI/DemoTourCallout.h
         Source/Standalone/UI/TimelineOverviewComponent.cpp
         Source/Standalone/UI/TimelineOverviewComponent.h
 
@@ -970,7 +971,8 @@ if(OPENTUNE_IOS)
         Source/Utils/IosDocumentPicker.h
         Source/Utils/IosDocumentPicker.mm
         Source/Utils/DemoProject.h
-        Source/Utils/DemoProject.cpp)
+        Source/Utils/DemoProject.cpp
+        Source/Standalone/UI/WebDrawer.h)
 endif()
 if(NOT OPENTUNE_IOS)
     target_sources(OpenTune PRIVATE ${OPENTUNE_NON_STANDALONE_SOURCES})
@@ -1215,7 +1217,8 @@ endif()
 foreach(_opentune_target IN LISTS OPENTUNE_SHARED_CODE_TARGETS)
     target_compile_definitions(${_opentune_target}
         PUBLIC
-            JUCE_WEB_BROWSER=0
+            # iPadOS opens help pages in an in-app WKWebView drawer (Source/Standalone/UI/WebDrawer.h).
+            JUCE_WEB_BROWSER=$<IF:$<BOOL:${OPENTUNE_IOS}>,1,0>
             JUCE_USE_CURL=0
             JUCE_VST3_CAN_REPLACE_VST2=0
             JUCE_REPORT_APP_USAGE=0

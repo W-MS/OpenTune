@@ -759,6 +759,7 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
     };
     demoTourCallout_.onSkip = [this] { endDemoTour(); };
     contentRoot_.addChildComponent(demoTourCallout_);
+    contentRoot_.addChildComponent(webDrawer_);
 #endif
 
     // Ensure initial focus
@@ -1646,6 +1647,9 @@ void OpenTuneAudioProcessorEditor::resized()
     demoTourCallout_.setBounds(contentRoot_.getLocalBounds());
     if (demoTourCallout_.isVisible())
         demoTourCallout_.toFront(false);
+    webDrawer_.setBounds(contentRoot_.getLocalBounds());
+    if (webDrawer_.isVisible())
+        webDrawer_.toFront(false);
 #endif
 
     if (onboardingOverlay_ != nullptr)
@@ -3188,6 +3192,22 @@ void OpenTuneAudioProcessorEditor::helpRequested()
     auto exeFile = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
     auto exeDir = exeFile.getParentDirectory();
     auto helpFile = exeDir.getParentDirectory().getChildFile("Resources").getChildFile("docs").getChildFile("UserGuide.html");
+#elif JUCE_IOS
+    // iOS: flat bundle, docs/ next to the executable; open the guide matching the UI language.
+    const auto docsDir = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+        .getParentDirectory().getChildFile("docs");
+    juce::String guideName = "UserGuide.html";
+    switch (LocalizationManager::getInstance().resolveLanguage())
+    {
+        case Language::English:  guideName = "UserGuide_en.html"; break;
+        case Language::Japanese: guideName = "UserGuide_ja.html"; break;
+        case Language::Russian:  guideName = "UserGuide_ru.html"; break;
+        case Language::Spanish:  guideName = "UserGuide_es.html"; break;
+        default: break;
+    }
+    auto helpFile = docsDir.getChildFile(guideName);
+    if (!helpFile.existsAsFile())
+        helpFile = docsDir.getChildFile("UserGuide.html");
 #else
     // Windows: docs are alongside the executable
     auto exeFile = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
@@ -3197,7 +3217,11 @@ void OpenTuneAudioProcessorEditor::helpRequested()
     
     if (helpFile.exists())
     {
+#if JUCE_IOS
+        webDrawer_.open(juce::URL(helpFile).toString(false), LOC(kUserGuide).upToLastOccurrenceOf("...", false, false));
+#else
         helpFile.startAsProcess();
+#endif
     }
     else
     {
@@ -3211,7 +3235,15 @@ void OpenTuneAudioProcessorEditor::helpRequested()
 
 void OpenTuneAudioProcessorEditor::aboutRequested()
 {
+#if JUCE_IOS
+    AboutDialogContent::show(&contentRoot_,
+        [safeThis = juce::Component::SafePointer<OpenTuneAudioProcessorEditor>(this)](const juce::String& url, const juce::String& title) {
+            if (safeThis != nullptr)
+                safeThis->webDrawer_.open(url, title);
+        });
+#else
     AboutDialogContent::show(&contentRoot_);
+#endif
 }
 
 void OpenTuneAudioProcessorEditor::showWaveformToggled(bool shouldShow)
