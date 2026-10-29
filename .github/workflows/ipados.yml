@@ -1,0 +1,119 @@
+name: iPadOS Build
+
+# Compile-only check for the iPadOS Standalone app (no VST3/AU/ARA).
+# The app is built for arm64 devices without code signing and uploaded as an
+# unsigned .ipa; sign it locally (Xcode, AltStore, etc.) before installing.
+on:
+  workflow_dispatch:
+  # Feature branches are covered by their pull request; listing them here too
+  # would queue two macOS jobs per push.
+  push:
+    branches:
+      - ipados
+      - 'ipados/**'
+  pull_request:
+    branches:
+      - standalone
+      - ipados
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ipados-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipados:
+    name: iPadOS arm64 (unsigned)
+    # Override with the IPADOS_RUNNER repository variable (e.g. macos-15) when
+    # the Intel pool is slower than the arm64 one; the arm64 pool has repeatedly
+    # failed to acquire a runner for this job.
+    runs-on: ${{ vars.IPADOS_RUNNER || 'macos-15-intel' }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          cmake --version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      # JUCE, SoundTouch and the AI models are shared with the macOS build.
+      - name: Download source dependencies and models
+        run: bash scripts/github_actions/fetch-macos-deps.sh
+
+      - name: Restore cached ONNX Runtime iOS
+        uses: actions/cache@v4
+        with:
+          path: ThirdParty/onnxruntime-ios-1.20.0
+          key: onnxruntime-ios-1.20.0-${{ hashFiles('scripts/github_actions/fetch-ios-onnxruntime.sh') }}
+
+      - name: Download ONNX Runtime iOS
+        run: bash scripts/github_actions/fetch-ios-onnxruntime.sh
+
+      - name: Configure (Xcode, iPadOS)
+        run: cmake --preset ipados-xcode
+
+      - name: Build Release
+        run: |
+          set -o pipefail
+          cmake --build --preset ipados-release -- \
+            -quiet \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            2>&1 | tee build-ipados.log
+
+      - name: Inspect app bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          app="$(find build-ipados-xcode -type d -name 'OpenTune.app' -path '*Release*' | head -n 1)"
+          if [ -z "${app}" ]; then
+            echo "OpenTune.app was not produced" >&2
+            exit 1
+          fi
+          echo "app=${app}" >> "${GITHUB_OUTPUT}"
+          echo "App bundle: ${app}"
+          ls -la "${app}"
+          lipo -info "${app}/OpenTune"
+          test -f "${app}/models/hifigan.onnx"
+          test -f "${app}/models/fcpe.onnx"
+          test -f "${app}/docs/UserGuide.html"
+          /usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "${app}/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :UIFileSharingEnabled' "${app}/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :LSSupportsOpeningDocumentsInPlace' "${app}/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :UIApplicationSupportsIndirectInputEvents' "${app}/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "${app}/Info.plist"
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          short="$(git rev-parse --short=7 HEAD)"
+          mkdir -p dist/ipa/Payload
+          cp -R "${{ steps.bundle.outputs.app }}" dist/ipa/Payload/
+          (cd dist/ipa && zip -qry "../OpenTune-iPadOS-${short}-unsigned.ipa" Payload)
+          ls -la dist
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenTune-iPadOS-unsigned
+          path: dist/*.ipa
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenTune-iPadOS-build-log
+          path: build-ipados.log
+          if-no-files-found: ignore

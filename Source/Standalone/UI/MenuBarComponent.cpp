@@ -133,6 +133,7 @@ juce::PopupMenu MenuBarComponent::getMenuForIndex(int topLevelMenuIndex, const j
             helpMenu.addItem(OpenOnboarding, LOC(kOnboarding));
             helpMenu.addItem(OpenHelp, LOC(kUserGuide));
             menu.addSubMenu(LOC(kHelp), helpMenu);
+            menu.addItem(OpenAbout, LOC(kAbout));
             break;
         }
         case 1:  // Edit
@@ -256,6 +257,10 @@ void MenuBarComponent::menuItemSelected(int menuItemID, int topLevelMenuIndex)
 
         case OpenOnboarding:
             listeners_.call([](Listener& l) { l.onboardingRequested(); });
+            break;
+
+        case OpenAbout:
+            listeners_.call([](Listener& l) { l.aboutRequested(); });
             break;
 
         case ShowWaveform:

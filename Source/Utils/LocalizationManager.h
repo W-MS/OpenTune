@@ -465,6 +465,7 @@ constexpr const char* kEraser = "Eraser";
         constexpr const char* kOnboarding = "Onboarding...";
         constexpr const char* kReplayOnboarding = "Replay onboarding";
         constexpr const char* kUserGuide = "User Guide...";
+        constexpr const char* kAbout = "About OpenTune";
 
 constexpr const char* kMouseSelectTool = "Mouse Select Tool";
 constexpr const char* kDrawNoteTool = "Draw Note Tool";
@@ -768,6 +769,7 @@ inline juce::String get(Language lang, const char* key)
         { Keys::kHelp, "Help...", "帮助...", "ヘルプ...", "Справка...", "Ayuda..." },
         { Keys::kOnboarding, "Onboarding...", "上手引导...", "オンボーディング...", "Введение...", "Introducción..." },
         { Keys::kReplayOnboarding, "Replay onboarding", "重新进入上手引导", "オンボーディングを再表示", "Повторить обучение", "Repetir introducción" },
+        { Keys::kAbout, "About OpenTune", "关于", "OpenTune について", "О программе", "Acerca de OpenTune" },
         { Keys::kUserGuide, "User Guide...", "用户手册...", "ユーザーガイド...", "Руководство пользователя...", "Manual de usuario..." },
         
         { Keys::kMouseSelectTool, "Mouse Select Tool", "鼠标选择工具", "マウス選択ツール", "Инструмент выбора", "Herram. selec." },
@@ -987,6 +989,8 @@ inline juce::String get(Language lang, const char* key)
         { "Save changes to the current project before opening another?", "Save changes to the current project before opening another?", "打开其他工程前，是否保存当前工程的更改？", "別のプロジェクトを開く前に、現在の変更を保存しますか？", "Сохранить изменения текущего проекта перед открытием другого?", "¿Guardar los cambios del proyecto actual antes de abrir otro?" },
         { "Save", "Save", "保存", "保存", "Сохранить", "Guardar" },
         { "Do Not Save", "Do Not Save", "不保存", "保存しない", "Не сохранять", "No guardar" },
+        { "File name", "File name", "文件名", "ファイル名", "Имя файла", "Nombre de archivo" },
+        { "These files could not be copied into OpenTune:", "These files could not be copied into OpenTune:", "以下文件无法复制到 OpenTune：", "次のファイルを OpenTune にコピーできませんでした：", "Не удалось скопировать эти файлы в OpenTune:", "No se pudieron copiar estos archivos a OpenTune:" },
     };
     
     for (const auto& t : translations)
