@@ -1588,10 +1588,6 @@ void TransportBarComponent::setRecordButtonState(RecordButtonState state)
             recordButton_.setToggleState(false, juce::dontSendNotification);
             recordButton_.setEnabled(true);
             break;
-        case RecordButtonState::Armed:
-            recordButton_.setToggleState(true, juce::dontSendNotification);
-            recordButton_.setEnabled(true);
-            break;
         case RecordButtonState::Capturing:
             recordButton_.setToggleState(true, juce::dontSendNotification);
             recordButton_.setEnabled(true);

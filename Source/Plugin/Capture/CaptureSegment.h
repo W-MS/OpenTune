@@ -2,7 +2,6 @@
 
 
 #include "CaptureRingBuffer.h"
-#include "CaptureScanPlan.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_core/juce_core.h>
@@ -21,8 +20,8 @@ namespace OpenTune::Capture {
 /**
  * Per-segment lifecycle state.
  *
- * Capturing  : audio thread is writing dry samples into fifo
- * Pending    : capture stopped, waiting for a safe message-thread drain/submit
+ * Capturing  : audio thread is writing dry samples into the take's host window
+ * Pending    : capture stopped, waiting for the message thread to finalize
  * Processing : submitted; F0/Vocoder rendering in progress
  * Edited     : rendered; eligible for replacement playback
  * Failed     : render or F0 analysis failed; content preserved, not blocking next capture
@@ -37,34 +36,39 @@ enum class SegmentState : int
 };
 
 /**
- * Pre-allocated metadata for one continuous run of captured PCM within a CaptureSegment.
- * Audio thread writes only within pre-allocated capacity; message thread reads at drain time.
+ * Pre-allocated metadata for one captured host range within a CaptureSegment.
+ * Spans are appended in write order; host ranges may overlap. Finalize sorts
+ * and merges them on the message thread. sampleCount only grows; it is
+ * extended only when the host position continues from the previous span's tail.
  */
 struct CapturedSpan
 {
-    int64_t hostStartSample = 0;   // absolute host sample at span start
-    int pcmOffsetSamples = 0;      // offset into drained FIFO buffer
-    int sampleCount = 0;           // number of samples accepted by fifo.write
-    int treeLeft = -1;
-    int treeRight = -1;
-    int treeParent = -1;
-    int treeHeight = 1;
+    int64_t hostStartSample = 0;  // absolute host sample at span start
+    int32_t sampleCount = 0;      // number of samples written for this span
 };
 
 /**
- * One captured take. Owned by CaptureSession's mutableSegments_.
+ * One captured take, explicitly recorded into a host-addressed window
+ * (anchorHostSample + capacitySamples, indexed with floorMod). Owned by
+ * CaptureSession's mutableSegments_ and by every published SegmentsView.
  *
- * Audio thread reads:
- *   - state (atomic), anchored (atomic), hostStartSample (atomic), hostSampleCount (atomic)
+ * stateWord is a single atomic word: bits 0-3 hold the SegmentState, bit 4
+ * holds the writer-active claim. The audio thread holds the writer bit while
+ * it writes; the message thread does not finalize while the writer bit is set.
+ * A segment object stays alive until the last published view that references
+ * it is released.
  *
- * Audio thread writes:
- *   - fifo (via CaptureRingBuffer::write)
- *   - anchored.store(true) + hostStartSample.store(sample) on first isPlaying block after arm
+ * Audio thread writes (holding writerActive):
+ *   - window PCM at host-addressed offsets
+ *   - spans / numSpans, observedPeak
+ *   - minHostSample, maxHostSampleExclusive, anchorHostSample, hasWritten
+ *   - windowExhausted / spanBudgetExhausted latches
  *
- * Message thread writes everything else (creation, state transitions, T_start/durationSeconds).
+ * Message thread writes everything else (state transitions, T_start/durationSeconds,
+ * hostStartSample/hostSampleCount at finalize).
  *
- * Lifetime: segment object stays alive in CaptureSession until reclaim sweep
- * confirms no audio block can still see its pointer in published view.
+ * Lifetime: a segment stays alive while any published view still references it;
+ * reclaim happens after all audio readers leave the retired views.
  */
 struct CaptureSegment
 {
@@ -74,28 +78,30 @@ struct CaptureSegment
     /** Strict creation order; equals contentKey.objectId. Newer = larger. */
     uint64_t creationOrder = 0;
 
-    /** sampleRate at the time this segment was armed (used for fifo sizing + later resampling). */
+    /** sampleRate at the time this segment was armed (window sizing + finalize math). */
     double captureSampleRate = 0.0;
 
     /** Number of channels captured. Snapshotted from CaptureSession::captureChannels_
-     *  at arm time and immutable for the segment's lifetime. Always 1 or 2 — see
-     *  channel-layout-policy spec. */
+     *  at arm time and immutable for the segment's lifetime. Always 1 or 2. */
     int captureChannels = 1;
 
-    /** Maximum samples (= 600 s × captureSampleRate, set at arm time). */
-    int maxSamples = 0;
+    /** Host window capacity in samples (= 600 s × captureSampleRate, set at arm time). */
+    int capacitySamples = 0;
+
+    /** Latched when the user asks to stop while the audio thread holds the writer bit.
+     *  tick() retries the Capturing -> Pending transition and clears it on success. */
+    std::atomic<bool> stopRequested { false };
 
     /** Latched by the audio thread when a discontinuity needs a new span but the span
-     *  metadata budget is spent. The audio thread stops writing the current take and
-     *  changes nothing else; tick() reclaims the whole unfinished take on the message
-     *  thread. Partial data must never be published as a successful segment. */
+     *  metadata budget is spent. The whole unfinished take is discarded at finalize. */
     std::atomic<bool> spanBudgetExhausted { false };
 
-    /** Anchor: first isPlaying audio block sets anchored=true and stores hostAbsoluteSample into hostStartSample. */
-    std::atomic<bool> anchored { false };
+    /** Latched by the audio thread when the take's host span would exceed capacitySamples.
+     *  tick() ends the take and finalize publishes the content written so far. */
+    std::atomic<bool> windowExhausted { false };
 
     /** Authoritative absolute host sample range. Set at finalize (message thread).
-     *  Audio thread reads for playback hit detection via containsAbsoluteSample. */
+     *  Audio thread reads for playback replacement. */
     std::atomic<int64_t> hostStartSample { 0 };
     std::atomic<int64_t> hostSampleCount { 0 };
 
@@ -104,24 +110,72 @@ struct CaptureSegment
     std::atomic<double> T_start { 0.0 };
     double durationSeconds = 0.0;
 
-    /** Lifecycle state. Audio thread reads, message thread writes (with publish-subscribe). */
-    std::atomic<SegmentState> state { SegmentState::Capturing };
+    /** Lifecycle state + writer-active flag packed into one atomic word.
+     *  bits 0-3 = SegmentState, bit 4 = writerActive. Audio thread reads,
+     *  message thread writes the state field; the writer bit is a CAS handshake. */
+    std::atomic<uint32_t> stateWord { static_cast<uint32_t>(SegmentState::Capturing) };
 
-    /** Atomic writer-active handshake. Audio thread CAS true before writing to FIFO;
-     *  message thread tick() only drains after this reads false. Replaces
-     *  the old pendingDrainTicks countdown with a deterministic lock-free handshake. */
-    std::atomic<bool> writerActive { false };
+    static constexpr uint32_t kStateMask = 0xFu;
+    static constexpr uint32_t kWriterBit = 0x10u;
+
+    SegmentState getState() const noexcept
+    {
+        return static_cast<SegmentState>(stateWord.load(std::memory_order_acquire) & kStateMask);
+    }
+
+    /** Message-thread state transition. Preserves the writer bit via CAS loop. */
+    void setState(SegmentState s) noexcept
+    {
+        uint32_t cur = stateWord.load(std::memory_order_acquire);
+        for (;;) {
+            const uint32_t desired = (cur & ~kStateMask) | static_cast<uint32_t>(s);
+            if (stateWord.compare_exchange_weak(cur, desired,
+                                                std::memory_order_acq_rel,
+                                                std::memory_order_acquire))
+                return;
+        }
+    }
+
+    bool isWriterActive() const noexcept
+    {
+        return (stateWord.load(std::memory_order_seq_cst) & kWriterBit) != 0;
+    }
+
+    /** Audio thread: claim exclusive write access, only while Capturing and no writer. */
+    bool tryAcquireWriter() noexcept
+    {
+        uint32_t cur = static_cast<uint32_t>(SegmentState::Capturing);
+        return stateWord.compare_exchange_strong(cur, cur | kWriterBit, std::memory_order_seq_cst);
+    }
+
+    /** Audio thread: release the write claim. */
+    void releaseWriter() noexcept
+    {
+        stateWord.fetch_and(~kWriterBit, std::memory_order_seq_cst);
+    }
+
+    /** Message thread: Capturing → Pending. Fails while a writer holds the bit. */
+    bool tryStopCapturing() noexcept
+    {
+        uint32_t cur = static_cast<uint32_t>(SegmentState::Capturing);
+        return stateWord.compare_exchange_strong(cur, static_cast<uint32_t>(SegmentState::Pending),
+                                                 std::memory_order_seq_cst);
+    }
 
     /** Number of populated span entries in spans[]. Audio thread writes (monotonically
-     *  increasing), message thread reads at drain time. Bounded by spans.size(). */
+     *  increasing), message thread reads at finalize. Bounded by spans.size(). */
     std::atomic<int> numSpans { 0 };
-
-    /** Root of the audio-thread-owned span interval index. */
-    int spanTreeRoot = -1;
 
     /** Pre-allocated span metadata array. Capacity is bounded by a fixed per-take
      *  budget; the audio thread never grows it. */
     std::vector<CapturedSpan> spans;
+
+    /** Audio-thread single-writer window extent. Message thread reads after the
+     *  writer released its claim. */
+    int64_t minHostSample = 0;
+    int64_t maxHostSampleExclusive = 0;
+    int64_t anchorHostSample = 0;  // first successfully written host sample
+    bool hasWritten = false;
 
     /** Message-thread only: 上次 tick 观察到的 F0 可用状态。tick() 仅在跃迁
      *  （无可用 F0 → 可用 F0，含首次观察即可用）时提交一次 requestFullRender，
@@ -132,18 +186,25 @@ struct CaptureSegment
     OriginalF0State lastObservedF0State = OriginalF0State::NotRequested;
 
     /** Diagnostic: peak absolute sample value seen during capture. Audio thread writes,
-     *  message thread reads in stopCapture log. Helps distinguish "host sends silence"
-     *  from "fifo write path broken". */
+     *  message thread reads in finalize log. Helps distinguish "host sends silence"
+     *  from "window write path broken". */
     std::atomic<float> observedPeak { 0.0f };
 
-    /** SPSC fifo: audio writes, message drains in stopCapture. */
-    CaptureRingBuffer fifo;
+    /** Host-addressed PCM window: audio writes, message reads at finalize. */
+    CaptureRingBuffer window;
 
     /** Content owner for this segment. */
     std::unique_ptr<OpenTune::CaptureSegmentContent> content;
 
-    /** Compute end time (only valid for Edited segments). */
-    double endTime() const noexcept { return T_start.load(std::memory_order_acquire) + durationSeconds; }
+    /** Window offset of an absolute host sample inside this take's window. */
+    int windowOffset(int64_t hostSample) const noexcept
+    {
+        const int64_t capacity = static_cast<int64_t>(capacitySamples);
+        int64_t offset = (hostSample - anchorHostSample) % capacity;
+        if (offset < 0)
+            offset += capacity;
+        return static_cast<int>(offset);
+    }
 
     /** Test if host_t is in [T_start, T_start + duration). UI/display path only. */
     bool containsTime(double host_t) const noexcept
@@ -151,25 +212,16 @@ struct CaptureSegment
         const double start = T_start.load(std::memory_order_acquire);
         return host_t >= start && host_t < start + durationSeconds;
     }
-
-    /** Test if an absolute host sample falls within this segment's captured range.
-     *  Audio thread uses this for playback hit detection — no seconds conversion. */
-    bool containsAbsoluteSample(int64_t sample) const noexcept
-    {
-        const int64_t start = hostStartSample.load(std::memory_order_acquire);
-        const int64_t count = hostSampleCount.load(std::memory_order_acquire);
-        return count > 0 && sample >= start && sample < start + count;
-    }
 };
 
 /**
- * Lightweight read-only view of segments published to the audio thread.
- * Pointers borrow the lifetime of CaptureSegment objects in mutableSegments_.
+ * Read-only view of segments published to the audio thread.
+ * The view owns the segment references; audio code only uses the raw pointers.
  */
 struct SegmentsView
 {
     std::vector<CaptureSegment*> snapshot;
-    std::vector<HostSampleRange> coveredRanges;
+    std::vector<std::shared_ptr<CaptureSegment>> owners;
 };
 
 }  // namespace OpenTune::Capture

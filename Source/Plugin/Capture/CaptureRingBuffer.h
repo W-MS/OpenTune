@@ -4,22 +4,22 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_core/juce_core.h>
 
-#include <atomic>
-
 namespace OpenTune::Capture {
 
 /**
- * Single-producer, single-consumer FIFO of stereo float audio.
+ * Host-addressed PCM window for one take.
  *
- * Producer: audio thread (CaptureSession::processBlock).
- *   - write(srcChannels, numSamples) is noexcept and never allocates.
- *   - Returns the number of samples actually accepted (may be less when full).
+ * Writes come from the audio thread (CaptureSession::processBlock):
+ *   - writeAt() is noexcept, never allocates, never locks.
+ *   - The caller supplies the window offset; an offset near the end is split
+ *     into two contiguous copies (tail, then head).
  *
- * Consumer: message thread (CaptureSession::stopCapture).
- *   - drainAll(out) reads everything and resets the FIFO.
+ * Reads come from the message thread (CaptureSession::finalizePendingCapture)
+ * at the same window addresses, via readRange(), which copies a host-addressed
+ * range into an output buffer. Both sides only touch storage pre-allocated by
+ * reserve().
  *
- * Capacity is fixed by reserve(); the underlying juce::AudioBuffer is
- * pre-allocated, so audio thread writes are pure copy + atomic index update.
+ * The window stores PCM only; validity is expressed by the take's span list.
  */
 class CaptureRingBuffer
 {
@@ -34,28 +34,20 @@ public:
 
     int getCapacitySamples() const noexcept { return capacitySamples_; }
     int getNumChannels() const noexcept { return numChannels_; }
-    int getTotalWrittenSamples() const noexcept { return totalWritten_.load(std::memory_order_acquire); }
 
-    /**
-     * Audio-thread-safe write. Returns number of samples accepted.
-     * Never blocks, never allocates.
-     */
-    int write(const float* const* srcChannels, int numSourceChannels, int numSamples) noexcept;
+    /** Audio-thread-safe window write at 'windowOffset', wrapping at the end. */
+    void writeAt(int windowOffset, const float* const* srcChannels, int numSourceChannels,
+                 int numSamples) noexcept;
 
-    /**
-     * Message-thread drain: copies all written samples into 'out' and
-     * resets the FIFO read/write pointers. Returns number of samples drained.
-     * 'out' must already be sized to at least getTotalWrittenSamples().
-     */
-    int drainAll(juce::AudioBuffer<float>& out);
+    /** Message-thread read of 'numSamples' starting at 'windowOffset' into
+     *  dest[destOffset...]. */
+    void readRange(int windowOffset, juce::AudioBuffer<float>& dest, int destOffset,
+                   int numSamples) const noexcept;
 
 private:
     int numChannels_ = 0;
     int capacitySamples_ = 0;
     juce::AudioBuffer<float> buffer_;
-    juce::AbstractFifo fifo_ { 1 };  // sentinel size, replaced in reserve()
-    std::atomic<int> totalWritten_ { 0 };
 };
 
 }  // namespace OpenTune::Capture
-

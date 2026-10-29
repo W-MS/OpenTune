@@ -58,14 +58,33 @@ void CaptureSegmentContent::releaseRetiredContent(ContentKey key)
         captureRetired_.end());
 }
 
+void CaptureSegmentContent::applyContentState(ContentState state)
+{
+    content_ = std::move(state);
+    content_.contentRevision = 1;
+    content_.audioRevision = content_.audioBuffer ? 1 : 0;
+    content_.notesRevision = 1;
+    content_.pitchRevision = content_.analysis.pitchCurve ? 1 : 0;
+    content_.timeGridRevision = 1;
+    content_.analysis.analysisRevision = content_.analysis.pitchCurve ? 1 : 0;
+}
+
 void CaptureSegmentContent::applyAudioBuffer(const juce::AudioBuffer<float>& buffer, double sampleRate)
 {
-    const double durationSeconds = static_cast<double>(buffer.getNumSamples()) / sampleRate;
-
     auto bufferCopy = std::make_shared<juce::AudioBuffer<float>>();
     bufferCopy->makeCopyOf(buffer);
+    applyAudioBuffer(std::shared_ptr<const juce::AudioBuffer<float>>(std::move(bufferCopy)), sampleRate);
+}
 
-    content_.audioBuffer = std::move(bufferCopy);
+void CaptureSegmentContent::applyAudioBuffer(std::shared_ptr<const juce::AudioBuffer<float>> buffer,
+                                             double sampleRate)
+{
+    if (buffer == nullptr)
+        return;
+
+    const double durationSeconds = static_cast<double>(buffer->getNumSamples()) / sampleRate;
+
+    content_.audioBuffer = std::move(buffer);
     content_.sampleRate = sampleRate;
     ++content_.audioRevision;
 

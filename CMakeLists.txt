@@ -778,6 +778,8 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Utils/SilentGapDetector.cpp
         Source/Utils/SilentGapDetector.h
         Source/Utils/TimeCoordinate.h
+        Source/Utils/CaptureContentSlice.cpp
+        Source/Utils/CaptureContentSlice.h
 
         # Content Layer (shared contracts only; Standalone/Capture domains are
         # attached to exactly one SharedCode target below)
@@ -930,10 +932,7 @@ endif()
 set(OPENTUNE_CAPTURE_SOURCES
     Source/Plugin/Capture/CaptureRingBuffer.cpp
     Source/Plugin/Capture/CaptureRingBuffer.h
-    Source/Plugin/Capture/CaptureSegment.cpp
     Source/Plugin/Capture/CaptureSegment.h
-    Source/Plugin/Capture/CaptureCompactor.cpp
-    Source/Plugin/Capture/CaptureCompactor.h
     Source/Plugin/Capture/CaptureSession.cpp
     Source/Plugin/Capture/CaptureSession.h
     Source/Plugin/Capture/CapturePersistence.cpp

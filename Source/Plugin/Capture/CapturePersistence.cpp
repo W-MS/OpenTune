@@ -18,7 +18,8 @@
 namespace OpenTune::Capture {
 
 namespace {
-    // CAPz v13: per-segment fixed bytes + embedded PCM audio + unified VolumeEnvelope + erased F0 ranges.
+    // CAPz v14: per-segment fixed bytes + embedded PCM audio + unified VolumeEnvelope
+    // + erased F0 ranges + correction-segment baseF0Data.
     // Audio travels with CaptureSegmentContent.
     constexpr uint32_t kCaptureMagic    = 0x4341507A;  // 'CAPz' little-endian
     constexpr uint32_t kCaptureEndMagic = 0x78434150;  // 'xCAP' little-endian
@@ -58,6 +59,7 @@ namespace {
             stream.writeInt(segment.startFrame);
             stream.writeInt(segment.endFrame);
             writeFloatVector(stream, segment.f0Data);
+            writeFloatVector(stream, segment.baseF0Data);
             stream.writeInt(static_cast<int>(segment.source));
             stream.writeFloat(segment.parameterSnapshot.retuneSpeed);
             stream.writeFloat(segment.parameterSnapshot.pitchDriftScale);
@@ -74,7 +76,8 @@ namespace {
 
     std::shared_ptr<PitchCurve> readPitchCurve(juce::MemoryInputStream& stream,
                                                bool hasPitchDriftScale,
-                                               bool hasErasedRanges)
+                                               bool hasErasedRanges,
+                                               bool hasBaseF0Data)
     {
         if (stream.readInt() == 0)
             return nullptr;
@@ -93,6 +96,8 @@ namespace {
             segment.startFrame = stream.readInt();
             segment.endFrame = stream.readInt();
             segment.f0Data = readFloatVector(stream);
+            if (hasBaseF0Data)
+                segment.baseF0Data = readFloatVector(stream);
             segment.source = static_cast<PitchCorrectionSegment::Source>(stream.readInt());
             segment.parameterSnapshot.retuneSpeed = stream.readFloat();
             if (hasPitchDriftScale)
@@ -126,7 +131,7 @@ juce::MemoryBlock CapturePersistence::serialize(const CaptureSession& session)
     {
         std::lock_guard<std::mutex> lock(session.mutableMutex_);
         for (const auto& seg : session.mutableSegments_) {
-            const auto s = seg->state.load(std::memory_order_acquire);
+            const auto s = seg->getState();
             if (s == SegmentState::Capturing)
                 continue;
             juce::ValueTree segNode("Segment");
@@ -156,7 +161,7 @@ juce::MemoryBlock CapturePersistence::serialize(const CaptureSession& session)
     {
         std::lock_guard<std::mutex> lock(session.mutableMutex_);
         for (const auto& seg : session.mutableSegments_) {
-            const auto s = seg->state.load(std::memory_order_acquire);
+            const auto s = seg->getState();
             if (s == SegmentState::Capturing)
                 continue;
             const auto snap = seg->content->snapshotContent();
@@ -268,7 +273,7 @@ bool CapturePersistence::deserialize(CaptureSession& session, const juce::Memory
         return false;
     }
     const int fileVersion = stream.readInt();
-    if (fileVersion != 12 && fileVersion != CapturePersistence::kArchiveVersion)
+    if (fileVersion < 12 || fileVersion > CapturePersistence::kArchiveVersion)
         return false;
 
     // ── 1. Read metadata XML and parse ValueTree ────────────────────────
@@ -351,7 +356,8 @@ bool CapturePersistence::deserialize(CaptureSession& session, const juce::Memory
         p.detectedKey.confidence = stream.readFloat();
         p.detectedKey.origin = static_cast<Origin>(stream.readInt());
         p.pitchCurve = readPitchCurve(stream, /*hasPitchDriftScale=*/true,
-                                      /*hasErasedRanges=*/fileVersion >= 13);
+                                      /*hasErasedRanges=*/fileVersion >= 13,
+                                      /*hasBaseF0Data=*/fileVersion >= 14);
 
         const int noteCount = stream.readInt();
         if (noteCount < 0)
@@ -439,32 +445,12 @@ bool CapturePersistence::deserialize(CaptureSession& session, const juce::Memory
         return false;
     }
 
-    // Replace semantics: park the current segments for grace-period reclaim
-    // (published views still borrow them), then rebuild the set from the archive.
-    // A key reused by the archive suppresses the retire callback: the restored
-    // segment republishes the same CRS cache, and the stale owner's delayed
-    // retire would otherwise delete it after its grace window.
-    std::vector<ContentKey> restoredKeys;
-    restoredKeys.reserve(persisted.size());
-    for (const auto& p : persisted)
-        restoredKeys.push_back(ContentKey{DomainKind::RegularVST3Capture, p.id, 0});
-
+    // Replace semantics: old segments are removed from mutableSegments_ and remain
+    // owned by the previous published view until all audio readers leave. A key
+    // reused by the archive appears in the new view's key set, so it is never
+    // queued for retire — the restored segment republishes the same CRS cache.
     {
         std::lock_guard<std::mutex> lock(session.mutableMutex_);
-        for (auto& entry : session.pendingReclaim_)
-        {
-            if (entry.segment != nullptr
-                && std::find(restoredKeys.begin(), restoredKeys.end(), entry.segment->contentKey) != restoredKeys.end())
-            {
-                entry.retireOnDestroy = false;
-            }
-        }
-
-        for (auto& seg : session.mutableSegments_) {
-            const bool keyReusedByArchive = std::find(restoredKeys.begin(), restoredKeys.end(),
-                                                      seg->contentKey) != restoredKeys.end();
-            session.queueForReclaimLocked(std::move(seg), /*retireOnDestroy=*/!keyReusedByArchive);
-        }
         session.mutableSegments_.clear();
         session.activeDisplaySegmentId_ = 0;
     }
@@ -473,12 +459,11 @@ bool CapturePersistence::deserialize(CaptureSession& session, const juce::Memory
     uint64_t maxIdSeen = 0;
     std::vector<ContentKey> keysToPublish;
     for (auto& p : persisted) {
-        auto seg = std::make_unique<CaptureSegment>();
+        auto seg = std::make_shared<CaptureSegment>();
         seg->contentKey = ContentKey{DomainKind::RegularVST3Capture, p.id, 0};
         seg->creationOrder = p.creationOrder;
         seg->captureSampleRate = p.captureSampleRate;
         seg->captureChannels = p.captureChannels;
-        seg->anchored.store(true, std::memory_order_release);
         // v12+: restore authoritative absolute sample range directly from persisted values.
         seg->hostStartSample.store(p.hostStartSample, std::memory_order_release);
         seg->hostSampleCount.store(p.hostSampleCount, std::memory_order_release);
@@ -519,7 +504,7 @@ bool CapturePersistence::deserialize(CaptureSession& session, const juce::Memory
         // Preserve Failed state: do not promote to Edited even if F0 is Ready.
         const auto restoredState = (ready && p.segmentState != SegmentState::Failed)
             ? SegmentState::Edited : p.segmentState;
-        seg->state.store(restoredState, std::memory_order_release);
+        seg->setState(restoredState);
         const auto restoredKey = seg->contentKey;
 
         if (p.creationOrder > maxIdSeen)

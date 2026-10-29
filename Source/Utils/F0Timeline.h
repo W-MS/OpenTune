@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <optional>
 #include <utility>
 #include <cassert>
 
@@ -83,5 +84,28 @@ private:
     double secondsPerFrame_ = 1.0;
     int endFrameExclusive_ = 0;
 };
+
+// seconds → frame 区间换算（hop/sampleRate/framcount 直接给定）。
+inline std::optional<F0FrameRange> f0FrameRangeForSeconds(
+    int hopSize,
+    double sampleRate,
+    int frameCount,
+    double startSeconds,
+    double endSeconds)
+{
+    if (endSeconds <= startSeconds
+        || hopSize <= 0
+        || sampleRate <= 0.0
+        || frameCount <= 0) {
+        return std::nullopt;
+    }
+
+    const F0Timeline timeline(hopSize, sampleRate, frameCount);
+    const double timelineEndSeconds = timeline.timeAtFrame(frameCount);
+    if (endSeconds <= 0.0 || startSeconds >= timelineEndSeconds)
+        return std::nullopt;
+
+    return timeline.rangeForTimes(startSeconds, endSeconds);
+}
 
 } // namespace OpenTune

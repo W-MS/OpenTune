@@ -130,7 +130,6 @@ private:
 enum class RecordButtonState
 {
     Idle = 0,
-    Armed,
     Capturing,
     Processing
 };

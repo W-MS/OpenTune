@@ -505,8 +505,6 @@ void OpenTuneAudioProcessorEditor::timerCallback()
             transportBar_.setRecordButtonState(RecordButtonState::Capturing);
         else if (captureState == SessionState::HasProcessing)
             transportBar_.setRecordButtonState(RecordButtonState::Processing);
-        else if (session->isScanArmed())
-            transportBar_.setRecordButtonState(RecordButtonState::Armed);
         else
             transportBar_.setRecordButtonState(RecordButtonState::Idle);
     }
@@ -1434,13 +1432,14 @@ void OpenTuneAudioProcessorEditor::recordRequested()
     if (auto* session = processorRef_.getCaptureSession()) {
         AppLogger::log("VST3 recordRequested mode=regular-vst3 processor="
             + juce::String::toHexString(reinterpret_cast<uintptr_t>(&processorRef_)));
-        if (session->isScanArmed()) {
-            session->setScanArmed(false);
-            AppLogger::log("VST3 Capture: scan disarmed");
-        } else {
-            session->setScanArmed(true);
-            session->updateTransportScan();
-            AppLogger::log("VST3 Capture: scan armed");
+
+        // 录音语义：已存在 Capturing 段时本次请求停止录音；否则创建一个新 take。
+        using OpenTune::Capture::SessionState;
+        if (session->getGlobalState() == SessionState::HasCapturing) {
+            session->stopCapture();
+            AppLogger::log("VST3 Capture: take stopped");
+        } else if (session->armNewCapture()) {
+            AppLogger::log("VST3 Capture: take armed");
         }
         return;
     }

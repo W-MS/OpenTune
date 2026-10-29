@@ -14,6 +14,7 @@
 #include <string>
 #include <mutex>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace OpenTune::Capture {
@@ -41,13 +42,11 @@ struct SegmentInfo
  * Audio-thread-callable: replace a sub-range of buffer with rendered audio
  * from the given segment. Implementation:
  *   - clear [destStart, destStart+numSamples)
- *   - call contentRenderService->getPlaybackReadSource(ContentKey{RegularVST3Capture, segmentId, 0}, ...)
+ *   - call contentRenderService->getPlaybackReadSource(segment content key, ...)
  *
  * readStartSample is the absolute relative sample offset into the segment's
  * rendered content (in targetSampleRate units). CaptureSession computes the
  * block/segment overlap and passes only the intersecting sub-range.
- * Uses segment ContentKey directly.
- * Captures a small (one-pointer) lambda; no heap allocation expected when called.
  */
 using ReplaceWithRenderedFn = std::function<void(juce::AudioBuffer<float>& buffer,
                                                   int destStart,
@@ -89,15 +88,14 @@ struct ProcessorBindings
 /**
  * Capture session orchestrator.
  *
- * Created once per VST3 plugin instance. Implements Melodyne Transfer-style
- * non-ARA capture workflow: dry pass-through by default, record on demand,
- * replay rendered audio within recorded segments' time ranges.
+ * Created once per VST3 plugin instance. Recording is explicit: the plugin record
+ * key starts a take, and the same key (or host transport stop) ends it.
  *
  * Thread model:
  *   - Audio thread calls processBlock() noexcept; never allocates, never locks.
  *   - Message thread calls everything else.
- *   - Communication via std::atomic<shared_ptr<const SegmentsView>> publish-subscribe.
- *   - View readers are counted so reclamation waits for old raw-pointer views to exit.
+ *   - Communication via an atomically published SegmentsView. Audio readers are
+ *     counted so retired views are destroyed only after the audio thread leaves.
  */
 class CapturePersistence;  // friend for serialize/deserialize internal access
 
@@ -126,43 +124,29 @@ public:
     void prepareToPlay(double sampleRate, int maxBlockSize, int hostInputChannels);
     void releaseResources();
 
-    /** Audio-thread / GUI-thread read of the current capture channel count. */
-    int getCaptureChannels() const noexcept { return captureChannels_.load(std::memory_order_acquire); }
-
     // ─── User actions (message thread) ─────────────────────────────────────
-    /** Start a new capture. Returns false if a Capturing or Pending segment already exists. */
+    /** Start a new take. Returns false if a Capturing or Pending segment already exists. */
     bool armNewCapture();
 
-    /** Stop the active capture (no-op if none Capturing). */
+    /** End the active take (no-op if none Capturing). Finalize happens in tick(). */
     void stopCapture();
-
-    /** Playback of time that has never been scanned is captured while this is on.
-     *  Turning it off ends the current take. Defaults to on after the plugin loads. */
-    void setScanArmed(bool armed);
-    bool isScanArmed() const noexcept { return scanArmed_.load(std::memory_order_acquire); }
-
-    /** Message thread, before tick(). Arms or stops from the last host position. */
-    void updateTransportScan();
 
     // ─── Audio thread ──────────────────────────────────────────────────────
     /**
-     * Process one audio block. Behavior depends on current segments:
-     *   - If any Edited segment covers hostAbsoluteSample → replace overlapping sub-range with rendered audio.
-     *   - Else                                           → leave buffer untouched (dry pass-through).
-     *   - If a Capturing segment exists and isPlaying → write dry copy to its fifo.
+     * Process one audio block.
+     *   - If any Edited segment covers hostAbsoluteSample → replace overlapping sub-range.
+     *   - If a Capturing segment exists and isPlaying → write the block into its host window.
      *   - hostAbsoluteSample is the sole source of truth for audio positioning.
-     *   - isPlaying is the host's authoritative transport state.
-     *   - hostAbsoluteSample < 0 → early return (both capture and playback skipped).
+     *   - hostAbsoluteSample < 0 → early return (both replacement and capture skipped).
      */
     void processBlock(juce::AudioBuffer<float>& buffer,
                       int64_t hostAbsoluteSample,
                       double hostSampleRate,
                       bool isPlaying) noexcept;
 
-    /** Periodic message-thread tick (~30 Hz from the processor timer). Promotes Pending -> Processing
-     *  after capture drain, and Processing -> Edited when CaptureSegmentContent owns usable
-     *  OriginalF0 data (curve + Ready). Failed segments (F0 analysis or render failure) are not
-     *  promoted by tick. */
+    /** Periodic message-thread tick (~30 Hz from the processor timer). Ends takes on host
+     *  stop or window exhaustion, finalizes Pending captures, promotes Processing -> Edited
+     *  when usable OriginalF0 exists, and reclaims retired segments. */
     void tick();
 
     // ─── Notification injection (message thread) ───────────────────────────
@@ -193,12 +177,12 @@ public:
     bool applyDetectedKey(ContentKey segmentContentKey, const DetectedKey& detectedKey);
     bool applyPitchShiftState(ContentKey segmentContentKey, const PitchShiftEditState& state);
 
-    // ─── Query (any thread) ────────────────────────────────────────────────
+    // ─── Query (message thread) ────────────────────────────────────────────
     SessionState getGlobalState() const noexcept;
-    double getCurrentlyCapturedSeconds() const noexcept;
-    size_t getTotalCapturedBytes() const noexcept;
 
-    /** Find segment by ContentKey. Returns nullptr if not found. Thread-safe. */
+    /** Find segment by ContentKey. Message thread only; the returned pointer's
+     *  lifetime is owned by the session and is valid until the segment is removed
+     *  from mutableSegments_. */
     CaptureSegment* findSegmentByContentKey(const ContentKey& key) const;
 
     /** GUI snapshot (message thread). */
@@ -225,12 +209,22 @@ public:
                                          std::shared_ptr<juce::AudioBuffer<float>> pcm,
                                          double sampleRate);
 
-    /** Test only: snapshot internal mutable segments (read-only). */
-    const std::vector<std::unique_ptr<CaptureSegment>>& testSegments() const { return mutableSegments_; }
+    /** Test only: inject a fully-formed segment with explicit ContentState and state. */
+    uint64_t testInjectSegment(OpenTune::ContentState state,
+                               SegmentState segmentState,
+                               double T_start,
+                               double durationSeconds,
+                               uint64_t segmentId,
+                               double sampleRate);
 
-    /** Test only: apply the per-sample numerical-safety pass (NaN/Inf → 0) used in
-     *  the audio thread. Lets unit tests verify numeric defense in isolation. */
-    static void applyNumericGuardForTest(juce::AudioBuffer<float>& buffer) noexcept;
+    /** Test only: snapshot internal mutable segments (read-only, message thread). */
+    const std::vector<std::shared_ptr<CaptureSegment>>& testSegments() const { return mutableSegments_; }
+
+    /** Test only: lock-protected (state, writerActive) snapshot for concurrency tests. */
+    std::vector<std::pair<SegmentState, bool>> testStateSnapshot() const;
+
+    /** Test only: number of view publications since construction. */
+    uint64_t testPublishedViewCount() const noexcept { return publishedViewCount_; }
 
     /** Test only: override the per-take span metadata capacity for the next armed
      *  takes (0 = production budget). Lets tests exercise span-budget exhaustion
@@ -241,22 +235,19 @@ public:
     }
 
 private:
-    /** Build a new immutable view from current mutableSegments_ and atomic-store it. */
+    /** Build a new immutable view from current mutableSegments_ and atomically
+     *  exchange it into publishedSegments_. mutableMutex_ must NOT be held; the
+     *  method locks it internally while constructing the new view. */
     void publishSegmentsView();
 
-    /**
-     * Park a removed segment until old published views have aged out. mutableMutex_ must be held.
-     * retireOnDestroy=false suppresses the retire callback for this entry: used by
-     * replace semantics when the restored archive reuses the segment's ContentKey,
-     * so the freshly published cache must not be removed by the stale owner's sweep.
-     */
-    void queueForReclaimLocked(std::unique_ptr<CaptureSegment> segment, bool retireOnDestroy = true);
-
-    /** Drain a Pending capture after the audio-thread grace window and submit it for rendering. */
+    /** Finalize a Pending capture: merge spans, read the host window, publish segments. */
     bool finalizePendingCapture(CaptureSegment& pending);
 
-    /** Compaction: remove older segments fully covered by 'newlyEdited'. */
-    void runCompaction(const CaptureSegment& newlyEdited);
+    /** Trim/split pre-existing segments overlapped by the new segment host ranges N.
+     *  newKeys are the keys published by this finalize; they are never trimmed.
+     *  Message thread only; called at the end of a successful finalizePendingCapture. */
+    void trimOverlappedSegments(const std::vector<std::pair<int64_t, int64_t>>& newRanges,
+                                const std::vector<ContentKey>& newKeys);
 
     /** Allocate the next monotonic id. */
     uint64_t nextId() noexcept;
@@ -269,43 +260,40 @@ private:
 
     // Mutable owners (message thread).
     mutable std::mutex mutableMutex_;  // guards mutableSegments_, activeDisplaySegmentId_ + idCounter_
-    std::vector<std::unique_ptr<CaptureSegment>> mutableSegments_;
+    std::vector<std::shared_ptr<CaptureSegment>> mutableSegments_;
     uint64_t activeDisplaySegmentId_ = 0;
     uint64_t idCounter_ = 0;
 
-    // Published view for audio thread (lock-free read).
-    // C++17 idiom matching project style (PitchCurve.cpp): plain shared_ptr field accessed
-    // via free std::atomic_load/store. C++20's std::atomic<std::shared_ptr<T>> would be
-    // cleaner but the project targets C++17.
-    std::shared_ptr<const SegmentsView> publishedSegments_;
+    // Published view for audio thread (lock-free read of raw pointers only).
+    // The audio thread never touches owners or shared_ptr refcounts.
+    std::atomic<const SegmentsView*> publishedSegments_ { nullptr };
 
-    struct ReclaimEntry
-    {
-        std::unique_ptr<CaptureSegment> segment;
-        int queuedTick = 0;
-        bool retireOnDestroy = true;
-    };
+    // Message-thread side of the publication lifecycle. currentView_ is the view
+    // currently published (keeps its owners alive); retiredViews_ holds views that
+    // were replaced but may still be read by the audio thread until readers hit 0.
+    std::unique_ptr<const SegmentsView> currentView_;
+    std::vector<std::unique_ptr<const SegmentsView>> retiredViews_;
 
-    // Reclaim sweep: removed segments remain owned until published-view readers exit.
-    std::vector<ReclaimEntry> pendingReclaim_;
-    std::atomic<int> tickCounter_ { 0 };
+    // Content keys removed from the published set but not yet retired with the
+    // processor. Keys reappearing in a later view are dropped from this list.
+    std::vector<ContentKey> pendingRetireKeys_;
+    std::vector<ContentKey> publishedKeys_;
+
     mutable std::atomic<int> activeSegmentReaders_ { 0 };
+    uint64_t publishedViewCount_ = 0;
 
     // Audio-thread scratch (allocated in prepareToPlay; resized only on message thread).
     juce::AudioBuffer<float> dryScratch_;
-    std::vector<HostSampleRange> captureCoverageScratch_;
 
     // Single source of truth for the capture channel layout. Set by prepareToPlay
     // from the host's declared input bus, snapshotted into each CaptureSegment at
     // arm time. Always 1 or 2 — see channel-layout-policy spec.
     std::atomic<int> captureChannels_ { 1 };
 
-    // Auto-scan is on as soon as the plugin is loaded. The record button toggles it.
-    std::atomic<bool> scanArmed_ { true };
     // Test-only span capacity override for armed takes (0 = production budget).
     std::atomic<int> testSpanCapacityOverride_ { 0 };
-    // Last host position published by the audio thread for updateTransportScan().
-    std::atomic<int64_t> lastHostSample_ { -1 };
+    // Last host transport playing flag published by the audio thread. tick() uses it
+    // to end a take that holds content once the host stops.
     std::atomic<bool> lastHostPlaying_ { false };
 };
 

@@ -27,6 +27,7 @@
 #include "Plugin/StandaloneProcessorStateCodec.h"
 #endif
 #include "Utils/TimeCoordinate.h"
+#include "Utils/CaptureContentSlice.h"
 #include "Utils/LocalizationManager.h"
 #include "Utils/PlacementFade.h"
 #include "Utils/LegacyNoteGenerator.h"
@@ -189,40 +190,6 @@ double contentDurationSeconds(const EditableContentSnapshot& snap)
     return 0.0;
 }
 
-std::optional<F0FrameRange> f0FrameRangeForSeconds(
-    int hopSize,
-    double sampleRate,
-    int frameCount,
-    double startSeconds,
-    double endSeconds)
-{
-    if (endSeconds <= startSeconds
-        || hopSize <= 0
-        || sampleRate <= 0.0
-        || frameCount <= 0) {
-        return std::nullopt;
-    }
-
-    const F0Timeline timeline(hopSize, sampleRate, frameCount);
-    const double timelineEndSeconds = timeline.timeAtFrame(frameCount);
-    if (endSeconds <= 0.0 || startSeconds >= timelineEndSeconds)
-        return std::nullopt;
-
-    return timeline.rangeForTimes(startSeconds, endSeconds);
-}
-
-std::optional<F0FrameRange> f0FrameRangeForSeconds(
-    const PitchCurveSnapshot& snapshot,
-    double startSeconds,
-    double endSeconds)
-{
-    return f0FrameRangeForSeconds(snapshot.getHopSize(),
-                                  snapshot.getSampleRate(),
-                                  static_cast<int>(snapshot.getOriginalF0().size()),
-                                  startSeconds,
-                                  endSeconds);
-}
-
 #if JucePlugin_Build_Standalone
 juce::String diagnosticControlCallToString(OpenTuneAudioProcessor::DiagnosticControlCall controlCall)
 {
@@ -301,114 +268,6 @@ std::vector<SilentGap> sliceSilentGaps(const std::vector<SilentGap>& silentGaps,
         slicedGaps.push_back(slicedGap);
     }
     return slicedGaps;
-}
-
-std::vector<Note> sliceNotesToLocalRange(const std::vector<Note>& notes,
-                                         double startSeconds,
-                                         double endSeconds)
-{
-    std::vector<Note> slicedNotes;
-    if (endSeconds <= startSeconds) {
-        return slicedNotes;
-    }
-
-    for (const auto& note : notes) {
-        const double overlapStart = std::max(note.startTime, startSeconds);
-        const double overlapEnd = std::min(note.endTime, endSeconds);
-        if (overlapEnd <= overlapStart) {
-            continue;
-        }
-
-        Note slicedNote = note;
-        slicedNote.startTime = overlapStart - startSeconds;
-        slicedNote.endTime = overlapEnd - startSeconds;
-        slicedNotes.push_back(slicedNote);
-    }
-
-    return normalizeStoredNotes(slicedNotes);
-}
-
-// frame index 版：调用方已持有精确 frame 区间时使用，避免 seconds 反算取整
-// 造成边界帧同时落入相邻两个半开区间。
-std::shared_ptr<PitchCurve> slicePitchCurveToFrameRange(
-    const std::shared_ptr<const PitchCurveSnapshot>& pitchCurve,
-    int startFrame,
-    int endFrameExclusive)
-{
-    if (pitchCurve == nullptr || endFrameExclusive <= startFrame) {
-        return nullptr;
-    }
-
-    const auto& snapshot = *pitchCurve;
-    const int hopSize = snapshot.getHopSize();
-    const double sampleRate = snapshot.getSampleRate();
-    if (hopSize <= 0 || sampleRate <= 0.0) {
-        return nullptr;
-    }
-
-    const auto& originalF0 = snapshot.getOriginalF0();
-    if (startFrame < 0 || endFrameExclusive > static_cast<int>(originalF0.size())) {
-        return nullptr;
-    }
-
-    auto slicedCurve = std::make_shared<PitchCurve>();
-    slicedCurve->setHopSize(hopSize);
-    slicedCurve->setSampleRate(sampleRate);
-
-    slicedCurve->setOriginalF0(std::vector<float>(originalF0.begin() + startFrame, originalF0.begin() + endFrameExclusive));
-
-    std::vector<F0FrameRange> slicedErasedRanges;
-    for (const auto& range : snapshot.getErasedRanges()) {
-        const int overlapStart = std::max(range.startFrame, startFrame);
-        const int overlapEnd = std::min(range.endFrameExclusive, endFrameExclusive);
-        if (overlapStart < overlapEnd)
-            slicedErasedRanges.push_back({overlapStart - startFrame, overlapEnd - startFrame});
-    }
-    if (!slicedErasedRanges.empty())
-        slicedCurve->replaceErasedRangesInRange(0, endFrameExclusive - startFrame, slicedErasedRanges);
-
-    const auto& originalEnergy = snapshot.getOriginalEnergy();
-    if (originalEnergy.size() >= static_cast<size_t>(endFrameExclusive)) {
-        slicedCurve->setOriginalEnergy(std::vector<float>(originalEnergy.begin() + startFrame, originalEnergy.begin() + endFrameExclusive));
-    }
-
-    std::vector<PitchCorrectionSegment> slicedSegments;
-    for (const auto& segment : snapshot.getCorrectionSegments()) {
-        const int overlapStart = std::max(segment.startFrame, startFrame);
-        const int overlapEnd = std::min(segment.endFrame, endFrameExclusive);
-        if (overlapEnd <= overlapStart) {
-            continue;
-        }
-
-        PitchCorrectionSegment slicedSegment = segment;
-        const int originalOffsetStart = overlapStart - segment.startFrame;
-        const int originalOffsetEnd = overlapEnd - segment.startFrame;
-        slicedSegment.startFrame = overlapStart - startFrame;
-        slicedSegment.endFrame = overlapEnd - startFrame;
-        slicedSegment.f0Data.assign(segment.f0Data.begin() + originalOffsetStart,
-                                    segment.f0Data.begin() + originalOffsetEnd);
-        slicedSegments.push_back(std::move(slicedSegment));
-    }
-    slicedCurve->replaceCorrectionSegments(slicedSegments);
-    return slicedCurve;
-}
-
-// seconds 版：按端点秒数求覆盖 frame range 后委托 frame index 版。
-std::shared_ptr<PitchCurve> slicePitchCurveToLocalRange(
-    const std::shared_ptr<const PitchCurveSnapshot>& pitchCurve,
-                                                        double startSeconds,
-                                                        double endSeconds)
-{
-    if (pitchCurve == nullptr || endSeconds <= startSeconds) {
-        return nullptr;
-    }
-
-    const auto frameRange = f0FrameRangeForSeconds(*pitchCurve, startSeconds, endSeconds);
-    if (!frameRange.has_value()) {
-        return nullptr;
-    }
-
-    return slicePitchCurveToFrameRange(pitchCurve, frameRange->startFrame, frameRange->endFrameExclusive);
 }
 
 bool detectedKeysMatch(const DetectedKey& lhs, const DetectedKey& rhs)
@@ -2561,14 +2420,16 @@ bool OpenTuneAudioProcessor::restoreStatePayload(const void* data, int sizeInByt
     AppLogger::log("StateRestore: host-plugin processor state begin sizeBytes=" + juce::String(sizeInBytes)
                    + " version=" + juce::String(outerState.sourceVersion));
 
-    // Capture tail policy: validate current CAPz before committing anything;
-    // released OTST v9/v10 payloads may embed an older CAPz archive, which is
-    // dropped per the explicit no-migration policy (settings still restored).
+    // Capture tail policy: validate every CAPz version the codec decodes before
+    // committing anything. Released OTST v9/v10 payloads may embed an older CAPz
+    // archive, which is dropped per the explicit no-migration policy (settings
+    // still restored).
     const bool hasCaptureTail = outerState.captureTail.getSize() > 0;
     bool discardCaptureTail = false;
     if (hasCaptureTail) {
         const int captureVersion = Capture::CapturePersistence::peekArchiveVersion(outerState.captureTail);
-        if (captureVersion == Capture::CapturePersistence::kArchiveVersion) {
+        if (captureVersion >= 12
+            && captureVersion <= Capture::CapturePersistence::kArchiveVersion) {
             if (!Capture::CapturePersistence::validate(outerState.captureTail)) {
                 AppLogger::error("StateRestore: CaptureSession payload rejected during validation");
                 return false;
@@ -3070,10 +2931,8 @@ void OpenTuneAudioProcessor::handleAsyncUpdate()
 #if !JucePlugin_Build_Standalone
 void OpenTuneAudioProcessor::timerCallback()
 {
-    if (auto* session = getCaptureSession()) {
-        session->updateTransportScan();
+    if (auto* session = getCaptureSession())
         session->tick();
-    }
 }
 #endif // !JucePlugin_Build_Standalone
 

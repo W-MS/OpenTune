@@ -31,20 +31,29 @@ class CaptureSession;
  *       [i32 detectedKeyScale]
  *       [f32 detectedKeyConfidence]
  *       [i32 detectedKeyOrigin]
- *       [pitch curve payload]
+ *       [pitch curve payload:
+ *           [i32 hopSize][f64 sampleRate][f32[] originalF0][f32[] originalEnergy]
+ *           [i32 segmentCount][per segment:
+ *               [i32 startFrame][i32 endFrame][f32[] f0Data]
+ *               [f32[] baseF0Data]   (v14+)
+ *               [i32 source][f32 retuneSpeed][f32 pitchDriftScale][f32 vibratoDepth][f32 vibratoRate]
+ *           ]
+ *           [i32 erasedRangeCount][per range: [i32 startFrame][i32 endFrameExclusive]]
+ *       ]
  *   ]
  *   [u32 CAPTURE_END_MAGIC = 'xCAP' (0x78434150)]
  *
  * CaptureSegmentContent is the persisted content owner. ContentRenderService is
  * republished from the restored owner snapshot; it is not persistence state.
  *
- * v13 adds erased F0 ranges to the pitch curve payload. v12 remains readable;
- * v12 curves have no erased ranges.
+ * v13 adds erased F0 ranges to the pitch curve payload. v14 adds each correction
+ * segment's baseF0Data. v12/v13 archives remain readable; their baseF0Data stays
+ * empty.
  */
 class CapturePersistence
 {
 public:
-    static constexpr int kArchiveVersion = 13;
+    static constexpr int kArchiveVersion = 14;
 
     static juce::MemoryBlock serialize(const CaptureSession& session);
     static bool deserialize(CaptureSession& session, const juce::MemoryBlock& block);

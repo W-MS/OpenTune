@@ -45,16 +45,11 @@ bool testReplaceRetireSemantics()
     bindings.retireSegment = [&retired](ContentKey key) { retired.push_back(key); };
     CaptureSession restored(std::move(bindings));
 
-    // Segment 7 covers segment 5, parking key 5 before restore. The archive
-    // then reuses key 5 and replaces key 7.
     restored.testInjectEditedSegment(0.0, 1.0, 5, makeAudio(256), 44100.0);
     restored.testInjectProcessingSegment(0.0, 2.0, 7, makeAudio(512), 44100.0);
-    restored.onRenderComplete(ContentKey{DomainKind::RegularVST3Capture, 7, 0});
 
-    const auto compactedSegments = restored.listSegments();
-    if (compactedSegments.size() != 1 || compactedSegments.front().contentKey.objectId != 7)
-        return false;
-
+    // The restored archive reuses key 5 and replaces key 7. The stale owner of key 5
+    // must not retire the cache the restored segment republishes.
     if (!restored.deserialize(archive))
         return false;
 

@@ -24,8 +24,13 @@ public:
     ContentState& content() { return content_; }
     const ContentState& content() const { return content_; }
 
+    /// 整体替换内容（sliceContentState 产物），并按"新 owner"重新生成 revision。
+    void applyContentState(ContentState state);
+
     // Apply methods for Capture segment content
     void applyAudioBuffer(const juce::AudioBuffer<float>& buffer, double sampleRate);
+    // Takes ownership of an already-built buffer (finalize reads the host window directly).
+    void applyAudioBuffer(std::shared_ptr<const juce::AudioBuffer<float>> buffer, double sampleRate);
     void applyOriginalF0State(OriginalF0State state);
     void applyOriginalF0FailureReason(std::string reason);
     void applyDetectedKey(const DetectedKey& key);
