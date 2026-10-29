@@ -81,7 +81,6 @@ Python/
 knowledge/
 
 # Local-only project materials
-/README.md
 /copyright-registration/
 
 # Imported legacy src tree, including its nested Git history and .git.7z archive
