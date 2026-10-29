@@ -525,41 +525,15 @@ void ArrangementViewComponent::removeListener(Listener* listener)
 void ArrangementViewComponent::commitViewportRequest(TimelineViewportRequest req)
 {
     const auto resolved = TimelineViewportPolicy::resolve(req);
-    if (req.kind == TimelineViewportRequest::Kind::Zoom)
-    {
-        if (resolved.pixelsPerSecond == camera_.pixelsPerSecond)
-            return;
-        stopTimer();
-        playbackCoveragePreparationActive_ = false;
-        transitionActive_ = false;
-        requestTransition_ = false;
-        camera_ = resolved;
-        zoomPreviewActive_ = true;
-        const double duration = static_cast<double>(TimelineCompositeCache::kTileWidthPx) / camera_.pixelsPerSecond;
-        const double end = camera_.visibleStartSeconds + getVisibleViewportWidth() / camera_.pixelsPerSecond;
-        tileCoverageStartSeconds_ = std::max(0.0, std::floor(camera_.visibleStartSeconds / duration) * duration);
-        tileCoverageEndSeconds_ = std::ceil(end / duration) * duration;
-        zoomFirstTile_ = std::max<int64_t>(0, static_cast<int64_t>(std::floor(tileCoverageStartSeconds_ / duration)));
-        zoomLastTile_ = static_cast<int64_t>(std::floor((tileCoverageEndSeconds_ - 1e-9) / duration));
-        const int height = getContentViewportBounds().getHeight();
-        zoomFirstRow_ = verticalScrollOffset_ / TimelineCompositeCache::kWorldTileHeight;
-        zoomLastRow_ = (verticalScrollOffset_ + height - 1) / TimelineCompositeCache::kWorldTileHeight;
-        zoomNextTile_ = zoomFirstTile_;
-        zoomNextRow_ = zoomFirstRow_;
-        zoomBgSignature_ = makeBackgroundSignature();
-        zoomFgSignature_ = makeForegroundSignature();
-        startTimer(kZoomPreviewDelayMs);
-        updateScrollBars();
-        repaint();
+    if (req.kind == TimelineViewportRequest::Kind::Zoom
+        && resolved.pixelsPerSecond == camera_.pixelsPerSecond)
         return;
-    }
-
     activateTimelineCamera(resolved);
 }
 
 void ArrangementViewComponent::activateTimelineCamera(TimelineViewportCamera camera)
 {
-    cancelZoomPreview();
+    cancelTilePreparation();
     transitionActive_ = false;
     requestTransition_ = false;
     camera_ = camera;
@@ -570,16 +544,15 @@ void ArrangementViewComponent::activateTimelineCamera(TimelineViewportCamera cam
     repaint();
 }
 
-void ArrangementViewComponent::cancelZoomPreview() noexcept
+void ArrangementViewComponent::cancelTilePreparation() noexcept
 {
     stopTimer();
-    zoomPreviewActive_ = false;
     playbackCoveragePreparationActive_ = false;
 }
 
 void ArrangementViewComponent::timerCallback()
 {
-    if (!zoomPreviewActive_ && playbackCoveragePreparationActive_) {
+    if (playbackCoveragePreparationActive_) {
         const auto bg = makeBackgroundSignature();
         const auto fg = makeForegroundSignature();
         if (!(bg == playbackPrepareBgSignature_) || !(fg == playbackPrepareFgSignature_)) {
@@ -627,89 +600,8 @@ void ArrangementViewComponent::timerCallback()
             playbackPrepareNextRow_ = playbackPrepareFirstRow_;
             ++playbackPrepareNextTile_;
         }
-        startTimer(kZoomPreviewFrameMs);
+        startTimer(kTilePreparationFrameMs);
         return;
-    }
-    if (!zoomPreviewActive_) return;
-    const double tileDuration = static_cast<double>(TimelineCompositeCache::kTileWidthPx)
-        / camera_.pixelsPerSecond;
-    const double visibleEnd = camera_.visibleStartSeconds
-        + getVisibleViewportWidth() / camera_.pixelsPerSecond;
-    const int64_t firstTile = std::max<int64_t>(0,
-        static_cast<int64_t>(std::floor(camera_.visibleStartSeconds / tileDuration)));
-    const int64_t lastTile = static_cast<int64_t>(std::floor(
-        (visibleEnd - 1e-9) / tileDuration));
-    const int height = getContentViewportBounds().getHeight();
-    const int firstRow = verticalScrollOffset_ / TimelineCompositeCache::kWorldTileHeight;
-    const int lastRow = (verticalScrollOffset_ + height - 1)
-        / TimelineCompositeCache::kWorldTileHeight;
-    if (firstTile != zoomFirstTile_ || lastTile != zoomLastTile_
-        || firstRow != zoomFirstRow_ || lastRow != zoomLastRow_) {
-        zoomFirstTile_ = firstTile;
-        zoomLastTile_ = lastTile;
-        zoomFirstRow_ = firstRow;
-        zoomLastRow_ = lastRow;
-        zoomNextTile_ = zoomFirstTile_;
-        zoomNextRow_ = zoomFirstRow_;
-    }
-    const auto bg = makeBackgroundSignature();
-    const auto fg = makeForegroundSignature();
-    if (!(bg == zoomBgSignature_) || !(fg == zoomFgSignature_)) {
-        zoomBgSignature_ = bg;
-        zoomFgSignature_ = fg;
-        zoomNextTile_ = zoomFirstTile_;
-        zoomNextRow_ = zoomFirstRow_;
-    }
-    compositeCache_.prepareTile(zoomBgSignature_, zoomFgSignature_, {zoomNextTile_, zoomNextRow_},
-        [this](juce::Graphics& g, juce::Rectangle<int> b, TimelineCompositeCache::TileKey k) { buildCompositeBackground(g, b, k); },
-        [this](juce::Graphics& g, juce::Rectangle<int> b, TimelineCompositeCache::TileKey k) { buildCompositeForeground(g, b, k); });
-    if (++zoomNextRow_ > zoomLastRow_) {
-        zoomNextRow_ = zoomFirstRow_;
-        ++zoomNextTile_;
-    }
-    if (zoomNextTile_ <= zoomLastTile_) {
-        startTimer(kZoomPreviewFrameMs);
-        return;
-    }
-    if (!(makeBackgroundSignature() == zoomBgSignature_)
-        || !(makeForegroundSignature() == zoomFgSignature_)) {
-        startTimer(kZoomPreviewFrameMs);
-        return;
-    }
-    const auto first = zoomFirstTile_;
-    const auto last = zoomLastTile_;
-    surfaceRebuildFromReadyTiles(first, last);
-    const bool playingAfterZoom = playHeadState_.isPlaying.load(std::memory_order_relaxed);
-    if (!playingAfterZoom)
-        compositeCache_.prepare(zoomBgSignature_, zoomFgSignature_, first, last,
-            zoomFirstRow_, zoomLastRow_,
-            [this](juce::Graphics& g, juce::Rectangle<int> b, TimelineCompositeCache::TileKey k) { buildCompositeBackground(g, b, k); },
-            [this](juce::Graphics& g, juce::Rectangle<int> b, TimelineCompositeCache::TileKey k) { buildCompositeForeground(g, b, k); });
-    lastBgSignature_ = zoomBgSignature_;
-    lastFgSignature_ = zoomFgSignature_;
-    updateScrollBars();
-    repaint();
-    stopTimer();
-    zoomPreviewActive_ = false;
-    if (playingAfterZoom) {
-        const double pps = camera_.pixelsPerSecond;
-        const double playbackTileDuration = TimelineCompositeCache::kTileWidthPx / pps;
-        const double visibleDuration = getVisibleViewportWidth() / pps;
-        const double visibleStart = camera_.visibleStartSeconds;
-        const double playbackVisibleEnd = visibleStart + visibleDuration;
-        const double ahead = std::min(6.0 * visibleDuration, 16.0 * playbackTileDuration);
-        tileCoverageStartSeconds_ = std::max(0.0, std::floor((visibleStart - 2.0 * playbackTileDuration) / playbackTileDuration) * playbackTileDuration);
-        tileCoverageEndSeconds_ = std::ceil((playbackVisibleEnd + ahead) / playbackTileDuration) * playbackTileDuration;
-        playbackPrepareNextTile_ = std::max<int64_t>(0, static_cast<int64_t>(std::floor(tileCoverageStartSeconds_ / playbackTileDuration)));
-        playbackPrepareFirstTile_ = playbackPrepareNextTile_;
-        playbackPrepareLastTile_ = static_cast<int64_t>(std::floor((tileCoverageEndSeconds_ - 1e-9) / playbackTileDuration));
-        playbackPrepareFirstRow_ = zoomFirstRow_;
-        playbackPrepareLastRow_ = zoomLastRow_;
-        playbackPrepareNextRow_ = playbackPrepareFirstRow_;
-        playbackPrepareBgSignature_ = zoomBgSignature_;
-        playbackPrepareFgSignature_ = zoomFgSignature_;
-        playbackCoveragePreparationActive_ = true;
-        startTimer(kZoomPreviewFrameMs);
     }
 }
 
@@ -878,17 +770,14 @@ void ArrangementViewComponent::surfaceScrollAndFillExposed(int64_t newOriginPx, 
     surfaceOriginPx_ = newOriginPx;
 }
 
-void ArrangementViewComponent::rebuildTimelineCoverage(bool includeOverscan)
+void ArrangementViewComponent::rebuildTimelineCoverage()
 {
     const int contentViewportWidth = getVisibleViewportWidth();
     const double tileDuration = static_cast<double>(TimelineCompositeCache::kTileWidthPx) / camera_.pixelsPerSecond;
     const double visibleStart = camera_.visibleStartSeconds;
     const double visibleEnd = visibleStart + contentViewportWidth / camera_.pixelsPerSecond;
 
-    if (!includeOverscan) {
-        tileCoverageStartSeconds_ = std::max(0.0, visibleStart);
-        tileCoverageEndSeconds_ = visibleEnd;
-    } else if (playHeadState_.isPlaying.load(std::memory_order_relaxed)) {
+    if (playHeadState_.isPlaying.load(std::memory_order_relaxed)) {
         const double viewportDur = contentViewportWidth / camera_.pixelsPerSecond;
         constexpr int kMaxAheadTiles = 16;
         const double ahead = std::min(6.0 * viewportDur, kMaxAheadTiles * tileDuration);
@@ -901,7 +790,7 @@ void ArrangementViewComponent::rebuildTimelineCoverage(bool includeOverscan)
         tileCoverageEndSeconds_ = std::ceil((visibleEnd + tileDuration) / tileDuration) * tileDuration;
     }
 
-    prepareCoverageCompositeTiles(includeOverscan);
+    prepareCoverageCompositeTiles();
 
     const int64_t firstTimeTile = std::max<int64_t>(0,
         static_cast<int64_t>(std::floor(visibleStart / tileDuration)));
@@ -913,7 +802,7 @@ void ArrangementViewComponent::rebuildTimelineCoverage(bool includeOverscan)
 
 void ArrangementViewComponent::invalidateStableScene()
 {
-    cancelZoomPreview();
+    cancelTilePreparation();
     rebuildContentMetrics();
     updateScrollBars();
     rebuildTimelineCoverage();
@@ -923,7 +812,7 @@ void ArrangementViewComponent::invalidateStableScene()
 void ArrangementViewComponent::setTimelineDisplayMode(TimelineDisplayMode mode)
 {
     if (displayMode_ == mode) return;
-    cancelZoomPreview();
+    cancelTilePreparation();
     displayMode_ = mode;
     timeUnitToggleButton_.setButtonText(displayMode_ == TimelineDisplayMode::Time ? LOC(kTime) : "BPM");
     // Only background changed (grid + ruler), no metric rebuild needed
@@ -1030,7 +919,7 @@ TimelineViewportRequest ArrangementViewComponent::makeViewportRequest(
 
 void ArrangementViewComponent::setVerticalScrollOffset(int offset)
 {
-    cancelZoomPreview();
+    cancelTilePreparation();
     // 计算最大滚动偏移（可见轨道高度 + ruler高度 - 可见高度）
     const int totalContentHeight = rulerHeight_ + visibleTrackCount_ * processor_.getTrackHeight();
     const int visibleHeight = getHeight() - UIColors::scrollBarThickness;
@@ -1070,7 +959,7 @@ void ArrangementViewComponent::setVisibleTrackCount(int count)
 
 void ArrangementViewComponent::resized()
 {
-    cancelZoomPreview();
+    cancelTilePreparation();
     auto bounds = getLocalBounds();
     horizontalScrollBar_.setBounds(bounds.removeFromBottom(UIColors::scrollBarThickness));
     verticalScrollBar_.setBounds(bounds.removeFromRight(UIColors::scrollBarThickness));
@@ -1340,7 +1229,7 @@ void ArrangementViewComponent::buildCompositeForeground(
     paintHistoricalArrangementClips(g, clips, waveformMipmapCache_);
 }
 
-void ArrangementViewComponent::prepareCoverageCompositeTiles(bool includeOverscan)
+void ArrangementViewComponent::prepareCoverageCompositeTiles()
 {
     if (renderScale_ <= 0.0f) return;
 
@@ -1364,8 +1253,8 @@ void ArrangementViewComponent::prepareCoverageCompositeTiles(bool includeOversca
     const int requiredHeight = std::max(totalTrackHeight, static_cast<int>(visibleBottomY));
     const int totalRows = (requiredHeight + TimelineCompositeCache::kWorldTileHeight - 1)
         / TimelineCompositeCache::kWorldTileHeight;
-    const int effFirst = includeOverscan ? std::max(0, firstVertRow - 1) : firstVertRow;
-    const int effLast = includeOverscan ? std::min(totalRows - 1, lastVertRow + 1) : lastVertRow;
+    const int effFirst = std::max(0, firstVertRow - 1);
+    const int effLast = std::min(totalRows - 1, lastVertRow + 1);
 
     compositeCache_.prepare(bgSig, fgSig, firstTimeTile, lastTimeTile, effFirst, effLast,
         [this](juce::Graphics& g, juce::Rectangle<int> b, TimelineCompositeCache::TileKey k) {
@@ -1901,17 +1790,14 @@ void ArrangementViewComponent::paint(juce::Graphics& g)
         g.reduceClipRegion(axis);
         if (viewportSurface_.isValid()) {
             const int64_t cameraOrigin = static_cast<int64_t>(std::llround(camera_.visibleStartSeconds * camera_.pixelsPerSecond));
-            if ((zoomPreviewActive_ || surfacePps_ != camera_.pixelsPerSecond || surfaceOriginPx_ != cameraOrigin)
-                && surfacePps_ > 0.0 && renderScale_ > 0.0f) {
-                const double previewScale = camera_.pixelsPerSecond / surfacePps_;
+            if (surfaceOriginPx_ != cameraOrigin && surfacePps_ > 0.0 && renderScale_ > 0.0f) {
                 const double surfaceStartSeconds = static_cast<double>(surfaceOriginPx_) / surfacePps_;
-                const float previewX = static_cast<float>(axis.getX()
+                const float surfaceX = static_cast<float>(axis.getX()
                     + (surfaceStartSeconds - camera_.visibleStartSeconds) * camera_.pixelsPerSecond);
                 const float logicalWidth = static_cast<float>(viewportSurface_.getWidth()) / renderScale_;
                 const float logicalHeight = static_cast<float>(viewportSurface_.getHeight()) / renderScale_;
                 g.drawImage(viewportSurface_,
-                    juce::Rectangle<float>(previewX, static_cast<float>(axis.getY()),
-                        logicalWidth * static_cast<float>(previewScale), logicalHeight),
+                    juce::Rectangle<float>(surfaceX, static_cast<float>(axis.getY()), logicalWidth, logicalHeight),
                     juce::RectanglePlacement::stretchToFit, false);
             } else {
                 g.drawImage(viewportSurface_,
@@ -1941,7 +1827,7 @@ void ArrangementViewComponent::onHeartbeatTick()
 
     if (playingNow != lastObservedPlayHeadPlaying_) {
         if (playingNow) {
-            if (!zoomPreviewActive_ && !playbackCoveragePreparationActive_)
+            if (!playbackCoveragePreparationActive_)
                 preparePlaybackCoverage();
             // Stop→play edge: arm a one-shot transition so the viewport eases
             // from the current visible origin to the playhead-anchored target
@@ -1963,7 +1849,7 @@ void ArrangementViewComponent::onHeartbeatTick()
         const auto currentFgSig = makeForegroundSignature();
         const bool bgChanged = !(currentBgSig == lastBgSignature_);
         const bool fgChanged = !(currentFgSig == lastFgSignature_);
-        if (!zoomPreviewActive_ && !playbackCoveragePreparationActive_ && (bgChanged || fgChanged)) {
+        if (!playbackCoveragePreparationActive_ && (bgChanged || fgChanged)) {
             rebuildTimelineCoverage();
             repaint();
         }
@@ -2010,23 +1896,17 @@ void ArrangementViewComponent::onHeartbeatTick()
             waveformVisualRefreshPending_ = true;
         } else {
             waveformVisualRefreshPending_ = false;
-            if (zoomPreviewActive_) {
-                rebuildContentMetrics();
-                updateScrollBars();
-            } else invalidateStableScene();
+            invalidateStableScene();
         }
     }
 
     if (!playingNow && waveformVisualRefreshPending_) {
         waveformVisualRefreshPending_ = false;
-        if (zoomPreviewActive_) {
-            rebuildContentMetrics();
-            updateScrollBars();
-        } else invalidateStableScene();
+        invalidateStableScene();
     }
 
     // 播放中维护有界覆盖窗口（与PianoRoll一致）
-    if (playingNow && !zoomPreviewActive_) {
+    if (playingNow) {
         const int w = getVisibleViewportWidth();
         if (w > 0) {
             const double p = camera_.pixelsPerSecond;
@@ -2072,7 +1952,7 @@ void ArrangementViewComponent::onHeartbeatTick()
                         playbackPrepareNextRow_ = firstRow;
                     }
                 }
-                startTimer(kZoomPreviewFrameMs);
+                startTimer(kTilePreparationFrameMs);
             }
         }
     }
@@ -2141,12 +2021,6 @@ void ArrangementViewComponent::onScrollVBlankCallback(double timestampSec)
     const bool cameraRasterChanged = !viewportSurface_.isValid()
         || ppsChanged
         || oldOriginPx != newOriginPx;
-
-    if (zoomPreviewActive_) {
-        lastPlayheadRect_ = newPlayheadRect;
-        repaint(timeAxisRect());
-        return;
-    }
 
     if (cameraRasterChanged) {
         const double tileDuration = TimelineCompositeCache::kTileWidthPx / resolvedCamera.pixelsPerSecond;
