@@ -1,0 +1,6 @@
+/* The in-app Chinese table is simplified, so Traditional Chinese devices use the same line. */
+/* Class = "UILabel"; text = "OpenTune"; ObjectID = "Llb-01-ttl"; */
+"Llb-01-ttl.text" = "OpenTune";
+
+/* Class = "UILabel"; text = "Next-generation pitch correction editor"; ObjectID = "Llb-01-tag"; */
+"Llb-01-tag.text" = "新一代音高修正编辑器";

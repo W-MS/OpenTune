@@ -432,8 +432,15 @@ if(OPENTUNE_IOS)
     # iPad only, landscape only: the editor needs at least 900x500 points.
     # Files the user saves land in the app's Documents folder, which the
     # Files app shows as "On My iPad > OpenTune".
+    # App Store builds (scripts/makeXcodeProject.sh) set their own registered
+    # bundle ID and an increasing build number; the defaults match the desktop app.
+    set(OPENTUNE_IOS_BUNDLE_ID "com.daya.opentune" CACHE STRING "iPadOS bundle identifier")
+    set(OPENTUNE_IOS_BUILD_NUMBER "${PROJECT_VERSION}" CACHE STRING
+        "iPadOS CFBundleVersion; must increase with every App Store upload")
     juce_add_plugin(OpenTuneStandalone
         ${OPENTUNE_PLUGIN_COMMON_ARGS}
+        BUNDLE_ID "${OPENTUNE_IOS_BUNDLE_ID}"
+        BUILD_VERSION "${OPENTUNE_IOS_BUILD_NUMBER}"
         FORMATS Standalone
         IS_ARA_EFFECT FALSE
         TARGETED_DEVICE_FAMILY "2"
@@ -441,8 +448,11 @@ if(OPENTUNE_IOS)
         REQUIRES_FULL_SCREEN TRUE
         STATUS_BAR_HIDDEN TRUE
         FILE_SHARING_ENABLED TRUE
-        MICROPHONE_PERMISSION_ENABLED TRUE
-        MICROPHONE_PERMISSION_TEXT "OpenTune needs microphone access for real-time audio monitoring."
+        # Shown by iOS before main(). Labels are localized .strings, not drawn
+        # by the app, so they do not add to process startup.
+        LAUNCH_STORYBOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/LaunchScreen.storyboard"
+        # iPad edits imported files and plays them back. It does not record or
+        # monitor live input, so the binary must not declare NSMicrophoneUsageDescription.
         PLIST_TO_MERGE
         "<plist version=\"1.0\">
         <dict>
@@ -473,9 +483,34 @@ if(OPENTUNE_IOS)
             </array>
             <key>NSHumanReadableCopyright</key>
             <string>Copyright © 2024-2026 DAYA. All rights reserved.</string>
+            <key>ITSAppUsesNonExemptEncryption</key>
+            <false/>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>en</string>
+            <key>CFBundleLocalizations</key>
+            <array>
+                <string>en</string>
+                <string>zh-Hans</string>
+                <string>zh-Hant</string>
+                <string>ja</string>
+                <string>ru</string>
+                <string>es</string>
+            </array>
         </dict>
         </plist>"
     )
+
+    # LaunchLogo lives in its own catalog so it does not replace the app icon
+    # catalog JUCE generates. The per-language LaunchScreen.strings share one
+    # file name, so they are copied into <lang>.lproj by CopyIntoIosBundle
+    # rather than listed as Xcode resources (which would flatten and collide).
+    set(OPENTUNE_IOS_LAUNCH_LANGUAGES en zh-Hans zh-Hant ja ru es)
+    set(_opentune_launch_assets "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/Launch.xcassets")
+    target_sources(OpenTuneStandalone_Standalone PRIVATE "${_opentune_launch_assets}")
+    set_property(TARGET OpenTuneStandalone_Standalone APPEND PROPERTY RESOURCE
+        "${_opentune_launch_assets}")
+    set_target_properties(OpenTuneStandalone_Standalone PROPERTIES
+        XCODE_ATTRIBUTE_DEVELOPMENT_LANGUAGE en)
 else()
 juce_add_plugin(OpenTune
     ${OPENTUNE_PLUGIN_COMMON_ARGS}
@@ -574,6 +609,7 @@ list(SORT OPENTUNE_CURSOR_ASSETS)
 juce_add_binary_data(OpenTuneResources
     SOURCES
         Resources/Fonts/HONORSansCN-Medium.ttf
+        Resources/About/about.md
         Resources/PianoSamples-mp3/piano_21.mp3
         Resources/PianoSamples-mp3/piano_22.mp3
         Resources/PianoSamples-mp3/piano_23.mp3
@@ -783,6 +819,7 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Standalone/UI/TopBarComponent.h
         Source/Standalone/UI/TouchTooltipPresenter.h
         Source/Standalone/UI/TouchSubmenuOpener.h
+        Source/Standalone/UI/DemoTourCallout.h
         Source/Standalone/UI/TimelineOverviewComponent.cpp
         Source/Standalone/UI/TimelineOverviewComponent.h
 
@@ -798,6 +835,7 @@ set(OPENTUNE_COMMON_SOURCES
         Source/Editor/OnboardingOverlayComponent.h
         Source/Editor/PitchShiftDialogContent.h
         Source/Editor/ConfirmDialogContent.h
+        Source/Editor/AboutDialogContent.h
         Source/Editor/ShortcutCaptureDialogContent.h
         Source/Editor/ComponentListenerSubscription.h
 
@@ -966,7 +1004,10 @@ if(OPENTUNE_IOS)
     target_sources(OpenTuneStandalone PRIVATE
         Source/Utils/TouchInput_ios.mm
         Source/Utils/IosDocumentPicker.h
-        Source/Utils/IosDocumentPicker.mm)
+        Source/Utils/IosDocumentPicker.mm
+        Source/Utils/DemoProject.h
+        Source/Utils/DemoProject.cpp
+        Source/Standalone/UI/WebDrawer.h)
 endif()
 if(NOT OPENTUNE_IOS)
     target_sources(OpenTune PRIVATE ${OPENTUNE_NON_STANDALONE_SOURCES})
@@ -1211,7 +1252,8 @@ endif()
 foreach(_opentune_target IN LISTS OPENTUNE_SHARED_CODE_TARGETS)
     target_compile_definitions(${_opentune_target}
         PUBLIC
-            JUCE_WEB_BROWSER=0
+            # iPadOS opens help pages in an in-app WKWebView drawer (Source/Standalone/UI/WebDrawer.h).
+            JUCE_WEB_BROWSER=$<IF:$<BOOL:${OPENTUNE_IOS}>,1,0>
             JUCE_USE_CURL=0
             JUCE_VST3_CAN_REPLACE_VST2=0
             JUCE_REPORT_APP_USAGE=0
@@ -1365,18 +1407,48 @@ if(WIN32)
     )
 
 elseif(OPENTUNE_IOS)
-    # iOS bundles are flat: ModelPathResolver finds <executable dir>/models.
+    # iOS bundles are flat: ModelPathResolver finds <executable dir>/models, the
+    # first-run demo lives in Demo/ (Source/Utils/DemoProject.cpp; only the project
+    # file is generated under Documents/Projects) and the User Guide in docs/.
+    # CopyIntoIosBundle.cmake also targets the right bundle during Xcode Archive.
+    file(GLOB OPENTUNE_DEMO_AUDIO "${CMAKE_CURRENT_SOURCE_DIR}/assets/*.wav")
+    list(LENGTH OPENTUNE_DEMO_AUDIO OPENTUNE_DEMO_AUDIO_COUNT)
+    if(NOT OPENTUNE_DEMO_AUDIO_COUNT EQUAL 1 OR NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/Demo.otproj")
+        message(FATAL_ERROR "assets/ must contain Demo.otproj and exactly one demo .wav")
+    endif()
+
+    set(OPENTUNE_IOS_BUNDLE_MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/ios-bundle-resources.txt")
+    set(_opentune_ios_resources
+        "${HIFIGAN_MODEL_COMMUNITY}\tmodels/hifigan.onnx"
+        "${FCPE_MODEL}\tmodels/fcpe.onnx"
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/Demo.otproj\tDemo/Demo.otproj"
+        "${OPENTUNE_DEMO_AUDIO}\tDemo/Demo.wav")
+    foreach(_opentune_guide UserGuide UserGuide_en UserGuide_ja UserGuide_ru UserGuide_es)
+        list(APPEND _opentune_ios_resources
+            "${CMAKE_CURRENT_SOURCE_DIR}/userguide/${_opentune_guide}.html\tdocs/${_opentune_guide}.html")
+    endforeach()
+    foreach(_opentune_lang IN LISTS OPENTUNE_IOS_LAUNCH_LANGUAGES)
+        list(APPEND _opentune_ios_resources
+            "${CMAKE_CURRENT_SOURCE_DIR}/Resources/ios/${_opentune_lang}.lproj/LaunchScreen.strings\t${_opentune_lang}.lproj/LaunchScreen.strings")
+    endforeach()
+    list(JOIN _opentune_ios_resources "\n" _opentune_ios_manifest)
+    file(WRITE "${OPENTUNE_IOS_BUNDLE_MANIFEST}" "${_opentune_ios_manifest}\n")
+
     add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/models"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${HIFIGAN_MODEL_COMMUNITY}"
-            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/models/hifigan.onnx"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${FCPE_MODEL}"
-            "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/models/fcpe.onnx"
-        COMMENT "Copying AI models into the iPadOS app bundle..."
+        COMMAND ${CMAKE_COMMAND}
+            "-DBUNDLE_DIR=$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>"
+            "-DMANIFEST=${OPENTUNE_IOS_BUNDLE_MANIFEST}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyIntoIosBundle.cmake"
+        COMMENT "Copying models, demo and User Guide into the iPadOS app bundle..."
+        VERBATIM
     )
+
+    # Product > Archive must install only the app, otherwise Xcode produces a
+    # "Generic Xcode Archive" (scripts/makeXcodeProject.sh sets SKIP_INSTALL=YES
+    # for every other target).
+    set_target_properties(OpenTuneStandalone_Standalone PROPERTIES
+        XCODE_ATTRIBUTE_SKIP_INSTALL NO
+        XCODE_ATTRIBUTE_INSTALL_PATH "$(LOCAL_APPS_DIR)")
 
 elseif(APPLE)
     add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
@@ -1429,7 +1501,7 @@ if(OPENTUNE_MACOS)
             "$<TARGET_BUNDLE_DIR:OpenTuneStandalone_Standalone>/Contents/Resources/docs/UserGuide_es.html"
         COMMENT "Copying UserGuide translations to app bundle Resources..."
     )
-else()
+elseif(NOT OPENTUNE_IOS)  # iPadOS copies docs/ with its other bundle resources
     # Windows and the flat iPadOS bundle: docs go alongside the executable
     add_custom_command(TARGET OpenTuneStandalone_Standalone POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
@@ -1961,6 +2033,27 @@ if(OPENTUNE_BUILD_TESTS)
         target_compile_options(OpenTuneVisibleTrackCountTests PRIVATE /utf-8 /EHsc)
     endif()
     add_test(NAME VisibleTrackCountTests COMMAND OpenTuneVisibleTrackCountTests)
+
+    # iPad demo-tour load gate: a not-yet-started open is not a failed open.
+    add_executable(OpenTuneDemoTourGateTests
+        Tests/DemoTourGateTests.cpp
+    )
+    target_include_directories(OpenTuneDemoTourGateTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    if(MSVC)
+        target_compile_options(OpenTuneDemoTourGateTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME DemoTourGateTests COMMAND OpenTuneDemoTourGateTests)
+
+    add_executable(OpenTunePianoRollNoteEntryTests
+        Tests/PianoRollNoteEntryTests.cpp
+    )
+    target_include_directories(OpenTunePianoRollNoteEntryTests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+    if(MSVC)
+        target_compile_options(OpenTunePianoRollNoteEntryTests PRIVATE /utf-8 /EHsc)
+    endif()
+    add_test(NAME PianoRollNoteEntryTests COMMAND OpenTunePianoRollNoteEntryTests)
 
     # Standalone processor settings codec (OTSS v3 / legacy v2) tests.
     add_executable(OpenTuneStandaloneStateCodecTests

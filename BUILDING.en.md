@@ -172,7 +172,7 @@ Except for the r8brain source included in the repository, obtain the following d
 
 | Path | Required? | Setup / purpose |
 |------|----------|-----------------|
-| `JUCE-master/` | Yes | Clone JUCE 8.0.12 at the repository root, then run `python3 scripts/github_actions/patch-juce-ara.py` (macOS command; the same script handles the ARA include and AudioDeviceManager patches). |
+| `JUCE-master/` | Yes | Clone JUCE 8.0.12 at the repository root, then run `python3 scripts/github_actions/patch-juce-ara.py` (macOS command; the same script handles the ARA include, the AudioDeviceManager patch, and the iOS audio-session probe that stays on the Playback category so launch does not request the microphone). |
 | `ThirdParty/ARA_SDK-releases-2.3.0/` | Yes | Clone the ARA SDK `releases/2.3.0` branch with submodules. |
 | `ThirdParty/r8brain-free-src-master/` | Yes | Included in the Git repository; no separate download is needed. |
 | `ThirdParty/soundtouch-2.3.2/` | Yes | Clone the `2.3.2` tag from the official SoundTouch repository linked above. |
