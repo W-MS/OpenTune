@@ -2,6 +2,7 @@
 #include "OpenTuneLookAndFeel.h"
 #include "UIColors.h"
 #include "ToolbarIcons.h"
+#include "TouchTooltipPresenter.h"
 #include "../../Utils/LocalizationManager.h"
 #include <cmath>
 
@@ -357,6 +358,8 @@ void BpmValueField::setReadOnly(bool readOnly)
 
     if (readOnly_)
     {
+        finishInlineEdit(false);
+
         // End any active editing and release focus
         if (isEditing_)
         {
@@ -493,8 +496,11 @@ void BpmValueField::paint(juce::Graphics& g)
     // BPM value - 水平居中
     g.setFont(font);
     g.setColour(readOnly_ ? UIColors::textSecondary : UIColors::textPrimary);
-    juce::String bpmText = isEditing_ ? text_ : formatBpmText();
-    g.drawFittedText(bpmText, lr.bpmValue, juce::Justification::centred, 1, 1.0f);
+    if (inlineEditor_ == nullptr)
+    {
+        juce::String bpmText = isEditing_ ? text_ : formatBpmText();
+        g.drawFittedText(bpmText, lr.bpmValue, juce::Justification::centred, 1, 1.0f);
+    }
 
     // Time signature: draw each part separately for precise hit-test alignment
     g.setColour(readOnly_ ? UIColors::textSecondary.withAlpha(0.70f) : UIColors::textSecondary.withAlpha(0.85f));
@@ -508,7 +514,7 @@ void BpmValueField::paint(juce::Graphics& g)
     g.drawFittedText(juce::String(timeSigDenom_), lr.denominator, juce::Justification::centred, 1, 0.0f);
 
     // Caret for BPM editing - 与居中文本起点一致
-    if (isEditing_ && showCaret_)
+    if (isEditing_ && showCaret_ && inlineEditor_ == nullptr)
     {
         auto getTextWidth = [&](const juce::String& s) -> float {
             juce::GlyphArrangement ga;
@@ -533,6 +539,9 @@ void BpmValueField::mouseDown(const juce::MouseEvent& e)
 
     if (lr.bpmValue.contains(e.getPosition()))
     {
+#if JUCE_IOS
+        beginInlineEdit();
+#else
         grabKeyboardFocus();
         if (!isEditing_)
         {
@@ -541,6 +550,7 @@ void BpmValueField::mouseDown(const juce::MouseEvent& e)
             caretIndex_ = 0;
         }
         repaint();
+#endif
     }
     else if (lr.numerator.contains(e.getPosition()))
     {
@@ -669,7 +679,70 @@ bool BpmValueField::keyPressed(const juce::KeyPress& key)
 void BpmValueField::focusLost(juce::Component::FocusChangeType cause)
 {
     juce::ignoreUnused(cause);
+    // 焦点交给内嵌编辑器时不提交；编辑器自己的回调负责提交。
+    if (inlineEditor_ != nullptr)
+        return;
     commit();
+}
+
+void BpmValueField::beginInlineEdit()
+{
+    if (inlineEditor_ != nullptr)
+        return;
+
+    isEditing_ = true;
+    inlineEditor_ = std::make_unique<juce::TextEditor>();
+    auto& editor = *inlineEditor_;
+    editor.setKeyboardType(juce::TextInputTarget::decimalKeyboard);
+    editor.setInputRestrictions(6, "0123456789.");
+    editor.setJustification(juce::Justification::centred);
+    editor.setFont(UIColors::getLabelFont(UIColors::navFontHeight));
+    editor.setIndents(0, 0);
+    editor.setBorder({});
+    editor.setColour(juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+    editor.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+    editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+    editor.setColour(juce::TextEditor::textColourId, UIColors::textPrimary);
+    editor.setColour(juce::TextEditor::highlightColourId, UIColors::accent.withAlpha(0.35f));
+    editor.setColour(juce::CaretComponent::caretColourId, UIColors::textPrimary);
+    editor.setText(formatBpmText(), false);
+    editor.selectAll();
+
+    editor.onReturnKey = [this] { finishInlineEdit(true); };
+    editor.onEscapeKey = [this] { finishInlineEdit(false); };
+    editor.onFocusLost = [this] { finishInlineEdit(true); };
+
+    const auto area = calculateLayout().bpmValue;
+    const auto textHeight = juce::roundToInt(UIColors::navFontHeight) + 6;
+    editor.setBounds(area.withSizeKeepingCentre(area.getWidth(), juce::jmin(area.getHeight(), textHeight)));
+    addAndMakeVisible(editor);
+    editor.grabKeyboardFocus();
+    repaint();
+}
+
+void BpmValueField::finishInlineEdit(bool shouldCommit)
+{
+    if (inlineEditor_ == nullptr)
+        return;
+
+    // 回调来自编辑器自身，不能在此同步销毁它。
+    std::shared_ptr<juce::TextEditor> retired(inlineEditor_.release());
+    retired->onReturnKey = nullptr;
+    retired->onEscapeKey = nullptr;
+    retired->onFocusLost = nullptr;
+    retired->setVisible(false);
+    juce::MessageManager::callAsync([retired] {});
+
+    if (shouldCommit)
+    {
+        text_ = retired->getText().trim();
+        caretIndex_ = text_.length();
+        commit();
+    }
+    else
+    {
+        cancelEdit();
+    }
 }
 
 void BpmValueField::timerCallback()
@@ -1122,6 +1195,7 @@ TransportBarComponent::TransportBarComponent()
     playButton_.setTooltip(LOC(kTooltipPlay) + "\nSpace");
     playButton_.getProperties().set(kOverdoseUiRoleKey, kOverdoseUiRoleTransport);
     playButton_.setSolidIcon(true);
+    playButton_.getProperties().set(TouchTooltipPresenter::kSuppressProperty, true);
     addAndMakeVisible(playButton_);
 
     // Setup Pause Button
@@ -1130,6 +1204,7 @@ TransportBarComponent::TransportBarComponent()
     pauseButton_.setTooltip(LOC(kTooltipPause) + "\nSpace");
     pauseButton_.getProperties().set(kOverdoseUiRoleKey, kOverdoseUiRoleTransport);
     pauseButton_.setSolidIcon(true);
+    pauseButton_.getProperties().set(TouchTooltipPresenter::kSuppressProperty, true);
     addAndMakeVisible(pauseButton_);
 
     // Setup Stop Button

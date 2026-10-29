@@ -55,6 +55,7 @@ public:
         virtual void preferencesRequested() = 0;
         virtual void helpRequested() = 0;
         virtual void onboardingRequested() = 0;
+        virtual void aboutRequested() = 0;
         virtual void showWaveformToggled(bool shouldShow) = 0;
         virtual void showPianoKeyboardToggled(bool shouldShow) = 0;
         virtual void scaleAssistToggled(bool enabled) = 0;
@@ -164,7 +165,8 @@ private:
 
         OpenPreferences = 200,
         OpenHelp = 201,
-        OpenOnboarding = 202
+        OpenOnboarding = 202,
+        OpenAbout = 203
     };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MenuBarComponent)

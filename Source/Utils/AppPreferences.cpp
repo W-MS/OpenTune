@@ -264,7 +264,7 @@ KeyShortcutConfig::KeyShortcutSettings decodeShortcutSettings(const juce::Proper
     auto settings = KeyShortcutConfig::KeyShortcutSettings::getDefault();
     const int storedSchemaVersion = properties.getIntValue(kShortcutSchemaVersionKey, 0);
     const bool migrateMouseDefaults = storedSchemaVersion < kShortcutMouseSchemaVersion;
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
     const bool migrateMacDefaultShortcuts = storedSchemaVersion < kShortcutMacModifierSchemaVersion;
     const bool restoreMacSpacePlay = storedSchemaVersion < kShortcutSchemaVersion;
 #endif
@@ -287,7 +287,7 @@ KeyShortcutConfig::KeyShortcutSettings decodeShortcutSettings(const juce::Proper
                         decoded.addBinding(defaultBinding);
                 }
             }
-#if JUCE_MAC
+#if JUCE_MAC || JUCE_IOS
             if (migrateMacDefaultShortcuts) {
                 const auto zoomModifiers = juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier;
                 const auto transportModifiers = zoomModifiers | juce::ModifierKeys::shiftModifier;
@@ -371,9 +371,26 @@ PluginEditorSize readDefaultPluginEditorSize(const juce::PropertiesFile& propert
              stored.substring(separator + 1).getIntValue() };
 }
 
+#if JUCE_IOS
+Language languageFromSystemLocale()
+{
+    const auto code = juce::SystemStats::getDisplayLanguage().toLowerCase();
+    if (code.startsWith("zh")) return Language::Chinese;
+    if (code.startsWith("ja")) return Language::Japanese;
+    if (code.startsWith("ru")) return Language::Russian;
+    if (code.startsWith("es")) return Language::Spanish;
+    return Language::English;
+}
+#endif
+
 AppPreferencesState loadStateFromProperties(const juce::PropertiesFile& properties)
 {
     AppPreferencesState state;
+#if JUCE_IOS
+    // 首次启动跟随设备语言；不支持的语言回退 English。
+    if (!properties.containsKey(kSharedLanguageKey))
+        state.shared.language = languageFromSystemLocale();
+#endif
     state.shared.language = languageFromToken(properties.getValue(kSharedLanguageKey, toLanguageToken(state.shared.language)));
     state.shared.theme = themeFromToken(properties.getValue(kSharedThemeKey, toThemeToken(state.shared.theme)));
     state.shared.audioEditingScheme = audioEditingSchemeFromToken(

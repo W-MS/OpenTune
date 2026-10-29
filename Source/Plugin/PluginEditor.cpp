@@ -5,6 +5,7 @@
 #include <iterator>
 
 #include "Editor/ConfirmDialogContent.h"
+#include "Editor/AboutDialogContent.h"
 #include "Editor/Preferences/SharedPreferencePages.h"
 #include "Editor/Preferences/TabbedPreferencesDialog.h"
 #include "Editor/PitchShiftDialogContent.h"
@@ -1183,6 +1184,11 @@ void OpenTuneAudioProcessorEditor::helpRequested()
     showHostManagedMessage(&contentRoot_, LOC(kHelpDialog),
                            LOC(kVst3Help));
 #endif
+}
+
+void OpenTuneAudioProcessorEditor::aboutRequested()
+{
+    AboutDialogContent::show(&contentRoot_);
 }
 
 void OpenTuneAudioProcessorEditor::showWaveformToggled(bool shouldShow)
