@@ -804,7 +804,8 @@ OpenTuneAudioProcessorEditor::OpenTuneAudioProcessorEditor(OpenTuneAudioProcesso
                 arrangementView_.grabKeyboardFocus();
             else
                 pianoRoll_.grabKeyboardFocus();
-            juce::MessageManager::callAsync([safeThis = juce::Component::SafePointer<OpenTuneAudioProcessorEditor>(this)] {
+            const juce::Component::SafePointer<OpenTuneAudioProcessorEditor> safeThis(this);
+            juce::MessageManager::callAsync([safeThis] {
                 if (safeThis != nullptr)
                     safeThis->startDemoTourIfFirstRun();
             });
